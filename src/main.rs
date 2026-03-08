@@ -1,4 +1,5 @@
 mod ast;
+mod compiler;
 mod error;
 mod evaluator;
 mod lexer;
@@ -54,6 +55,14 @@ fn main() {
             }
             cmd_switch(&args[2])
         }
+        "compile" => {
+            if args.len() < 3 {
+                eprintln!("Usage: agentis compile <branch> [output.wasm]");
+                process::exit(1);
+            }
+            let output = args.get(3).map(|s| s.as_str());
+            cmd_compile(&args[2], output)
+        }
         "log" => {
             let branch = args.get(2).map(|s| s.as_str());
             cmd_log(branch)
@@ -84,6 +93,7 @@ fn print_usage() {
     eprintln!("  run <branch>         Execute code from a branch's root hash");
     eprintln!("  branch [name]        List branches or create a new one");
     eprintln!("  switch <branch>      Switch to a different branch");
+    eprintln!("  compile <branch> [o] Compile branch to WASM binary");
     eprintln!("  log [branch]         Show commit log for a branch");
     eprintln!("  version              Show version");
 }
@@ -178,6 +188,24 @@ fn cmd_switch(name: &str) -> Result<(), AgentisError> {
     let (_, refs) = ensure_initialized()?;
     refs.switch_branch(name)?;
     println!("Switched to branch '{name}'.");
+    Ok(())
+}
+
+fn cmd_compile(branch: &str, output: Option<&str>) -> Result<(), AgentisError> {
+    let (store, refs) = ensure_initialized()?;
+
+    let tree_hash = refs.resolve_tree(branch, &store)?
+        .ok_or_else(|| AgentisError::General(format!("branch '{branch}' has no commits")))?;
+
+    let wasm = compiler::compile_from_store(&store, &tree_hash)?;
+
+    let output_path = match output {
+        Some(p) => p.to_string(),
+        None => format!("{}.wasm", branch),
+    };
+
+    std::fs::write(&output_path, &wasm)?;
+    println!("Compiled to {} ({} bytes)", output_path, wasm.len());
     Ok(())
 }
 

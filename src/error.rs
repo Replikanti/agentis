@@ -1,3 +1,4 @@
+use crate::compiler::CompileError;
 use crate::evaluator::EvalError;
 use crate::lexer::LexerError;
 use crate::parser::ParseError;
@@ -10,6 +11,7 @@ pub enum AgentisError {
     Lexer(LexerError),
     Parse(ParseError),
     Eval(EvalError),
+    Compile(CompileError),
     Storage(StorageError),
     Refs(RefsError),
     Io(std::io::Error),
@@ -22,6 +24,7 @@ impl std::fmt::Display for AgentisError {
             AgentisError::Lexer(e) => write!(f, "lexer error: {e}"),
             AgentisError::Parse(e) => write!(f, "parse error: {e}"),
             AgentisError::Eval(e) => write!(f, "runtime error: {e}"),
+            AgentisError::Compile(e) => write!(f, "compile error: {e}"),
             AgentisError::Storage(e) => write!(f, "storage error: {e}"),
             AgentisError::Refs(e) => write!(f, "refs error: {e}"),
             AgentisError::Io(e) => write!(f, "I/O error: {e}"),
@@ -40,6 +43,10 @@ impl From<ParseError> for AgentisError {
 
 impl From<EvalError> for AgentisError {
     fn from(e: EvalError) -> Self { AgentisError::Eval(e) }
+}
+
+impl From<CompileError> for AgentisError {
+    fn from(e: CompileError) -> Self { AgentisError::Compile(e) }
 }
 
 impl From<StorageError> for AgentisError {

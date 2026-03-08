@@ -400,7 +400,7 @@ mod tests {
     }
 }
 
-mod tempfile {
+pub(crate) mod tempfile {
     use std::path::{Path, PathBuf};
 
     pub struct TempDir {
