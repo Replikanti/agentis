@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::ast::*;
+use crate::capabilities::{CapError, CapKind, CapabilityRegistry};
 use crate::refs::Refs;
 use crate::storage::ObjectStore;
 
@@ -73,6 +74,7 @@ pub enum EvalError {
     ArityMismatch { expected: usize, got: usize },
     Return(Value),
     NotAStruct(String),
+    CapabilityDenied(CapError),
 }
 
 impl std::fmt::Display for EvalError {
@@ -99,6 +101,7 @@ impl std::fmt::Display for EvalError {
             }
             EvalError::Return(_) => write!(f, "return outside function"),
             EvalError::NotAStruct(t) => write!(f, "field access on non-struct type: {t}"),
+            EvalError::CapabilityDenied(e) => write!(f, "capability denied: {e}"),
         }
     }
 }
@@ -159,6 +162,8 @@ pub struct Evaluator<'a> {
     output: Vec<String>,
     vcs: Option<(&'a ObjectStore, &'a Refs)>,
     explore_branches: Vec<String>,
+    cap_registry: CapabilityRegistry,
+    caps: HashMap<CapKind, Vec<crate::capabilities::CapHandle>>,
 }
 
 impl<'a> Evaluator<'a> {
@@ -171,12 +176,49 @@ impl<'a> Evaluator<'a> {
             output: Vec::new(),
             vcs: None,
             explore_branches: Vec::new(),
+            cap_registry: CapabilityRegistry::new(),
+            caps: HashMap::new(),
         }
     }
 
     pub fn with_vcs(mut self, store: &'a ObjectStore, refs: &'a Refs) -> Self {
         self.vcs = Some((store, refs));
         self
+    }
+
+    pub fn grant(&mut self, kind: CapKind) {
+        let handle = self.cap_registry.grant(kind);
+        self.caps.entry(kind).or_default().push(handle);
+    }
+
+    pub fn grant_all(&mut self) {
+        for kind in CapKind::all() {
+            self.grant(*kind);
+        }
+    }
+
+    pub fn revoke(&mut self, kind: CapKind) {
+        if let Some(handles) = self.caps.remove(&kind) {
+            for h in &handles {
+                self.cap_registry.revoke(h);
+            }
+        }
+    }
+
+    fn require_cap(&self, kind: CapKind) -> Result<(), EvalError> {
+        match self.caps.get(&kind) {
+            Some(handles) => {
+                for h in handles {
+                    if self.cap_registry.check(h, kind).is_ok() {
+                        return Ok(());
+                    }
+                }
+                Err(EvalError::CapabilityDenied(CapError::RevokedCapability(kind)))
+            }
+            None => Err(EvalError::CapabilityDenied(
+                CapError::MissingCapability(kind),
+            )),
+        }
     }
 
     pub fn budget_remaining(&self) -> u64 {
@@ -392,6 +434,7 @@ impl<'a> Evaluator<'a> {
         // Built-in functions
         match expr.callee.as_str() {
             "print" => {
+                self.require_cap(CapKind::Stdout)?;
                 let mut parts = Vec::new();
                 for arg in &expr.args {
                     parts.push(format!("{}", self.eval_expr(arg)?));
@@ -514,6 +557,7 @@ impl<'a> Evaluator<'a> {
     // --- AI-native constructs ---
 
     fn eval_prompt(&mut self, expr: &PromptExpr) -> Result<Value, EvalError> {
+        self.require_cap(CapKind::Prompt)?;
         self.spend(50)?;
         // Evaluate input (to spend CB and validate it exists)
         let _input = self.eval_expr(&expr.input)?;
@@ -575,6 +619,7 @@ impl<'a> Evaluator<'a> {
     }
 
     fn eval_explore(&mut self, expr: &ExploreBlock) -> Result<Value, EvalError> {
+        self.require_cap(CapKind::VcsWrite)?;
         self.spend(1)?;
 
         // Save current state
@@ -619,18 +664,21 @@ mod tests {
     fn eval(source: &str) -> Result<Value, EvalError> {
         let program = Parser::parse_source(source).unwrap();
         let mut evaluator = Evaluator::new(10000);
+        evaluator.grant_all();
         evaluator.eval_program(&program)
     }
 
     fn eval_with_budget(source: &str, budget: u64) -> Result<Value, EvalError> {
         let program = Parser::parse_source(source).unwrap();
         let mut evaluator = Evaluator::new(budget);
+        evaluator.grant_all();
         evaluator.eval_program(&program)
     }
 
     fn eval_output(source: &str) -> Vec<String> {
         let program = Parser::parse_source(source).unwrap();
         let mut evaluator = Evaluator::new(10000);
+        evaluator.grant_all();
         evaluator.eval_program(&program).unwrap();
         evaluator.output().to_vec()
     }
@@ -1073,7 +1121,129 @@ mod tests {
     fn budget_tracking() {
         let program = Parser::parse_source("let x = 1 + 2;").unwrap();
         let mut evaluator = Evaluator::new(100);
+        evaluator.grant_all();
         evaluator.eval_program(&program).unwrap();
         assert!(evaluator.budget_remaining() < 100);
+    }
+
+    // --- Capability-Based Security (OCap) ---
+
+    #[test]
+    fn prompt_requires_capability() {
+        let program = Parser::parse_source(r#"
+            let x = "input";
+            prompt("classify", x) -> int;
+        "#).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        // No caps granted
+        let result = evaluator.eval_program(&program);
+        assert!(matches!(result, Err(EvalError::CapabilityDenied(_))));
+    }
+
+    #[test]
+    fn prompt_with_capability_succeeds() {
+        let program = Parser::parse_source(r#"
+            let x = "input";
+            prompt("classify", x) -> int;
+        "#).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        evaluator.grant(CapKind::Prompt);
+        let result = evaluator.eval_program(&program);
+        assert_eq!(result, Ok(Value::Int(0)));
+    }
+
+    #[test]
+    fn print_requires_capability() {
+        let program = Parser::parse_source(r#"print(42);"#).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        // No caps granted
+        let result = evaluator.eval_program(&program);
+        assert!(matches!(result, Err(EvalError::CapabilityDenied(_))));
+    }
+
+    #[test]
+    fn print_with_capability_succeeds() {
+        let program = Parser::parse_source(r#"print(42);"#).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        evaluator.grant(CapKind::Stdout);
+        evaluator.eval_program(&program).unwrap();
+        assert_eq!(evaluator.output(), &["42"]);
+    }
+
+    #[test]
+    fn explore_requires_vcs_write_capability() {
+        let program = Parser::parse_source(r#"
+            explore "test-branch" {
+                let x = 42;
+            }
+        "#).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        // No caps granted
+        let result = evaluator.eval_program(&program);
+        assert!(matches!(result, Err(EvalError::CapabilityDenied(_))));
+    }
+
+    #[test]
+    fn explore_with_capability_succeeds() {
+        let program = Parser::parse_source(r#"
+            explore "test-branch" {
+                let x = 42;
+            }
+        "#).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        evaluator.grant(CapKind::VcsWrite);
+        let result = evaluator.eval_program(&program);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn no_caps_pure_code_works() {
+        // Arithmetic, let, if, functions should work without any capabilities
+        let program = Parser::parse_source(r#"
+            fn add(a: int, b: int) -> int { return a + b; }
+            let x = add(2, 3);
+            if x > 4 { x; } else { 0; };
+        "#).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        // No caps granted
+        let result = evaluator.eval_program(&program);
+        assert_eq!(result, Ok(Value::Int(5)));
+    }
+
+    #[test]
+    fn grant_all_allows_everything() {
+        let program = Parser::parse_source(r#"
+            let x = "input";
+            let r = prompt("classify", x) -> int;
+            print(r);
+        "#).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+        assert_eq!(evaluator.output(), &["0"]);
+    }
+
+    #[test]
+    fn revoke_blocks_subsequent_ops() {
+        let program = Parser::parse_source(r#"print(42);"#).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        evaluator.grant(CapKind::Stdout);
+        evaluator.revoke(CapKind::Stdout);
+        let result = evaluator.eval_program(&program);
+        assert!(matches!(result, Err(EvalError::CapabilityDenied(_))));
+    }
+
+    #[test]
+    fn capability_denied_error_message() {
+        let program = Parser::parse_source(r#"print(42);"#).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        let result = evaluator.eval_program(&program);
+        match result {
+            Err(EvalError::CapabilityDenied(e)) => {
+                let msg = format!("{e}");
+                assert!(msg.contains("stdout"), "error should mention the capability kind");
+            }
+            other => panic!("expected CapabilityDenied, got {other:?}"),
+        }
     }
 }
