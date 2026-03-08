@@ -112,7 +112,7 @@ explore "feature-name" {
 ## Milestones
 
 - [x] M1: Lexer
-- [ ] M2: AST & Binary Serialization
+- [x] M2: AST & Binary Serialization
 - [ ] M3: Parser (Recursive Descent)
 - [ ] M4: Content-Addressed Storage (VCS Core)
 - [ ] M5: Execution Engine & Cognitive Budget
