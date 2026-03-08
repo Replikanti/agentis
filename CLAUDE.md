@@ -4,36 +4,48 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Agentis is a programming language fused with a Version Control System (VCS). Code is represented as a binary, hashed DAG stored in `.agentis/objects/` (content-addressable storage), not as plain text files.
+Agentis is an AI-native programming language fused with a Version Control System (VCS). Code is represented as a binary, hashed DAG stored in `.agentis/objects/` (content-addressable storage). Designed as an operating system for AI agents — humans write prompts, agents work in Agentis.
 
 ## Tech Stack
 
-- **Language:** Rust (zero-dependency, only `sha2` crate for integrity)
-- **No frameworks:** No SQLite, no Tokio — pure vanilla Rust
+- **Language:** Rust (only `sha2` crate as external dependency)
+- **No frameworks:** No SQLite, no Tokio, no serde — pure vanilla Rust
 - **License:** MIT
 
 ## Architecture
 
-The system is a hybrid compiler + Git-internals pipeline:
+```
+src/
+  main.rs         # CLI (init, commit, run, branch, log)
+  lexer.rs        # Tokenizer
+  ast.rs          # AST types + manual binary serialization
+  parser.rs       # Recursive descent parser (Pratt precedence)
+  storage.rs      # SHA-256 content-addressed object store
+  evaluator.rs    # Tree-walking interpreter + Cognitive Budget
+  refs.rs         # Branch/reference management (genesis-first)
+```
 
-1. **Lexer/Parser** — source code → AST
-2. **Hashing** — every AST node gets a SHA-256 hash
-3. **Storage** — nodes saved as binary objects (content-addressable)
-4. **Interpreter** — executes AST directly, enforcing Cognitive Budget (CB)
-5. **P2P Sync** — code sync over raw TCP sockets
+Pipeline: source → lexer → parser → AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 ## Key Concepts
 
-- **Genesis branch:** The default/root branch (replaces `main`)
-- **Cognitive Budget (CB):** Execution fuel system that prevents runaway computation. Math ops cost 1 CB, function calls cost 5 CB, memory allocation scales by size. Exceeding budget raises `CognitiveOverload`.
-- **Explore blocks:** Semantic branching mechanism (replaces traditional merge conflicts)
+- **Genesis branch:** Default branch (never `main` or `master`)
+- **Cognitive Budget (CB):** Execution fuel — arithmetic=1, lookup=1, call=5, prompt=50. Exceeding raises `CognitiveOverload`
+- **AI-native constructs:** `agent` (isolated pure execution), `prompt` (typed LLM call, mock in Phase 1), `validate` (runtime predicates), `explore` (semantic branching)
+- **Static types:** TypeScript-style with inference, structural typing, mandatory annotations on signatures
 
 ## Build & Run
 
 ```bash
-cargo build            # Build the project
-cargo test             # Run all tests
-cargo test <test_name> # Run a single test
-cargo run -- init      # Initialize a new repo with genesis branch
-cargo run -- run genesis  # Execute code from genesis branch
+cargo build                    # Build
+cargo test                     # Run all tests (172)
+cargo test <test_name>         # Run a single test
+cargo clippy                   # Lint
+
+cargo run -- init              # Initialize .agentis/ with genesis branch
+cargo run -- commit file.ag    # Parse, store AST, update current branch
+cargo run -- run genesis       # Execute code from branch
+cargo run -- branch            # List branches
+cargo run -- branch <name>     # Create new branch
+cargo run -- log               # Show commit log
 ```
