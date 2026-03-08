@@ -111,6 +111,13 @@ explore "feature-name" {
 
 ## Milestones
 
+- [ ] M1: Lexer
+- [ ] M2: AST & Binary Serialization
+- [ ] M3: Parser (Recursive Descent)
+- [ ] M4: Content-Addressed Storage (VCS Core)
+- [ ] M5: Execution Engine & Cognitive Budget
+- [ ] M6: Reference Management & CLI
+
 ### M1: Lexer (`lexer.rs`)
 
 Tokenize all language constructs:
