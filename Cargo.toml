@@ -6,3 +6,4 @@ description = "AI-native programming language with integrated VCS"
 license = "MIT"
 
 [dependencies]
+sha2 = "0.10"
