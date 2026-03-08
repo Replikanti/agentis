@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
 use crate::ast::*;
+use crate::refs::Refs;
+use crate::storage::ObjectStore;
 
 // --- Runtime Values ---
 
@@ -149,15 +151,17 @@ impl Environment {
 
 // --- Evaluator ---
 
-pub struct Evaluator {
+pub struct Evaluator<'a> {
     env: Environment,
     functions: HashMap<String, Callable>,
     types: HashMap<String, TypeDecl>,
     budget: u64,
     output: Vec<String>,
+    vcs: Option<(&'a ObjectStore, &'a Refs)>,
+    explore_branches: Vec<String>,
 }
 
-impl Evaluator {
+impl<'a> Evaluator<'a> {
     pub fn new(budget: u64) -> Self {
         Self {
             env: Environment::new(),
@@ -165,7 +169,14 @@ impl Evaluator {
             types: HashMap::new(),
             budget,
             output: Vec::new(),
+            vcs: None,
+            explore_branches: Vec::new(),
         }
+    }
+
+    pub fn with_vcs(mut self, store: &'a ObjectStore, refs: &'a Refs) -> Self {
+        self.vcs = Some((store, refs));
+        self
     }
 
     pub fn budget_remaining(&self) -> u64 {
@@ -575,9 +586,15 @@ impl Evaluator {
 
         match result {
             Ok(value) => {
-                // Success: in Phase 1, we just return the value.
-                // Branch creation will be integrated in M6 with refs.
-                // Restore budget but keep the result
+                // Success: create a VCS branch if store/refs are available
+                if let Some((store, refs)) = &self.vcs {
+                    // Store the branch name as a marker — the actual program
+                    // will be committed separately. We create the branch pointing
+                    // to the current branch's commit.
+                    let _ = refs.create_branch(&expr.name, None);
+                    let _ = store; // used implicitly through refs
+                    self.explore_branches.push(expr.name.clone());
+                }
                 Ok(value)
             }
             Err(e) => {
@@ -587,6 +604,10 @@ impl Evaluator {
                 Err(e)
             }
         }
+    }
+
+    pub fn explore_branches(&self) -> &[String] {
+        &self.explore_branches
     }
 }
 
