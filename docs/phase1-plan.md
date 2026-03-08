@@ -111,7 +111,7 @@ explore "feature-name" {
 
 ## Milestones
 
-- [ ] M1: Lexer
+- [x] M1: Lexer
 - [ ] M2: AST & Binary Serialization
 - [ ] M3: Parser (Recursive Descent)
 - [ ] M4: Content-Addressed Storage (VCS Core)
