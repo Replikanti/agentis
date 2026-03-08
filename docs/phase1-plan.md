@@ -204,6 +204,7 @@ agentis init                  # Create .agentis/ structure + genesis branch
 agentis commit <root_hash>    # Update current branch head
 agentis run <branch>          # Execute code from branch's root hash
 agentis branch <name>         # Create new branch from current head
+agentis switch <name>         # Switch to a different branch
 agentis log                   # Show commit history (hash chain)
 ```
 
