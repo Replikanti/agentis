@@ -1,4 +1,5 @@
 mod ast;
+mod capabilities;
 mod compiler;
 mod error;
 mod evaluator;
@@ -148,6 +149,7 @@ fn cmd_run(branch: &str) -> Result<(), AgentisError> {
 
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
         .with_vcs(&store, &refs);
+    evaluator.grant_all();
     match evaluator.eval_program(&program) {
         Ok(_) => {
             for line in evaluator.output() {
