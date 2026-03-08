@@ -115,8 +115,8 @@ explore "feature-name" {
 - [x] M2: AST & Binary Serialization
 - [x] M3: Parser (Recursive Descent)
 - [x] M4: Content-Addressed Storage (VCS Core)
-- [ ] M5: Execution Engine & Cognitive Budget
-- [ ] M6: Reference Management & CLI
+- [x] M5: Execution Engine & Cognitive Budget
+- [x] M6: Reference Management & CLI
 
 ### M1: Lexer (`lexer.rs`)
 
