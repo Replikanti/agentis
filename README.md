@@ -8,6 +8,7 @@ In the traditional world, code is plain text and Git tries to track it. In Agent
 * **Zero-Dependency Rust:** No SQLite, no Tokio, no bulky frameworks. Pure, raw Rust (only `sha2` for integrity).
 * **AI-Native:** Designed for agents. Instead of merge conflicts, we use semantic branching (`explore` blocks).
 * **Cognitive Budget (CB):** Every operation costs "fuel". Agentis kills infinite loops before they eat your CPU.
+* **P2P Decentralized:** Built-in synchronization over raw TCP. No central server, no middlemen.
 * **Genesis-First:** Forget `main`. Everything begins with the `genesis` branch.
 
 ---
@@ -19,7 +20,7 @@ Agentis works as a hybrid between a compiler and Git internals:
 2. **Hashing:** Every AST node gets a unique SHA-256 hash.
 3. **Storage:** Nodes are saved as binary objects (content-addressable storage).
 4. **Interpreter:** Executes the AST directly while enforcing the **Cognitive Budget (CB)**.
-5. **P2P Sync:** Code synchronization happens over raw TCP sockets.
+5. **P2P Sync:** Code synchronization happens over raw TCP sockets via an "inventory walk" protocol.
 
 ## Cognitive Budget (CB)
 To prevent hallucinating agents from bringing down the system, we use **CB**.
