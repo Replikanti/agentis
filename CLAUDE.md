@@ -16,13 +16,14 @@ Agentis is an AI-native programming language fused with a Version Control System
 
 ```
 src/
-  main.rs         # CLI (init, commit, run, branch, log)
+  main.rs         # CLI (init, commit, run, branch, switch, log)
   lexer.rs        # Tokenizer
   ast.rs          # AST types + manual binary serialization
   parser.rs       # Recursive descent parser (Pratt precedence)
   storage.rs      # SHA-256 content-addressed object store
   evaluator.rs    # Tree-walking interpreter + Cognitive Budget
   refs.rs         # Branch/reference management (genesis-first)
+  error.rs        # Unified AgentisError type
 ```
 
 Pipeline: source → lexer → parser → AST → binary serialization → SHA-256 hash → `.agentis/objects/`
@@ -38,7 +39,7 @@ Pipeline: source → lexer → parser → AST → binary serialization → SHA-2
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (172)
+cargo test                     # Run all tests (176)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
@@ -47,5 +48,6 @@ cargo run -- commit file.ag    # Parse, store AST, update current branch
 cargo run -- run genesis       # Execute code from branch
 cargo run -- branch            # List branches
 cargo run -- branch <name>     # Create new branch
+cargo run -- switch <name>     # Switch to a different branch
 cargo run -- log               # Show commit log
 ```
