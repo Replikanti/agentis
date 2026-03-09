@@ -72,16 +72,25 @@ trait LlmBackend {
 
 Implementations:
 - `MockBackend` — existing deterministic stub values (for tests, default)
-- `HttpBackend` — HTTPS via `ureq` to API endpoint (Claude, OpenAI, local)
+- `CliBackend` — spawns `claude` CLI as subprocess (flat-rate subscription,
+  no per-token billing). Recommended for development.
+- `HttpBackend` — HTTPS via `ureq` to API endpoint (per-token billing)
 
 **Configuration** (`.agentis/config`, simple `key = value` format):
 
 ```
-llm.backend = http
-llm.endpoint = https://api.anthropic.com/v1/messages
+# Option 1: CLI backend (flat-rate, recommended)
+llm.backend = cli
+llm.command = claude
 llm.model = claude-sonnet-4-20250514
-llm.api_key_env = ANTHROPIC_API_KEY
 llm.max_retries = 2
+
+# Option 2: HTTP API backend (per-token billing)
+# llm.backend = http
+# llm.endpoint = https://api.anthropic.com/v1/messages
+# llm.model = claude-sonnet-4-20250514
+# llm.api_key_env = ANTHROPIC_API_KEY
+# llm.max_retries = 2
 ```
 
 Config parsing uses hand-rolled line parser (not TOML, not JSON). Format:

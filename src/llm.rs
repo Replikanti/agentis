@@ -316,6 +316,155 @@ impl HttpBackend {
     }
 }
 
+// --- CLI Backend ---
+
+/// Runs prompts through the `claude` CLI (Claude Code).
+/// Uses flat-rate subscription instead of per-token API billing.
+pub struct CliBackend {
+    command: String,
+    model: Option<String>,
+    max_retries: u32,
+}
+
+impl CliBackend {
+    pub fn from_config(config: &Config) -> Result<Self, LlmError> {
+        let command = config.get_or("llm.command", "claude");
+        let model = config.get("llm.model").map(|s| s.to_string());
+        let max_retries = config.get_u64("llm.max_retries", 2) as u32;
+        Ok(Self {
+            command,
+            model,
+            max_retries,
+        })
+    }
+
+    fn build_prompt(
+        instruction: &str,
+        input: &str,
+        return_type: &TypeAnnotation,
+    ) -> String {
+        let type_str = format_type_annotation(return_type);
+        format!(
+            "{instruction}\n\nInput: {input}\n\nRespond with ONLY valid JSON matching type: {type_str}. No markdown, no explanation, just the JSON value."
+        )
+    }
+
+    fn run_cli(&self, prompt: &str) -> Result<String, LlmError> {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let mut cmd = Command::new(&self.command);
+        cmd.arg("-p")
+            .arg("--output-format").arg("text")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        if let Some(model) = &self.model {
+            cmd.arg("--model").arg(model);
+        }
+
+        let mut child = cmd.spawn().map_err(|e| {
+            LlmError::Transport(format!(
+                "failed to spawn '{}': {e} (is claude CLI installed?)",
+                self.command
+            ))
+        })?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(prompt.as_bytes()).map_err(|e| {
+                LlmError::Transport(format!("failed to write to claude stdin: {e}"))
+            })?;
+        }
+
+        let output = child.wait_with_output().map_err(|e| {
+            LlmError::Transport(format!("failed to read claude output: {e}"))
+        })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(LlmError::Transport(format!(
+                "claude CLI exited with {}: {stderr}",
+                output.status
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        Ok(stdout)
+    }
+}
+
+impl LlmBackend for CliBackend {
+    fn complete(
+        &self,
+        instruction: &str,
+        input: &str,
+        return_type: &TypeAnnotation,
+        _type_fields: Option<&[(&str, &str)]>,
+    ) -> Result<Value, LlmError> {
+        let prompt = Self::build_prompt(instruction, input, return_type);
+        let mut last_error = None;
+        let attempts = 1 + self.max_retries;
+
+        for attempt in 0..attempts {
+            if attempt > 0 {
+                eprintln!(
+                    "[LLM retry {}/{}: {}]",
+                    attempt,
+                    self.max_retries,
+                    last_error.as_ref().map(|e: &LlmError| e.to_string()).unwrap_or_default()
+                );
+            }
+
+            match self.run_cli(&prompt) {
+                Ok(raw_output) => {
+                    // Extract JSON from the response (skip any non-JSON preamble)
+                    let trimmed = extract_json_from_text(&raw_output);
+                    match json::parse(trimmed) {
+                        Ok(json_val) => {
+                            match HttpBackend::json_to_value(&json_val, return_type) {
+                                Ok(value) => return Ok(value),
+                                Err(e) => last_error = Some(e),
+                            }
+                        }
+                        Err(e) => {
+                            last_error = Some(LlmError::InvalidResponse(format!(
+                                "CLI returned invalid JSON: {e}"
+                            )));
+                        }
+                    }
+                }
+                Err(e) => last_error = Some(e),
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| LlmError::Transport("no attempts made".into())))
+    }
+}
+
+/// Try to extract a JSON value from text that may contain non-JSON preamble.
+fn extract_json_from_text(text: &str) -> &str {
+    let trimmed = text.trim();
+    // If it starts with { or [ or " or a digit or true/false/null, it's likely JSON
+    if trimmed.starts_with('{')
+        || trimmed.starts_with('[')
+        || trimmed.starts_with('"')
+        || trimmed.starts_with("true")
+        || trimmed.starts_with("false")
+        || trimmed.starts_with("null")
+        || trimmed.bytes().next().map_or(false, |b| b.is_ascii_digit() || b == b'-')
+    {
+        return trimmed;
+    }
+    // Try to find JSON object or array in the text
+    for (i, ch) in trimmed.char_indices() {
+        if ch == '{' || ch == '[' {
+            return &trimmed[i..];
+        }
+    }
+    trimmed
+}
+
 // --- Helpers ---
 
 fn format_type_annotation(ann: &TypeAnnotation) -> String {
@@ -366,6 +515,7 @@ fn describe_json(json: &JsonValue) -> String {
 /// Returns MockBackend if no config or `llm.backend = mock`.
 pub fn create_backend(config: &Config) -> Result<Box<dyn LlmBackend>, LlmError> {
     match config.get("llm.backend") {
+        Some("cli") => Ok(Box::new(CliBackend::from_config(config)?)),
         Some("http") => Ok(Box::new(HttpBackend::from_config(config)?)),
         Some("mock") | None => Ok(Box::new(MockBackend::new())),
         Some(other) => Err(LlmError::Config(format!("unknown llm.backend: {other}"))),
@@ -536,5 +686,69 @@ mod tests {
         assert!(parsed.get("model").is_some());
         assert!(parsed.get("messages").is_some());
         let _ = config; // used for context
+    }
+
+    // --- CLI Backend tests ---
+
+    #[test]
+    fn cli_backend_from_config() {
+        let config = Config::parse("llm.command = claude\nllm.max_retries = 3");
+        let backend = CliBackend::from_config(&config).unwrap();
+        assert_eq!(backend.command, "claude");
+        assert_eq!(backend.max_retries, 3);
+        assert!(backend.model.is_none());
+    }
+
+    #[test]
+    fn cli_backend_custom_command() {
+        let config = Config::parse("llm.command = /usr/local/bin/claude\nllm.model = opus");
+        let backend = CliBackend::from_config(&config).unwrap();
+        assert_eq!(backend.command, "/usr/local/bin/claude");
+        assert_eq!(backend.model.as_deref(), Some("opus"));
+    }
+
+    #[test]
+    fn cli_backend_build_prompt() {
+        let prompt = CliBackend::build_prompt(
+            "Classify this",
+            "hello world",
+            &TypeAnnotation::Named("int".into()),
+        );
+        assert!(prompt.contains("Classify this"));
+        assert!(prompt.contains("hello world"));
+        assert!(prompt.contains("int"));
+        assert!(prompt.contains("ONLY valid JSON"));
+    }
+
+    #[test]
+    fn factory_cli_backend() {
+        let config = Config::parse("llm.backend = cli");
+        let backend = create_backend(&config).unwrap();
+        // CLI backend with default config works (no env vars needed unlike http)
+        // Can't call complete() without claude installed, but creation succeeds
+        let _ = backend;
+    }
+
+    #[test]
+    fn extract_json_plain() {
+        assert_eq!(extract_json_from_text("42"), "42");
+        assert_eq!(extract_json_from_text("{\"a\":1}"), "{\"a\":1}");
+        assert_eq!(extract_json_from_text("  true  "), "true");
+    }
+
+    #[test]
+    fn extract_json_with_preamble() {
+        assert_eq!(
+            extract_json_from_text("Here is the result:\n{\"score\": 42}"),
+            "{\"score\": 42}"
+        );
+    }
+
+    #[test]
+    fn extract_json_array_with_preamble() {
+        assert_eq!(
+            extract_json_from_text("The items are:\n[1, 2, 3]"),
+            "[1, 2, 3]"
+        );
     }
 }

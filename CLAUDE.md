@@ -48,7 +48,7 @@ Storage: AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (351)
+cargo test                     # Run all tests (358)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
@@ -75,6 +75,6 @@ cargo run -- log               # Show commit log
 
 ## Phase 3 Features (in progress)
 
-- **Pluggable LLM Backend:** `prompt` calls real LLM APIs via `ureq`. Config in `.agentis/config`. MockBackend (default) + HttpBackend (Anthropic API). Defensive JSON parsing with retry.
+- **Pluggable LLM Backend:** `prompt` calls real LLMs. Config in `.agentis/config`. Three backends: MockBackend (default), CliBackend (spawns `claude` CLI — flat-rate subscription), HttpBackend (per-token API). Defensive JSON parsing with retry.
 - **JSON Utility:** Hand-rolled JSON builder/parser (`json.rs`). Safe string escaping, no serde.
 - **Config System:** Simple `key = value` format in `.agentis/config`.
