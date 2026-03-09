@@ -8,8 +8,8 @@ Agentis is an AI-native programming language fused with a Version Control System
 
 ## Tech Stack
 
-- **Language:** Rust (`sha2` + `wasm-encoder` crates; `wasmparser` dev-only)
-- **No frameworks:** No SQLite, no Tokio, no serde — pure vanilla Rust
+- **Language:** Rust (`sha2` + `wasm-encoder` + `ureq` crates; `wasmparser` dev-only)
+- **No frameworks:** No Tokio, no serde — minimal sync Rust
 - **License:** MIT
 
 ## Architecture
@@ -23,6 +23,9 @@ src/
   typechecker.rs    # Static type checker (inference, structural typing)
   storage.rs        # SHA-256 content-addressed object store
   evaluator.rs      # Tree-walking interpreter + Cognitive Budget + OCap + collections
+  json.rs           # Minimal JSON builder/parser (no serde)
+  config.rs         # Config reader (.agentis/config, key = value format)
+  llm.rs            # Pluggable LLM backend (MockBackend + HttpBackend via ureq)
   compiler.rs       # WASM compiler backend (AST→WASM binary, CB metering)
   capabilities.rs   # Capability-Based Security (OCap) — unforgeable handles
   snapshot.rs       # Orthogonal Persistence — memory snapshots at transaction boundaries
@@ -38,14 +41,14 @@ Storage: AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 - **Genesis branch:** Default branch (never `main` or `master`)
 - **Cognitive Budget (CB):** Execution fuel — arithmetic=1, lookup=1, call=5, prompt=50. Exceeding raises `CognitiveOverload`
-- **AI-native constructs:** `agent` (isolated pure execution), `prompt` (typed LLM call, mock in Phase 1), `validate` (runtime predicates), `explore` (semantic branching)
+- **AI-native constructs:** `agent` (isolated pure execution), `prompt` (typed LLM call — pluggable backend, mock default), `validate` (runtime predicates), `explore` (semantic branching)
 - **Static types:** TypeScript-style with inference, structural typing, mandatory annotations on signatures
 
 ## Build & Run
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (301)
+cargo test                     # Run all tests (351)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
@@ -69,3 +72,9 @@ cargo run -- log               # Show commit log
 - **TCP P2P Sync:** Binary length-prefixed protocol. `sync_push_pull` (client), `sync_serve_once` (server).
 - **Collections:** `[1, 2, 3]` list literals, `map_of(k, v, ...)` builtin. `push`, `get`, `len` builtins.
 - **Static Type Checker:** Pre-evaluation type checking with inference. Reports as warnings.
+
+## Phase 3 Features (in progress)
+
+- **Pluggable LLM Backend:** `prompt` calls real LLM APIs via `ureq`. Config in `.agentis/config`. MockBackend (default) + HttpBackend (Anthropic API). Defensive JSON parsing with retry.
+- **JSON Utility:** Hand-rolled JSON builder/parser (`json.rs`). Safe string escaping, no serde.
+- **Config System:** Simple `key = value` format in `.agentis/config`.
