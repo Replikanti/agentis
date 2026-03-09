@@ -1,0 +1,4 @@
+Contact us at sales@acme.com or support@acme.com.
+For partnerships, reach out to partner@example.org.
+Bug reports go to bugs@dev.example.org.
+Our CEO can be reached at ceo@acme.com.

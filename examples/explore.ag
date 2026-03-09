@@ -1,0 +1,40 @@
+// explore.ag — Evolutionary branching.
+// explore forks execution: success creates a VCS branch, failure rolls back.
+// Run this, then check: agentis branch
+
+type Solution {
+    approach: string,
+    score: int
+}
+
+agent solver(problem: string) -> Solution {
+    cb 300;
+    let result = prompt("Propose a solution and rate it 1-100", problem) -> Solution;
+    validate result {
+        result.score > 0,
+        result.score <= 100
+    };
+    return result;
+}
+
+// Each explore block runs in isolation.
+// If validation passes -> branch is created.
+// If it fails -> silently rolled back, no side effects.
+
+explore "approach-a" {
+    let sol = solver("How to reduce latency in distributed systems?");
+    validate sol {
+        sol.score > 70
+    };
+    print("Approach A:", sol.approach, "Score:", sol.score);
+}
+
+explore "approach-b" {
+    let sol = solver("How to reduce latency in distributed systems?");
+    validate sol {
+        sol.score > 70
+    };
+    print("Approach B:", sol.approach, "Score:", sol.score);
+}
+
+// Check which branches survived: agentis branch

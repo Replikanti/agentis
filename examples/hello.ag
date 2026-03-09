@@ -1,0 +1,4 @@
+// hello.ag — Even "hello world" is a prompt.
+// There is no print("hello world"). The LLM generates the greeting.
+let greeting = prompt("Say hello to the world in a creative way", "world") -> string;
+print(greeting);

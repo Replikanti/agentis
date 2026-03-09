@@ -1,0 +1,5 @@
+// fast-demo.ag — Run this first: agentis go examples/fast-demo.ag
+// One prompt, tiny input, fast response. Under 8 seconds even on Ollama.
+cb 80;
+let mood = prompt("Respond with exactly one word describing a mood", "") -> string;
+print("Mood of the day:", mood);
