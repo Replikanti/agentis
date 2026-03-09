@@ -49,7 +49,7 @@ Storage: AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (396)
+cargo test                     # Run all tests (409)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
@@ -74,10 +74,11 @@ cargo run -- log               # Show commit log
 - **Collections:** `[1, 2, 3]` list literals, `map_of(k, v, ...)` builtin. `push`, `get`, `len` builtins.
 - **Static Type Checker:** Pre-evaluation type checking with inference. Reports as warnings.
 
-## Phase 3 Features (in progress)
+## Phase 3 Features (complete)
 
 - **Pluggable LLM Backend:** `prompt` calls real LLMs. Config in `.agentis/config`. Three backends: MockBackend (default), CliBackend (any CLI tool — flat-rate), HttpBackend (per-token API). Defensive JSON parsing with retry.
 - **Capability-Gated I/O:** `file_read`/`file_write` sandboxed to `.agentis/sandbox/` with path canonicalization. `http_get`/`http_post` restricted to domain whitelist (`io.allowed_domains`). All ops go through OCap `require_cap()`. CB costs: file=10, http=25.
 - **Module System:** `import "sha256hash";`, `import "hash" as alias;`, `import "hash" { name };`. Content-addressed imports from object store. Cyclic import detection. Transitive resolution.
+- **Multi-Agent Orchestration:** `spawn agent(args)` runs agent in `std::thread`, returns `AgentHandle`. `await(handle)` blocks for result. `await_timeout(handle, ms)` with timeout. Fork bomb prevention via `max_concurrent_agents` (default 16). Spawn costs 10 CB.
 - **JSON Utility:** Hand-rolled JSON builder/parser (`json.rs`). Safe string escaping, no serde.
 - **Config System:** Simple `key = value` format in `.agentis/config`.

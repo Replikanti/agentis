@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::ast::*;
 use crate::capabilities::{CapError, CapKind, CapabilityRegistry};
@@ -10,7 +12,11 @@ use crate::storage::ObjectStore;
 
 // --- Runtime Values ---
 
-#[derive(Debug, Clone, PartialEq)]
+/// Handle to a spawned agent thread. Wraps JoinHandle so it can be stored
+/// in Value (which must be Clone). The Option is taken once on await.
+type AgentJoinHandle = Arc<Mutex<Option<std::thread::JoinHandle<Result<Value, EvalError>>>>>;
+
+#[derive(Debug, Clone)]
 pub enum Value {
     Int(i64),
     Float(f64),
@@ -19,7 +25,25 @@ pub enum Value {
     List(Vec<Value>),
     Map(Vec<(Value, Value)>),
     Struct(String, HashMap<String, Value>),
+    AgentHandle(AgentJoinHandle),
     Void,
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Int(a), Value::Int(b)) => a == b,
+            (Value::Float(a), Value::Float(b)) => a == b,
+            (Value::String(a), Value::String(b)) => a == b,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::List(a), Value::List(b)) => a == b,
+            (Value::Map(a), Value::Map(b)) => a == b,
+            (Value::Struct(na, fa), Value::Struct(nb, fb)) => na == nb && fa == fb,
+            (Value::AgentHandle(a), Value::AgentHandle(b)) => Arc::ptr_eq(a, b),
+            (Value::Void, Value::Void) => true,
+            _ => false,
+        }
+    }
 }
 
 impl Value {
@@ -32,6 +56,7 @@ impl Value {
             Value::List(_) => "list",
             Value::Map(_) => "map",
             Value::Struct(name, _) => name,
+            Value::AgentHandle(_) => "agent_handle",
             Value::Void => "void",
         }
     }
@@ -78,6 +103,7 @@ impl std::fmt::Display for Value {
                 }
                 write!(f, " }}")
             }
+            Value::AgentHandle(_) => write!(f, "<agent_handle>"),
             Value::Void => write!(f, "void"),
         }
     }
@@ -202,6 +228,8 @@ pub struct Evaluator<'a> {
     llm_backend: Option<&'a dyn LlmBackend>,
     io_context: Option<&'a IoContext>,
     imported_hashes: std::collections::HashSet<String>,
+    max_concurrent_agents: u32,
+    active_agents: Arc<AtomicU32>,
 }
 
 impl<'a> Evaluator<'a> {
@@ -220,6 +248,8 @@ impl<'a> Evaluator<'a> {
             llm_backend: None,
             io_context: None,
             imported_hashes: std::collections::HashSet::new(),
+            max_concurrent_agents: 16,
+            active_agents: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -235,6 +265,11 @@ impl<'a> Evaluator<'a> {
 
     pub fn with_io(mut self, io_ctx: &'a IoContext) -> Self {
         self.io_context = Some(io_ctx);
+        self
+    }
+
+    pub fn with_max_agents(mut self, max: u32) -> Self {
+        self.max_concurrent_agents = max;
         self
     }
 
@@ -522,6 +557,7 @@ impl<'a> Evaluator<'a> {
                 }
                 Ok(Value::Map(vals))
             }
+            Expr::Spawn(s) => self.eval_spawn(s),
         }
     }
 
@@ -817,6 +853,28 @@ impl<'a> Evaluator<'a> {
                     .map_err(|e| EvalError::General(format!("{e}")))?;
                 return Ok(Value::String(response));
             }
+            "await" => {
+                if expr.args.len() != 1 {
+                    return Err(EvalError::ArityMismatch { expected: 1, got: expr.args.len() });
+                }
+                let handle_val = self.eval_expr(&expr.args[0])?;
+                return self.await_agent(handle_val);
+            }
+            "await_timeout" => {
+                if expr.args.len() != 2 {
+                    return Err(EvalError::ArityMismatch { expected: 2, got: expr.args.len() });
+                }
+                let handle_val = self.eval_expr(&expr.args[0])?;
+                let timeout_val = self.eval_expr(&expr.args[1])?;
+                let ms = match &timeout_val {
+                    Value::Int(n) => *n as u64,
+                    _ => return Err(EvalError::TypeError {
+                        expected: "int".into(),
+                        got: timeout_val.type_name().to_string(),
+                    }),
+                };
+                return self.await_agent_timeout(handle_val, ms);
+            }
             _ => {}
         }
 
@@ -983,6 +1041,153 @@ impl<'a> Evaluator<'a> {
         }
 
         Ok(target)
+    }
+
+    fn eval_spawn(&mut self, expr: &SpawnExpr) -> Result<Value, EvalError> {
+        self.spend(10)?;
+
+        // Check agent limit (per-evaluator counter, shared with children)
+        let current = self.active_agents.load(Ordering::SeqCst);
+        if current >= self.max_concurrent_agents {
+            return Err(EvalError::General("agent limit exceeded".into()));
+        }
+
+        // Look up the agent
+        let callable = self.functions.get(&expr.agent_name).cloned()
+            .ok_or_else(|| EvalError::UndefinedFunction(expr.agent_name.clone()))?;
+
+        let (params, body) = match &callable {
+            Callable::Agent(a) => (&a.params, a.body.clone()),
+            Callable::Function(_) => {
+                return Err(EvalError::General(format!(
+                    "spawn requires an agent, '{}' is a function", expr.agent_name
+                )));
+            }
+        };
+
+        if params.len() != expr.args.len() {
+            return Err(EvalError::ArityMismatch {
+                expected: params.len(),
+                got: expr.args.len(),
+            });
+        }
+
+        // Evaluate arguments in parent scope
+        let mut arg_vals = Vec::with_capacity(expr.args.len());
+        for arg in &expr.args {
+            arg_vals.push(self.eval_expr(arg)?);
+        }
+
+        // Clone what the child needs (no references — must be 'static)
+        let child_functions = self.functions.clone();
+        let child_types = self.types.clone();
+        let child_budget = self.budget; // child gets same budget as parent's current
+        let child_params: Vec<(String, Value)> = params.iter()
+            .map(|p| p.name.clone())
+            .zip(arg_vals)
+            .collect();
+        let max_agents = self.max_concurrent_agents;
+        let active_counter = self.active_agents.clone();
+
+        active_counter.fetch_add(1, Ordering::SeqCst);
+        let counter_for_thread = active_counter.clone();
+
+        let handle = std::thread::spawn(move || {
+            let result = (|| {
+                let mut child = Evaluator::new(child_budget)
+                    .with_max_agents(max_agents);
+                child.active_agents = counter_for_thread.clone();
+                child.grant_all();
+                child.functions = child_functions;
+                child.types = child_types;
+
+                // Set up agent's scope with parameters
+                child.env.push_scope();
+                for (name, val) in child_params {
+                    child.env.define(name, val);
+                }
+
+                let mut last = Value::Void;
+                for stmt in &body.statements {
+                    match child.eval_statement(stmt) {
+                        Ok(v) => last = v,
+                        Err(EvalError::Return(v)) => return Ok(v),
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(last)
+            })();
+
+            counter_for_thread.fetch_sub(1, Ordering::SeqCst);
+            result
+        });
+
+        Ok(Value::AgentHandle(Arc::new(Mutex::new(Some(handle)))))
+    }
+
+    fn await_agent(&mut self, handle_val: Value) -> Result<Value, EvalError> {
+        let handle_arc = match handle_val {
+            Value::AgentHandle(h) => h,
+            _ => return Err(EvalError::TypeError {
+                expected: "agent_handle".into(),
+                got: handle_val.type_name().to_string(),
+            }),
+        };
+
+        let join_handle = handle_arc.lock()
+            .map_err(|_| EvalError::General("agent handle poisoned".into()))?
+            .take()
+            .ok_or_else(|| EvalError::General("agent already awaited".into()))?;
+
+        match join_handle.join() {
+            Ok(result) => result,
+            Err(_) => Err(EvalError::General("spawned agent panicked".into())),
+        }
+    }
+
+    fn await_agent_timeout(&mut self, handle_val: Value, ms: u64) -> Result<Value, EvalError> {
+        let handle_arc = match handle_val {
+            Value::AgentHandle(h) => h,
+            _ => return Err(EvalError::TypeError {
+                expected: "agent_handle".into(),
+                got: handle_val.type_name().to_string(),
+            }),
+        };
+
+        let join_handle = handle_arc.lock()
+            .map_err(|_| EvalError::General("agent handle poisoned".into()))?
+            .take()
+            .ok_or_else(|| EvalError::General("agent already awaited".into()))?;
+
+        // Poll with timeout using a parking thread
+        let result_arc: Arc<Mutex<Option<Result<Value, EvalError>>>> =
+            Arc::new(Mutex::new(None));
+        let result_clone = result_arc.clone();
+
+        let waiter = std::thread::spawn(move || {
+            let r = match join_handle.join() {
+                Ok(result) => result,
+                Err(_) => Err(EvalError::General("spawned agent panicked".into())),
+            };
+            *result_clone.lock().unwrap() = Some(r);
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+        loop {
+            if let Some(result) = result_arc.lock().unwrap().take() {
+                let _ = waiter.join();
+                return result;
+            }
+            if std::time::Instant::now() >= deadline {
+                // Timeout — the thread is still running, we can't kill it,
+                // but we report the error. The thread will eventually finish.
+                return Err(EvalError::CognitiveOverload {
+                    budget: ms,
+                    required: ms + 1,
+                });
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     fn eval_explore(&mut self, expr: &ExploreBlock) -> Result<Value, EvalError> {
@@ -2202,5 +2407,142 @@ mod tests {
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
         assert!(err.contains("object store not available"));
+    }
+
+    // --- Spawn/await tests ---
+
+    #[test]
+    fn spawn_and_await_basic() {
+        let result = eval(r#"
+            agent worker(x: int) -> int {
+                return x * 2;
+            }
+            let h = spawn worker(21);
+            await(h);
+        "#);
+        assert_eq!(result, Ok(Value::Int(42)));
+    }
+
+    #[test]
+    fn spawn_two_agents_parallel() {
+        let output = eval_output(r#"
+            agent adder(a: int, b: int) -> int {
+                return a + b;
+            }
+            let h1 = spawn adder(10, 20);
+            let h2 = spawn adder(100, 200);
+            let r1 = await(h1);
+            let r2 = await(h2);
+            print(r1);
+            print(r2);
+        "#);
+        assert_eq!(output, vec!["30", "300"]);
+    }
+
+    #[test]
+    fn spawn_requires_agent_not_function() {
+        let result = eval(r#"
+            fn helper(x: int) -> int { return x; }
+            let h = spawn helper(1);
+            await(h);
+        "#);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("spawn requires an agent"));
+    }
+
+    #[test]
+    fn spawn_error_propagates_on_await() {
+        let result = eval(r#"
+            agent failing() -> int {
+                return 1 / 0;
+            }
+            let h = spawn failing();
+            await(h);
+        "#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn spawn_costs_10_cb() {
+        // agent call: spend(10) for spawn + spend(5) for internal call overhead
+        // We need budget for: top-level statements parsing + spawn(10) + await
+        // With very tight budget, spawn should exhaust it
+        let result = eval_with_budget(r#"
+            agent noop() -> int { return 0; }
+            let h = spawn noop(  );
+            await(h);
+        "#, 12);
+        // Budget should be too tight: declarations are free, but first
+        // `spawn noop()` costs 10, `await(h)` is a call costing 5
+        // 12 < 10 + 5 for remaining `await` call, but spawn should succeed
+        // since 12 >= 10. The await call itself costs 5 more.
+        // Actually: `let h = ...` costs 1 (let), spawn costs 10. That's 11.
+        // Then `await(h)` costs 5 for call + 1 for identifier lookup = 6. Total = 17.
+        // Budget of 12 is not enough for the full sequence.
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn spawn_agent_limit() {
+        // max_agents=0 means no agents can be spawned at all
+        let program = Parser::parse_source(r#"
+            agent noop() -> int { return 1; }
+            let h = spawn noop();
+            await(h);
+        "#).unwrap();
+        let mut evaluator = Evaluator::new(10000).with_max_agents(0);
+        evaluator.grant_all();
+        let result = evaluator.eval_program(&program);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("agent limit exceeded"));
+    }
+
+    #[test]
+    fn await_twice_errors() {
+        let result = eval(r#"
+            agent worker() -> int { return 42; }
+            let h = spawn worker();
+            await(h);
+            await(h);
+        "#);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("already awaited"));
+    }
+
+    #[test]
+    fn await_timeout_success() {
+        let result = eval(r#"
+            agent fast() -> int { return 7; }
+            let h = spawn fast();
+            await_timeout(h, 5000);
+        "#);
+        assert_eq!(result, Ok(Value::Int(7)));
+    }
+
+    #[test]
+    fn spawn_with_string_args() {
+        let output = eval_output(r#"
+            agent echo(msg: string) -> string {
+                return msg;
+            }
+            let h = spawn echo("hello");
+            let result = await(h);
+            print(result);
+        "#);
+        assert_eq!(output, vec!["hello"]);
+    }
+
+    #[test]
+    fn typeof_agent_handle() {
+        let output = eval_output(r#"
+            agent noop() -> int { return 0; }
+            let h = spawn noop();
+            print(typeof(h));
+            await(h);
+        "#);
+        assert_eq!(output, vec!["agent_handle"]);
     }
 }

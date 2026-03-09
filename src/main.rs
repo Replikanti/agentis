@@ -179,11 +179,13 @@ fn cmd_run(branch: &str) -> Result<(), AgentisError> {
         .map_err(|e| AgentisError::General(format!("{e}")))?;
     let io_ctx = io::IoContext::new(&agentis_root(), &cfg);
 
+    let max_agents = cfg.get_u64("max_concurrent_agents", 16) as u32;
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
         .with_vcs(&store, &refs)
         .with_persistence(&store)
         .with_llm(llm_backend.as_ref())
-        .with_io(&io_ctx);
+        .with_io(&io_ctx)
+        .with_max_agents(max_agents);
     evaluator.grant_all();
     match evaluator.eval_program(&program) {
         Ok(_) => {

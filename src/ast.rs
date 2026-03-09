@@ -155,6 +155,13 @@ pub enum Expr {
     FieldAccess(Box<FieldAccessExpr>),
     ListLiteral(Vec<Expr>),
     MapLiteral(Vec<(Expr, Expr)>),
+    Spawn(Box<SpawnExpr>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpawnExpr {
+    pub agent_name: String,
+    pub args: Vec<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -570,6 +577,7 @@ const TAG_EXPR_EXPLORE: u8 = 0x5B;
 const TAG_EXPR_FIELD_ACCESS: u8 = 0x5C;
 const TAG_EXPR_LIST: u8 = 0x5D;
 const TAG_EXPR_MAP: u8 = 0x5E;
+const TAG_EXPR_SPAWN: u8 = 0x5F;
 
 impl Expr {
     fn write(&self, w: &mut Writer) {
@@ -660,6 +668,14 @@ impl Expr {
                     v.write(w);
                 }
             }
+            Expr::Spawn(spawn) => {
+                w.write_u8(TAG_EXPR_SPAWN);
+                w.write_str(&spawn.agent_name);
+                w.write_u16(spawn.args.len() as u16);
+                for arg in &spawn.args {
+                    arg.write(w);
+                }
+            }
         }
     }
 
@@ -739,6 +755,15 @@ impl Expr {
                     entries.push((k, v));
                 }
                 Ok(Expr::MapLiteral(entries))
+            }
+            TAG_EXPR_SPAWN => {
+                let agent_name = r.read_str()?;
+                let arg_count = r.read_u16()? as usize;
+                let mut args = Vec::with_capacity(arg_count);
+                for _ in 0..arg_count {
+                    args.push(Expr::read(r)?);
+                }
+                Ok(Expr::Spawn(Box::new(SpawnExpr { agent_name, args })))
             }
             _ => Err(SerError(format!("unknown expr tag: 0x{tag:02X}"))),
         }
@@ -1618,5 +1643,13 @@ mod tests {
         let bytes = program.to_bytes();
         let restored = Program::from_bytes(&bytes).unwrap();
         assert_eq!(program, restored);
+    }
+
+    #[test]
+    fn serialize_spawn_expr() {
+        round_trip(&Expr::Spawn(Box::new(SpawnExpr {
+            agent_name: "worker".into(),
+            args: vec![Expr::IntLiteral(42), Expr::StringLiteral("hello".into())],
+        })));
     }
 }

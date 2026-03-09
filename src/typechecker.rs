@@ -352,6 +352,12 @@ impl TypeChecker {
             Expr::Prompt(p) => self.env.resolve_annotation(&p.return_type),
             Expr::Validate(v) => self.infer_expr(&v.target),
             Expr::Explore(_) => Type::Void,
+            Expr::Spawn(s) => {
+                for arg in &s.args {
+                    self.infer_expr(arg);
+                }
+                Type::Any // agent handle
+            }
         }
     }
 

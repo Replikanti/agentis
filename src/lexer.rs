@@ -19,6 +19,7 @@ pub enum Token {
     Cb,
     Import,
     As,
+    Spawn,
 
     // Type keywords
     Int,
@@ -289,6 +290,7 @@ impl Lexer {
             "cb" => Token::Cb,
             "import" => Token::Import,
             "as" => Token::As,
+            "spawn" => Token::Spawn,
             // Type keywords
             "int" => Token::Int,
             "float" => Token::Float,
