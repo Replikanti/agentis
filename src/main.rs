@@ -95,6 +95,7 @@ fn main() {
             let addr = args.get(2).map(|s| s.as_str()).unwrap_or("0.0.0.0:9461");
             cmd_serve(addr)
         }
+        "audit" => cmd_audit(&args[2..]),
         "log" => {
             let branch = args.get(2).map(|s| s.as_str());
             cmd_log(branch)
@@ -131,6 +132,7 @@ fn print_usage() {
     eprintln!("  sync <host:port>     Sync objects with a remote peer");
     eprintln!("  serve [addr:port]    Listen for incoming sync connections");
     eprintln!("  log [branch]         Show commit log for a branch");
+    eprintln!("  audit [flags]        Show prompt audit log");
     eprintln!("  version              Show version");
 }
 
@@ -535,4 +537,186 @@ fn cmd_log(branch: Option<&str>) -> Result<(), AgentisError> {
         }
     }
     Ok(())
+}
+
+fn cmd_audit(args: &[String]) -> Result<(), AgentisError> {
+    let root = agentis_root();
+    let audit_path = root.join("audit").join("prompts.jsonl");
+
+    if !audit_path.exists() {
+        eprintln!("No audit log found. Enable auditing by creating .agentis/audit/ directory.");
+        eprintln!("  mkdir -p .agentis/audit");
+        eprintln!("  (or use 'agentis init --secure')");
+        return Ok(());
+    }
+
+    // Parse flags
+    let mut last_n: usize = 50;
+    let mut pii_only = false;
+    let mut blocked_only = false;
+    let mut agent_filter: Option<String> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--last" => {
+                i += 1;
+                if i < args.len() {
+                    last_n = args[i].parse().unwrap_or(50);
+                }
+            }
+            "--pii-only" => pii_only = true,
+            "--blocked" => blocked_only = true,
+            "--agent" => {
+                i += 1;
+                if i < args.len() {
+                    agent_filter = Some(args[i].clone());
+                }
+            }
+            "--help" => {
+                eprintln!("Usage: agentis audit [flags]");
+                eprintln!();
+                eprintln!("Flags:");
+                eprintln!("  --last N        Show last N entries (default: 50)");
+                eprintln!("  --pii-only      Only show entries with PII detected");
+                eprintln!("  --agent <name>  Filter by agent name");
+                eprintln!("  --blocked       Only show blocked entries (PiiTransmit denied)");
+                return Ok(());
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let content = std::fs::read_to_string(&audit_path)?;
+    let lines: Vec<&str> = content.lines().collect();
+
+    if lines.is_empty() {
+        println!("Audit log is empty.");
+        return Ok(());
+    }
+
+    // Parse and filter
+    let mut entries: Vec<AuditEntry> = Vec::new();
+    for line in &lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(val) = json::parse(line) {
+            let entry = AuditEntry::from_json(&val);
+
+            // Apply filters
+            if pii_only && entry.pii_scan == "clean" {
+                continue;
+            }
+            if blocked_only && entry.pii_transmit_granted {
+                continue;
+            }
+            if blocked_only && entry.pii_scan == "clean" {
+                continue;
+            }
+            if let Some(ref agent) = agent_filter {
+                if entry.agent != *agent {
+                    continue;
+                }
+            }
+
+            entries.push(entry);
+        }
+    }
+
+    // Take last N
+    let start = if entries.len() > last_n { entries.len() - last_n } else { 0 };
+    let entries = &entries[start..];
+
+    if entries.is_empty() {
+        println!("No matching audit entries.");
+        return Ok(());
+    }
+
+    // Print table header
+    println!("{:<12} {:<16} {:<18} {:<10} {}",
+        "TIME", "AGENT", "PII", "STATUS", "BACKEND");
+
+    for entry in entries {
+        let time_str = format_unix_time(entry.ts);
+        let agent = if entry.agent.len() > 14 {
+            format!("{}...", &entry.agent[..11])
+        } else {
+            entry.agent.clone()
+        };
+        let pii = if entry.pii_scan == "clean" {
+            "clean".to_string()
+        } else {
+            entry.pii_types.join(",")
+        };
+        let pii_display = if pii.len() > 16 {
+            format!("{}...", &pii[..13])
+        } else {
+            pii
+        };
+        let status = if entry.pii_scan == "clean" {
+            "\u{2014}".to_string() // em-dash
+        } else if entry.pii_transmit_granted {
+            "GRANTED".to_string()
+        } else {
+            "BLOCKED".to_string()
+        };
+        let backend = if entry.backend.is_empty() && entry.model.is_empty() {
+            "\u{2014}".to_string()
+        } else if entry.model.is_empty() {
+            entry.backend.clone()
+        } else {
+            format!("{}/{}", entry.backend, entry.model)
+        };
+
+        println!("{:<12} {:<16} {:<18} {:<10} {}",
+            time_str, agent, pii_display, status, backend);
+    }
+
+    println!("\n({} entries shown)", entries.len());
+    Ok(())
+}
+
+struct AuditEntry {
+    ts: i64,
+    agent: String,
+    pii_scan: String,
+    pii_types: Vec<String>,
+    pii_transmit_granted: bool,
+    backend: String,
+    model: String,
+}
+
+impl AuditEntry {
+    fn from_json(val: &json::JsonValue) -> Self {
+        Self {
+            ts: val.get("ts").and_then(|v| v.as_i64()).unwrap_or(0),
+            agent: val.get("agent").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
+            pii_scan: val.get("pii_scan").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
+            pii_types: val.get("pii_types")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect())
+                .unwrap_or_default(),
+            pii_transmit_granted: val.get("pii_transmit_granted")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            backend: val.get("backend").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            model: val.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        }
+    }
+}
+
+fn format_unix_time(ts: i64) -> String {
+    if ts == 0 {
+        return "?".to_string();
+    }
+    // Convert to HH:MM:SS — simple manual conversion (no chrono dependency)
+    let secs_in_day = ts % 86400;
+    let hours = secs_in_day / 3600;
+    let mins = (secs_in_day % 3600) / 60;
+    let secs = secs_in_day % 60;
+    format!("{hours:02}:{mins:02}:{secs:02}")
 }
