@@ -28,10 +28,13 @@ src/
   llm.rs            # Pluggable LLM backend (MockBackend + CliBackend + HttpBackend)
   io.rs             # Capability-gated I/O (sandboxed file ops + whitelisted HTTP)
   compiler.rs       # WASM compiler backend (AST→WASM binary, CB metering)
-  capabilities.rs   # Capability-Based Security (OCap) — unforgeable handles
+  capabilities.rs   # Capability-Based Security (OCap) — unforgeable handles + PiiTransmit
   snapshot.rs       # Orthogonal Persistence — memory snapshots at transaction boundaries
   network.rs        # Raw TCP P2P sync (binary HAVE/WANT/DATA/DONE protocol)
   refs.rs           # Branch/reference management (genesis-first)
+  pii.rs            # Internal PII scanner (guard, not builtin — never exposed to .ag code)
+  audit.rs          # JSONL audit log for prompt() calls (.agentis/audit/prompts.jsonl)
+  trace.rs          # Runtime tracing (quiet/normal/verbose)
   error.rs          # Unified AgentisError type
 ```
 
@@ -49,7 +52,7 @@ Storage: AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (409)
+cargo test                     # Run all tests (465)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
@@ -82,3 +85,9 @@ cargo run -- log               # Show commit log
 - **Multi-Agent Orchestration:** `spawn agent(args)` runs agent in `std::thread`, returns `AgentHandle`. `await(handle)` blocks for result. `await_timeout(handle, ms)` with timeout. Fork bomb prevention via `max_concurrent_agents` (default 16). Spawn costs 10 CB.
 - **JSON Utility:** Hand-rolled JSON builder/parser (`json.rs`). Safe string escaping, no serde.
 - **Config System:** Simple `key = value` format in `.agentis/config`.
+
+## Phase 5 Features (Data Guardians — in progress)
+
+- **PiiTransmit Capability:** New `CapKind::PiiTransmit` excluded from `grant_all()`. Must be explicitly granted via `--grant-pii` CLI flag or `pii_transmit = allow` in config.
+- **Internal PII Guard:** `pii.rs` scans prompt inputs for email, phone, credit card, Czech birth number, IBAN, IPv4, SSN. Blocks prompt if PII detected without PiiTransmit. Zero CB cost.
+- **Audit Log:** Every `prompt()` call logged to `.agentis/audit/prompts.jsonl` (JSONL). Fields: timestamp, agent name, instruction/input hashes, PII scan result, capability status, backend. Opt-in: enabled when `.agentis/audit/` directory exists. Uses `json.rs`, no new dependencies.

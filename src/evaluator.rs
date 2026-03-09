@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::ast::*;
+use crate::audit::AuditLog;
 use crate::capabilities::{CapError, CapKind, CapabilityRegistry};
 use crate::io::IoContext;
 use crate::llm::LlmBackend;
@@ -251,6 +252,8 @@ pub struct Evaluator<'a> {
     llm_backend: Option<&'a dyn LlmBackend>,
     io_context: Option<&'a IoContext>,
     tracer: Option<&'a Tracer>,
+    audit: Option<&'a AuditLog>,
+    current_agent_name: Option<String>,
     imported_hashes: std::collections::HashSet<String>,
     max_concurrent_agents: u32,
     active_agents: Arc<AtomicU32>,
@@ -274,6 +277,8 @@ impl<'a> Evaluator<'a> {
             llm_backend: None,
             io_context: None,
             tracer: None,
+            audit: None,
+            current_agent_name: None,
             imported_hashes: std::collections::HashSet::new(),
             max_concurrent_agents: 16,
             active_agents: Arc::new(AtomicU32::new(0)),
@@ -303,6 +308,11 @@ impl<'a> Evaluator<'a> {
 
     pub fn with_tracer(mut self, tracer: &'a Tracer) -> Self {
         self.tracer = Some(tracer);
+        self
+    }
+
+    pub fn with_audit(mut self, audit: &'a AuditLog) -> Self {
+        self.audit = Some(audit);
         self
     }
 
@@ -946,6 +956,13 @@ impl<'a> Evaluator<'a> {
 
         // Save state for agents (isolated scope)
         let saved_env = if is_agent { Some(self.env.clone()) } else { None };
+        let saved_agent_name = if is_agent {
+            let prev = self.current_agent_name.take();
+            self.current_agent_name = Some(expr.callee.clone());
+            Some(prev)
+        } else {
+            None
+        };
 
         // Set up call scope
         self.env.push_scope();
@@ -964,6 +981,9 @@ impl<'a> Evaluator<'a> {
                 if let Some(env) = saved_env {
                     self.env = env;
                 }
+                if let Some(prev) = saved_agent_name {
+                    self.current_agent_name = prev;
+                }
                 return Err(e.with_context(format!("{kind} \"{callee_name}\"")));
             }
         };
@@ -976,6 +996,9 @@ impl<'a> Evaluator<'a> {
                 t.agent_exited(&expr.callee, result.type_name());
             }
             self.env = env;
+        }
+        if let Some(prev) = saved_agent_name {
+            self.current_agent_name = prev;
         }
 
         Ok(result)
@@ -1030,17 +1053,25 @@ impl<'a> Evaluator<'a> {
 
         // PII guard: scan input, block if PII detected without PiiTransmit
         let pii_result = crate::pii::scan(&input_str);
-        if !pii_result.is_clean() {
-            let has_pii_cap = self.require_cap(CapKind::PiiTransmit).is_ok();
+        let has_pii_cap = if !pii_result.is_clean() {
+            let granted = self.require_cap(CapKind::PiiTransmit).is_ok();
             if let Some(t) = &self.tracer {
-                t.pii_scan_result(&pii_result.types_str(), has_pii_cap);
+                t.pii_scan_result(&pii_result.types_str(), granted);
             }
-            if !has_pii_cap {
+            if !granted {
+                // Audit the blocked prompt before returning error
+                self.audit_prompt(&expr.instruction, &input_str, &pii_result, false);
                 return Err(EvalError::CapabilityDenied(
                     crate::capabilities::CapError::MissingCapability(CapKind::PiiTransmit),
                 ));
             }
-        }
+            true
+        } else {
+            false
+        };
+
+        // Audit the prompt call (successful — not blocked)
+        self.audit_prompt(&expr.instruction, &input_str, &pii_result, has_pii_cap);
 
         // Collect type field info for user-defined types
         let type_fields = self.collect_type_fields(&expr.return_type);
@@ -1087,6 +1118,31 @@ impl<'a> Evaluator<'a> {
         }
 
         result
+    }
+
+    fn audit_prompt(
+        &self,
+        instruction: &str,
+        input: &str,
+        pii_result: &crate::pii::PiiScanResult,
+        pii_transmit_granted: bool,
+    ) {
+        if let Some(audit) = self.audit {
+            let backend: &dyn LlmBackend = match self.llm_backend {
+                Some(b) => b,
+                None => &crate::llm::MockBackend,
+            };
+            let entry = crate::audit::PromptAuditEntry {
+                agent_name: self.current_agent_name.as_deref(),
+                instruction,
+                input,
+                pii_result,
+                pii_transmit_granted,
+                backend_name: backend.name(),
+                model: "",
+            };
+            audit.log_prompt(&entry);
+        }
     }
 
     /// Call LLM backend with a "still waiting" timer on a background thread.
@@ -2865,5 +2921,100 @@ mod tests {
         let mut ev = Evaluator::new(1000);
         ev.grant_all();
         assert!(ev.require_cap(CapKind::PiiTransmit).is_err());
+    }
+
+    #[test]
+    fn audit_log_records_clean_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join("audit")).unwrap();
+        let audit = crate::audit::AuditLog::open(&root).unwrap();
+
+        let program = Parser::parse_source(
+            r#"let x = prompt("summarize", "hello world") -> string;"#
+        ).unwrap();
+        let mut ev = Evaluator::new(1000).with_audit(&audit);
+        ev.grant_all();
+        ev.eval_program(&program).unwrap();
+        drop(audit);
+
+        let content = std::fs::read_to_string(root.join("audit/prompts.jsonl")).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let parsed = crate::json::parse(lines[0]).unwrap();
+        assert_eq!(parsed.get("pii_scan").unwrap().as_str(), Some("clean"));
+        assert_eq!(parsed.get("backend").unwrap().as_str(), Some("mock"));
+    }
+
+    #[test]
+    fn audit_log_records_blocked_pii_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join("audit")).unwrap();
+        let audit = crate::audit::AuditLog::open(&root).unwrap();
+
+        let program = Parser::parse_source(
+            r#"let x = prompt("analyze", "contact user@example.com") -> string;"#
+        ).unwrap();
+        let mut ev = Evaluator::new(1000).with_audit(&audit);
+        ev.grant_all();
+        let result = ev.eval_program(&program);
+        assert!(result.is_err());
+        drop(audit);
+
+        let content = std::fs::read_to_string(root.join("audit/prompts.jsonl")).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let parsed = crate::json::parse(lines[0]).unwrap();
+        assert_eq!(parsed.get("pii_scan").unwrap().as_str(), Some("detected"));
+        assert_eq!(parsed.get("pii_transmit_granted").unwrap().as_bool(), Some(false));
+    }
+
+    #[test]
+    fn audit_log_records_granted_pii_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join("audit")).unwrap();
+        let audit = crate::audit::AuditLog::open(&root).unwrap();
+
+        let program = Parser::parse_source(
+            r#"let x = prompt("analyze", "contact user@example.com") -> string;"#
+        ).unwrap();
+        let mut ev = Evaluator::new(1000).with_audit(&audit);
+        ev.grant_all();
+        ev.grant(CapKind::PiiTransmit);
+        ev.eval_program(&program).unwrap();
+        drop(audit);
+
+        let content = std::fs::read_to_string(root.join("audit/prompts.jsonl")).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let parsed = crate::json::parse(lines[0]).unwrap();
+        assert_eq!(parsed.get("pii_scan").unwrap().as_str(), Some("detected"));
+        assert_eq!(parsed.get("pii_transmit_granted").unwrap().as_bool(), Some(true));
+    }
+
+    #[test]
+    fn audit_log_tracks_agent_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join("audit")).unwrap();
+        let audit = crate::audit::AuditLog::open(&root).unwrap();
+
+        let program = Parser::parse_source(r#"
+            agent worker(data: string) -> string {
+                cb 100;
+                return prompt("summarize", data) -> string;
+            }
+            let result = worker("hello");
+        "#).unwrap();
+        let mut ev = Evaluator::new(1000).with_audit(&audit);
+        ev.grant_all();
+        ev.eval_program(&program).unwrap();
+        drop(audit);
+
+        let content = std::fs::read_to_string(root.join("audit/prompts.jsonl")).unwrap();
+        let parsed = crate::json::parse(content.trim()).unwrap();
+        assert_eq!(parsed.get("agent").unwrap().as_str(), Some("worker"));
     }
 }
