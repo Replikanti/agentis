@@ -117,7 +117,6 @@ pub enum EvalError {
     ValidationFailed { predicate_index: usize, detail: String },
     UndefinedVariable(String),
     UndefinedFunction(String),
-    UndefinedType(String),
     UndefinedField { type_name: String, field: String },
     TypeError { expected: String, got: String },
     DivisionByZero,
@@ -139,7 +138,6 @@ impl std::fmt::Display for EvalError {
             }
             EvalError::UndefinedVariable(name) => write!(f, "undefined variable: {name}"),
             EvalError::UndefinedFunction(name) => write!(f, "undefined function: {name}"),
-            EvalError::UndefinedType(name) => write!(f, "undefined type: {name}"),
             EvalError::UndefinedField { type_name, field } => {
                 write!(f, "undefined field '{field}' on type '{type_name}'")
             }
