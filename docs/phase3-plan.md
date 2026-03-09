@@ -41,7 +41,7 @@ no wasmer, no wasmi). Therefore:
 ## Milestones
 
 - [x] M11: Pluggable LLM Backend (prompt stops being a mock)
-- [ ] M12: Capability-Gated I/O (real file read/write + HTTP via OCap)
+- [x] M12: Capability-Gated I/O (real file read/write + HTTP via OCap)
 - [ ] M13: Module System (import/export across Agentis repositories)
 - [ ] M14: Multi-Agent Orchestration (message passing, parallel agents)
 

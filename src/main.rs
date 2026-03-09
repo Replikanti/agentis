@@ -4,6 +4,7 @@ mod compiler;
 mod config;
 mod error;
 mod evaluator;
+mod io;
 mod json;
 mod lexer;
 mod llm;
@@ -172,15 +173,17 @@ fn cmd_run(branch: &str) -> Result<(), AgentisError> {
         eprintln!("warning: {err}");
     }
 
-    // Load LLM backend from config
+    // Load config, LLM backend, and I/O context
     let cfg = config::Config::load(&agentis_root());
     let llm_backend = llm::create_backend(&cfg)
         .map_err(|e| AgentisError::General(format!("{e}")))?;
+    let io_ctx = io::IoContext::new(&agentis_root(), &cfg);
 
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
         .with_vcs(&store, &refs)
         .with_persistence(&store)
-        .with_llm(llm_backend.as_ref());
+        .with_llm(llm_backend.as_ref())
+        .with_io(&io_ctx);
     evaluator.grant_all();
     match evaluator.eval_program(&program) {
         Ok(_) => {

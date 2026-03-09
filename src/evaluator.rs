@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::ast::*;
 use crate::capabilities::{CapError, CapKind, CapabilityRegistry};
+use crate::io::IoContext;
 use crate::llm::LlmBackend;
 use crate::refs::Refs;
 use crate::snapshot::{MemorySnapshot, SnapshotManager};
@@ -199,6 +200,7 @@ pub struct Evaluator<'a> {
     caps: HashMap<CapKind, Vec<crate::capabilities::CapHandle>>,
     snapshot_mgr: Option<SnapshotManager<'a>>,
     llm_backend: Option<&'a dyn LlmBackend>,
+    io_context: Option<&'a IoContext>,
 }
 
 impl<'a> Evaluator<'a> {
@@ -215,6 +217,7 @@ impl<'a> Evaluator<'a> {
             caps: HashMap::new(),
             snapshot_mgr: None,
             llm_backend: None,
+            io_context: None,
         }
     }
 
@@ -225,6 +228,11 @@ impl<'a> Evaluator<'a> {
 
     pub fn with_llm(mut self, backend: &'a dyn LlmBackend) -> Self {
         self.llm_backend = Some(backend);
+        self
+    }
+
+    pub fn with_io(mut self, io_ctx: &'a IoContext) -> Self {
+        self.io_context = Some(io_ctx);
         self
     }
 
@@ -622,6 +630,97 @@ impl<'a> Evaluator<'a> {
                 }
                 let val = self.eval_expr(&expr.args[0])?;
                 return Ok(Value::String(val.type_name().to_string()));
+            }
+            "file_read" => {
+                self.require_cap(CapKind::FileRead)?;
+                self.spend(10)?;
+                if expr.args.len() != 1 {
+                    return Err(EvalError::ArityMismatch { expected: 1, got: expr.args.len() });
+                }
+                let path = self.eval_expr(&expr.args[0])?;
+                let path_str = match &path {
+                    Value::String(s) => s.as_str(),
+                    _ => return Err(EvalError::TypeError {
+                        expected: "string".into(),
+                        got: path.type_name().to_string(),
+                    }),
+                };
+                let io = self.io_context.ok_or_else(|| {
+                    EvalError::General("I/O not configured".into())
+                })?;
+                let content = io.file_read(path_str)
+                    .map_err(|e| EvalError::General(format!("{e}")))?;
+                return Ok(Value::String(content));
+            }
+            "file_write" => {
+                self.require_cap(CapKind::FileWrite)?;
+                self.spend(10)?;
+                if expr.args.len() != 2 {
+                    return Err(EvalError::ArityMismatch { expected: 2, got: expr.args.len() });
+                }
+                let path = self.eval_expr(&expr.args[0])?;
+                let content = self.eval_expr(&expr.args[1])?;
+                let path_str = match &path {
+                    Value::String(s) => s.as_str(),
+                    _ => return Err(EvalError::TypeError {
+                        expected: "string".into(),
+                        got: path.type_name().to_string(),
+                    }),
+                };
+                let content_str = format!("{content}");
+                let io = self.io_context.ok_or_else(|| {
+                    EvalError::General("I/O not configured".into())
+                })?;
+                io.file_write(path_str, &content_str)
+                    .map_err(|e| EvalError::General(format!("{e}")))?;
+                return Ok(Value::Void);
+            }
+            "http_get" => {
+                self.require_cap(CapKind::NetConnect)?;
+                self.spend(25)?;
+                if expr.args.len() != 1 {
+                    return Err(EvalError::ArityMismatch { expected: 1, got: expr.args.len() });
+                }
+                let url = self.eval_expr(&expr.args[0])?;
+                let url_str = match &url {
+                    Value::String(s) => s.as_str(),
+                    _ => return Err(EvalError::TypeError {
+                        expected: "string".into(),
+                        got: url.type_name().to_string(),
+                    }),
+                };
+                let io = self.io_context.ok_or_else(|| {
+                    EvalError::General("I/O not configured".into())
+                })?;
+                let body = io.http_get(url_str)
+                    .map_err(|e| EvalError::General(format!("{e}")))?;
+                return Ok(Value::String(body));
+            }
+            "http_post" => {
+                self.require_cap(CapKind::NetConnect)?;
+                self.spend(25)?;
+                if expr.args.len() != 2 {
+                    return Err(EvalError::ArityMismatch { expected: 2, got: expr.args.len() });
+                }
+                let url = self.eval_expr(&expr.args[0])?;
+                let body = self.eval_expr(&expr.args[1])?;
+                let url_str = match &url {
+                    Value::String(s) => s.as_str(),
+                    _ => return Err(EvalError::TypeError {
+                        expected: "string".into(),
+                        got: url.type_name().to_string(),
+                    }),
+                };
+                let body_str = match &body {
+                    Value::String(s) => s.clone(),
+                    _ => format!("{body}"),
+                };
+                let io = self.io_context.ok_or_else(|| {
+                    EvalError::General("I/O not configured".into())
+                })?;
+                let response = io.http_post(url_str, &body_str)
+                    .map_err(|e| EvalError::General(format!("{e}")))?;
+                return Ok(Value::String(response));
             }
             _ => {}
         }
@@ -1683,5 +1782,137 @@ mod tests {
                 (Value::String("a".into()), Value::Int(1)),
             ]))
         }));
+    }
+
+    // --- I/O builtins ---
+
+    fn eval_with_io(source: &str, io_ctx: &IoContext) -> Result<Value, EvalError> {
+        let program = Parser::parse_source(source).unwrap();
+        let mut evaluator = Evaluator::new(10000).with_io(io_ctx);
+        evaluator.grant_all();
+        evaluator.eval_program(&program)
+    }
+
+    fn eval_with_io_output(source: &str, io_ctx: &IoContext) -> Vec<String> {
+        let program = Parser::parse_source(source).unwrap();
+        let mut evaluator = Evaluator::new(10000).with_io(io_ctx);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+        evaluator.output().to_vec()
+    }
+
+    fn test_io_context() -> (crate::storage::tempfile::TempDir, IoContext) {
+        let dir = crate::storage::tempfile::tempdir().unwrap();
+        let agentis_root = dir.path().join(".agentis");
+        std::fs::create_dir_all(agentis_root.join("sandbox")).unwrap();
+        let config = crate::config::Config::parse("");
+        let ctx = IoContext::new(&agentis_root, &config);
+        (dir, ctx)
+    }
+
+    #[test]
+    fn io_file_write_and_read() {
+        let (_dir, io) = test_io_context();
+        let output = eval_with_io_output(
+            r#"file_write("test.txt", "hello");
+               let content = file_read("test.txt");
+               print(content);"#,
+            &io,
+        );
+        assert_eq!(output, vec!["hello"]);
+    }
+
+    #[test]
+    fn io_file_read_nonexistent() {
+        let (_dir, io) = test_io_context();
+        let result = eval_with_io(r#"file_read("nope.txt");"#, &io);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn io_file_write_subdirectory() {
+        let (_dir, io) = test_io_context();
+        let output = eval_with_io_output(
+            r#"file_write("sub/data.txt", "nested");
+               print(file_read("sub/data.txt"));"#,
+            &io,
+        );
+        assert_eq!(output, vec!["nested"]);
+    }
+
+    #[test]
+    fn io_path_traversal_blocked() {
+        let (_dir, io) = test_io_context();
+        let result = eval_with_io(r#"file_write("../../escape.txt", "evil");"#, &io);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("path outside sandbox"));
+    }
+
+    #[test]
+    fn io_file_read_requires_cap() {
+        let (_dir, io) = test_io_context();
+        let program = Parser::parse_source(r#"file_read("test.txt");"#).unwrap();
+        let mut evaluator = Evaluator::new(10000).with_io(&io);
+        // Grant all EXCEPT FileRead
+        evaluator.grant(CapKind::Stdout);
+        evaluator.grant(CapKind::FileWrite);
+        let result = evaluator.eval_program(&program);
+        assert!(matches!(result, Err(EvalError::CapabilityDenied(_))));
+    }
+
+    #[test]
+    fn io_file_write_requires_cap() {
+        let (_dir, io) = test_io_context();
+        let program = Parser::parse_source(r#"file_write("test.txt", "x");"#).unwrap();
+        let mut evaluator = Evaluator::new(10000).with_io(&io);
+        evaluator.grant(CapKind::Stdout);
+        evaluator.grant(CapKind::FileRead);
+        let result = evaluator.eval_program(&program);
+        assert!(matches!(result, Err(EvalError::CapabilityDenied(_))));
+    }
+
+    #[test]
+    fn io_file_read_costs_10_cb() {
+        let (_dir, io) = test_io_context();
+        // file_write costs 5 (call) + 10 (io) = 15, file_read costs 5+10 = 15
+        // Total: 30. Budget of 25 should fail on the read.
+        let program = Parser::parse_source(
+            r#"file_write("x.txt", "y"); file_read("x.txt");"#
+        ).unwrap();
+        let mut evaluator = Evaluator::new(25).with_io(&io);
+        evaluator.grant_all();
+        let result = evaluator.eval_program(&program);
+        assert!(matches!(result, Err(EvalError::CognitiveOverload { .. })));
+    }
+
+    #[test]
+    fn io_http_get_requires_cap() {
+        let (_dir, io) = test_io_context();
+        let program = Parser::parse_source(r#"http_get("https://example.com");"#).unwrap();
+        let mut evaluator = Evaluator::new(10000).with_io(&io);
+        evaluator.grant(CapKind::Stdout);
+        // No NetConnect granted
+        let result = evaluator.eval_program(&program);
+        assert!(matches!(result, Err(EvalError::CapabilityDenied(_))));
+    }
+
+    #[test]
+    fn io_http_get_domain_not_whitelisted() {
+        let (_dir, io) = test_io_context();
+        // io has empty whitelist by default
+        let result = eval_with_io(r#"http_get("https://example.com");"#, &io);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("domain not whitelisted") || err.contains("no domains whitelisted"));
+    }
+
+    #[test]
+    fn io_without_context_errors() {
+        // No I/O context configured — should get clear error
+        let result = eval(r#"file_read("test.txt");"#);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("I/O not configured"));
     }
 }

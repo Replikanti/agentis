@@ -25,7 +25,8 @@ src/
   evaluator.rs      # Tree-walking interpreter + Cognitive Budget + OCap + collections
   json.rs           # Minimal JSON builder/parser (no serde)
   config.rs         # Config reader (.agentis/config, key = value format)
-  llm.rs            # Pluggable LLM backend (MockBackend + HttpBackend via ureq)
+  llm.rs            # Pluggable LLM backend (MockBackend + CliBackend + HttpBackend)
+  io.rs             # Capability-gated I/O (sandboxed file ops + whitelisted HTTP)
   compiler.rs       # WASM compiler backend (AST→WASM binary, CB metering)
   capabilities.rs   # Capability-Based Security (OCap) — unforgeable handles
   snapshot.rs       # Orthogonal Persistence — memory snapshots at transaction boundaries
@@ -48,7 +49,7 @@ Storage: AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (358)
+cargo test                     # Run all tests (380)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
@@ -75,6 +76,7 @@ cargo run -- log               # Show commit log
 
 ## Phase 3 Features (in progress)
 
-- **Pluggable LLM Backend:** `prompt` calls real LLMs. Config in `.agentis/config`. Three backends: MockBackend (default), CliBackend (spawns `claude` CLI — flat-rate subscription), HttpBackend (per-token API). Defensive JSON parsing with retry.
+- **Pluggable LLM Backend:** `prompt` calls real LLMs. Config in `.agentis/config`. Three backends: MockBackend (default), CliBackend (any CLI tool — flat-rate), HttpBackend (per-token API). Defensive JSON parsing with retry.
+- **Capability-Gated I/O:** `file_read`/`file_write` sandboxed to `.agentis/sandbox/` with path canonicalization. `http_get`/`http_post` restricted to domain whitelist (`io.allowed_domains`). All ops go through OCap `require_cap()`. CB costs: file=10, http=25.
 - **JSON Utility:** Hand-rolled JSON builder/parser (`json.rs`). Safe string escaping, no serde.
 - **Config System:** Simple `key = value` format in `.agentis/config`.
