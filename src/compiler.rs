@@ -146,6 +146,9 @@ impl Compiler {
                 Declaration::Type(_) => {
                     // Types are not compiled to WASM in Phase 2
                 }
+                Declaration::Import(_) => {
+                    // Imports are resolved at interpreter level, not WASM
+                }
             }
         }
         // The "run" function gets the next index

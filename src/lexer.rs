@@ -17,6 +17,8 @@ pub enum Token {
     Validate,
     Explore,
     Cb,
+    Import,
+    As,
 
     // Type keywords
     Int,
@@ -285,6 +287,8 @@ impl Lexer {
             "validate" => Token::Validate,
             "explore" => Token::Explore,
             "cb" => Token::Cb,
+            "import" => Token::Import,
+            "as" => Token::As,
             // Type keywords
             "int" => Token::Int,
             "float" => Token::Float,

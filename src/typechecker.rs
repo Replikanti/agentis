@@ -180,6 +180,7 @@ impl TypeChecker {
                     self.env.functions.insert(a.name.clone(), (params, ret));
                 }
                 Declaration::Statement(_) => {}
+                Declaration::Import(_) => {}
             }
         }
 
@@ -192,6 +193,7 @@ impl TypeChecker {
                     self.check_statement(stmt);
                 }
                 Declaration::Type(_) => {}
+                Declaration::Import(_) => {}
             }
         }
 
