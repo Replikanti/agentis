@@ -48,6 +48,9 @@ pub trait LlmBackend {
         return_type: &TypeAnnotation,
         type_fields: Option<&[(&str, &str)]>,
     ) -> Result<Value, LlmError>;
+
+    /// Backend name for trace output.
+    fn name(&self) -> &str;
 }
 
 // --- Mock Backend ---
@@ -70,6 +73,8 @@ impl LlmBackend for MockBackend {
     ) -> Result<Value, LlmError> {
         mock_value_for_type(return_type, type_fields)
     }
+
+    fn name(&self) -> &str { "mock" }
 }
 
 fn mock_value_for_type(
@@ -298,6 +303,8 @@ impl LlmBackend for HttpBackend {
 
         Err(last_error.unwrap_or_else(|| LlmError::Transport("no attempts made".into())))
     }
+
+    fn name(&self) -> &str { "http" }
 }
 
 impl HttpBackend {
@@ -452,6 +459,8 @@ impl LlmBackend for CliBackend {
 
         Err(last_error.unwrap_or_else(|| LlmError::Transport("no attempts made".into())))
     }
+
+    fn name(&self) -> &str { "cli" }
 }
 
 /// Try to extract a JSON value from text that may contain non-JSON preamble.

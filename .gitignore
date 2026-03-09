@@ -13,3 +13,6 @@ debug
 
 # Agentis local repositories (created by agentis init)
 .agentis/
+
+# Editor configs
+.grok/

@@ -1045,16 +1045,15 @@ impl<'a> Evaluator<'a> {
             None => &crate::llm::MockBackend,
         };
 
-        // Trace LLM request with wait timer
-        let is_mock = self.llm_backend.is_none();
-        if let Some(t) = &self.tracer {
-            if is_mock {
+        let backend_name = backend.name().to_string();
+        let is_mock = backend_name == "mock";
+
+        // For mock: trace + run inline (no timer needed).
+        // For real backends: run with "still waiting" timer thread.
+        let result = if is_mock {
+            if let Some(t) = &self.tracer {
                 t.llm_requesting("mock", "");
             }
-            // For real backends, llm_requesting is called inside the timed block
-        }
-
-        let result = if is_mock {
             let r = backend
                 .complete(&expr.instruction, &input_str, &expr.return_type, fields_opt)
                 .map_err(|e| EvalError::General(format!("{e}")));
@@ -1088,10 +1087,8 @@ impl<'a> Evaluator<'a> {
         use std::sync::atomic::{AtomicBool, Ordering as AtomOrd};
         use std::time::{Duration, Instant};
 
-        // Determine backend name for trace
-        let backend_name = if self.io_context.is_some() { "cli/http" } else { "http" };
         if let Some(t) = &self.tracer {
-            t.llm_requesting(backend_name, "");
+            t.llm_requesting(backend.name(), "");
         }
 
         let start = Instant::now();

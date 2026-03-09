@@ -1,0 +1,31 @@
+// parallel.ag — Multi-agent orchestration.
+// Three agents run in parallel, each with its own budget and scope.
+
+type Summary {
+    title: string,
+    key_points: string
+}
+
+agent summarizer(topic: string) -> Summary {
+    cb 200;
+    let result = prompt("Summarize the key aspects of this topic in 1-2 sentences", topic) -> Summary;
+    validate result {
+        len(result.title) > 0
+    };
+    return result;
+}
+
+// Spawn 3 agents in parallel
+let h1 = spawn summarizer("quantum computing");
+let h2 = spawn summarizer("gene editing");
+let h3 = spawn summarizer("renewable energy");
+
+// Await all results
+let s1 = await(h1);
+let s2 = await(h2);
+let s3 = await(h3);
+
+print("=== Summaries ===");
+print(s1.title, "-", s1.key_points);
+print(s2.title, "-", s2.key_points);
+print(s3.title, "-", s3.key_points);
