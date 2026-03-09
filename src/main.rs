@@ -4,6 +4,7 @@ mod compiler;
 mod error;
 mod evaluator;
 mod lexer;
+mod network;
 mod parser;
 mod refs;
 mod snapshot;
@@ -65,6 +66,17 @@ fn main() {
             let output = args.get(3).map(|s| s.as_str());
             cmd_compile(&args[2], output)
         }
+        "sync" => {
+            if args.len() < 3 {
+                eprintln!("Usage: agentis sync <host:port>");
+                process::exit(1);
+            }
+            cmd_sync(&args[2])
+        }
+        "serve" => {
+            let addr = args.get(2).map(|s| s.as_str()).unwrap_or("0.0.0.0:9461");
+            cmd_serve(addr)
+        }
         "log" => {
             let branch = args.get(2).map(|s| s.as_str());
             cmd_log(branch)
@@ -96,6 +108,8 @@ fn print_usage() {
     eprintln!("  branch [name]        List branches or create a new one");
     eprintln!("  switch <branch>      Switch to a different branch");
     eprintln!("  compile <branch> [o] Compile branch to WASM binary");
+    eprintln!("  sync <host:port>     Sync objects with a remote peer");
+    eprintln!("  serve [addr:port]    Listen for incoming sync connections");
     eprintln!("  log [branch]         Show commit log for a branch");
     eprintln!("  version              Show version");
 }
@@ -210,6 +224,23 @@ fn cmd_compile(branch: &str, output: Option<&str>) -> Result<(), AgentisError> {
 
     std::fs::write(&output_path, &wasm)?;
     println!("Compiled to {} ({} bytes)", output_path, wasm.len());
+    Ok(())
+}
+
+fn cmd_sync(addr: &str) -> Result<(), AgentisError> {
+    let (store, _) = ensure_initialized()?;
+    let result = network::sync_push_pull(&store, addr)
+        .map_err(|e| AgentisError::General(format!("{e}")))?;
+    println!("Sync complete: sent {}, received {}", result.sent, result.received);
+    Ok(())
+}
+
+fn cmd_serve(addr: &str) -> Result<(), AgentisError> {
+    let (store, _) = ensure_initialized()?;
+    println!("Listening on {addr}...");
+    let result = network::sync_serve_once(&store, addr)
+        .map_err(|e| AgentisError::General(format!("{e}")))?;
+    println!("Sync complete: sent {}, received {}", result.sent, result.received);
     Ok(())
 }
 
