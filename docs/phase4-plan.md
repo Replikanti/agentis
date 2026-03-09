@@ -29,6 +29,12 @@ This is not a limitation — it's the core design:
 - **AI understands context.** `prompt("extract emails from this text", data)`
   handles edge cases that no regex ever will. The LLM is the stdlib.
 
+**Who Agentis is NOT for:** If you need a tight loop running 10,000 times,
+deterministic string parsing, or sub-millisecond latency — this is the wrong
+tool. Agentis is not about programmer productivity. It's about AI orchestration.
+If writing a prompt to split a string annoys you, that is intentional — it
+forces you to rethink your data pipeline.
+
 ## Tech Stack Rules
 
 - No new dependencies. Phase 4 is docs, examples, and wiring.
@@ -46,42 +52,61 @@ This is not a limitation — it's the core design:
 ### M15: Runtime Trace
 
 When an agent runs, the user sees nothing except `print()` output. For a demo
-(and for debugging), execution needs to be observable.
+(and for debugging), execution needs to be observable. More critically: an LLM
+call takes 2–20 seconds. A silent terminal during that time reads as "frozen"
+to any user. This kills first impressions.
 
-Deliverable: changes to `evaluator.rs`, `main.rs`
+Deliverable: `trace.rs`, changes to `evaluator.rs`, `llm.rs`, `main.rs`
+
+**Critical UX requirement — LLM wait indicator:**
+
+Even at `trace.level = quiet`, the system MUST print a minimal progress
+indicator to stderr before and after any LLM network call:
+
+```
+[llm] requesting claude-sonnet-4-20250514 ...
+[llm] received (4.2s)
+```
+
+This is not optional. Without it, 60–80% of new users will Ctrl+C during
+their first `agentis go` because the terminal appears frozen. No external
+spinner crates — plain `eprint!` / `eprintln!` with `Instant::elapsed()`.
 
 **Trace events** (written to stderr, not stdout):
 
 ```
 [agent scanner]       entered, CB=1000
 [prompt]              "Analyze this page" → Report
-[llm]                 backend=cli, command=claude
+[llm]                 requesting claude ...
+[llm]                 received (4.2s)
 [llm]                 response: { title: "...", confidence: 0.92 }
-[validate]            2 predicates: ✓ ✓
+[validate]            2 predicates: pass pass
 [spawn scanner]       agent=scanner, CB=1000, handle=#1
 [await #1]            completed, result=Report { ... }
 [explore "feature"]   entered, CB=500
-[explore "feature"]   ✓ branch created
+[explore "feature"]   branch created
 [CB]                  remaining: 340/1000
 ```
 
 **Verbosity levels** (`.agentis/config`):
 
 ```
-trace.level = quiet    # nothing (default, current behavior)
-trace.level = normal   # agent enter/exit, prompt calls, explore outcomes
-trace.level = verbose  # everything including LLM responses, CB changes
+trace.level = normal   # default — agent enter/exit, prompt calls, explore outcomes
+trace.level = quiet    # only LLM wait indicators (the minimum)
+trace.level = verbose  # everything including LLM responses, CB deltas
 ```
 
-Implementation: a `Tracer` struct passed to `Evaluator`, called at key points.
-No new dependencies — `eprintln!` with formatting. Tracer is a simple trait
-so tests can capture trace output.
+Note: default is `normal`, not `quiet`. New users need to see what's happening
+under the hood to understand the execution model. They can opt into `quiet`
+once they understand.
+
+Implementation: a `Tracer` trait passed to `Evaluator`, called at key points.
+No new dependencies — `eprintln!` with formatting. Trait allows tests to
+capture trace output into a `Vec<String>` instead of stderr.
 
 **CB cost:** Zero. Tracing is infrastructure, not computation.
 
 ### M16: One-Step Workflow + AST-Native Diagnostics
-
-Two improvements to the CLI experience.
 
 Deliverable: changes to `main.rs`, `evaluator.rs`, `error.rs`
 
@@ -119,10 +144,14 @@ field for the trace path. `eval_*` methods push context as they descend.
 
 **Part C — Config templates:**
 
-`agentis init` creates `.agentis/config` with commented-out templates:
+`agentis init` creates `.agentis/config` with a working default and
+commented-out alternatives:
 
 ```
-# LLM Backend — uncomment ONE section:
+# LLM Backend — default is mock (no LLM needed).
+# Uncomment ONE section below to use a real LLM:
+
+llm.backend = mock
 
 # --- Claude CLI (flat-rate, recommended) ---
 # llm.backend = cli
@@ -145,32 +174,79 @@ field for the trace path. `eval_*` methods push context as they descend.
 # llm.command = gemini
 # llm.args = -p
 
+# --- xAI / Grok API ---
+# llm.backend = http
+# llm.endpoint = https://api.x.ai/v1/messages
+# llm.model = grok-3
+# llm.api_key_env = XAI_API_KEY
+
 # Agent limits
 # max_concurrent_agents = 16
 
-# Trace
-# trace.level = quiet
+# Trace (default: normal — shows agent lifecycle and prompt calls)
+trace.level = normal
 ```
 
 New users see all options immediately. Uncomment and go.
 
+**Part D — `agentis doctor`:**
+
+Pre-flight check that validates the environment:
+
+```bash
+$ agentis doctor
+[ok] .agentis/ repository found
+[ok] config loaded (llm.backend = cli)
+[ok] claude found in PATH (/usr/local/bin/claude)
+[ok] .agentis/sandbox/ exists (writable)
+[!!] trace.level = quiet (consider 'normal' for debugging)
+```
+
+Checks:
+- `.agentis/` exists and is valid
+- Config parses without errors
+- LLM backend is reachable: CLI command in PATH, or HTTP endpoint responds,
+  or API key env var is set
+- Sandbox directory exists and is writable
+- Reports trace level as informational
+
+No new dependencies. Just `std::process::Command` for `which`-style checks
+and `std::fs` for directory validation. Prints human-readable summary to
+stdout.
+
 ### M17: Example Suite
 
-5 programs demonstrating "everything is prompt" in practice. Each stored in
-`examples/` as `.ag` files with inline comments.
+6 programs demonstrating "everything is prompt" in practice. Each stored in
+`examples/` as `.ag` files with inline comments. **Ordered by execution time**
+— the first example a user runs must produce output in under 8 seconds, even
+on a slow local model.
 
-Deliverable: `examples/` directory with `.ag` files
+Deliverable: `examples/` directory with `.ag` files + `examples/data.txt`
 
-**Example 1: `hello.ag` — First contact**
+**Example 1: `fast-demo.ag` — Instant gratification (< 8s)**
 
 ```
-// Simplest possible Agentis program.
-// The LLM generates the greeting — even "hello world" is a prompt.
+// One prompt, tiny input, fast response.
+// This is the first thing a new user should run.
+cb 80;
+let mood = prompt("Respond with exactly one word describing a mood", "") -> string;
+print("Mood of the day:", mood);
+```
+
+Why first: single prompt, near-empty input, one-word output. Even ollama on
+a laptop responds in 3–7 seconds. The user sees output fast and understands
+the basic mechanic: prompt in, typed value out.
+
+**Example 2: `hello.ag` — Everything is a prompt, even hello world**
+
+```
+// Even "hello world" is a prompt. There is no print("hello world").
+// The LLM generates the greeting.
 let greeting = prompt("Say hello to the world in a creative way", "world") -> string;
 print(greeting);
 ```
 
-**Example 2: `classify.ag` — Type-safe LLM output**
+**Example 3: `classify.ag` — Type-safe LLM output + validation**
 
 ```
 type Category {
@@ -193,7 +269,40 @@ let r = classifier("The stock market crashed today");
 print("Label:", r.label, "Confidence:", r.confidence);
 ```
 
-**Example 3: `parallel.ag` — Multi-agent orchestration**
+**Example 4: `pipeline.ag` — Data pipeline (everything is prompt)**
+
+```
+// No stdlib. No string.split(). No list.filter().
+// The LLM IS the data processor.
+
+type Email { address: string, domain: string }
+type Report { total: int, domains: string }
+
+agent extract_emails(text: string) -> list<Email> {
+    cb 200;
+    return prompt("Extract all email addresses from this text, return as list of {address, domain}", text) -> list<Email>;
+}
+
+agent analyze(emails: list<Email>) -> Report {
+    cb 200;
+    return prompt("Count total emails and list unique domains, return as {total, domains}", emails) -> Report;
+}
+
+let raw = file_read("data.txt");
+let emails = extract_emails(raw);
+let report = analyze(emails);
+print("Found", report.total, "emails across domains:", report.domains);
+```
+
+Ships with `examples/data.txt`:
+
+```
+Contact us at sales@acme.com or support@acme.com.
+For partnerships, reach out to partner@example.org.
+Bug reports go to bugs@dev.example.org.
+```
+
+**Example 5: `parallel.ag` — Multi-agent orchestration**
 
 ```
 type Summary { title: string, key_points: string }
@@ -221,7 +330,7 @@ print(s2.title, "-", s2.key_points);
 print(s3.title, "-", s3.key_points);
 ```
 
-**Example 4: `explore.ag` — Evolutionary branching**
+**Example 6: `explore.ag` — Evolutionary branching**
 
 ```
 type Solution { approach: string, score: int }
@@ -252,31 +361,6 @@ explore "approach-b" {
 // Branches that survive have validated solutions.
 // Branches that fail are silently discarded.
 // Check with: agentis branch
-```
-
-**Example 5: `pipeline.ag` — Data pipeline (everything is prompt)**
-
-```
-// No stdlib. No string.split(). No list.filter().
-// The LLM IS the data processor.
-
-type Email { address: string, domain: string }
-type Report { total: int, domains: string }
-
-agent extract_emails(text: string) -> list<Email> {
-    cb 200;
-    return prompt("Extract all email addresses from this text, return as list of {address, domain}", text) -> list<Email>;
-}
-
-agent analyze(emails: list<Email>) -> Report {
-    cb 200;
-    return prompt("Count total emails and list unique domains, return as {total, domains}", emails) -> Report;
-}
-
-let raw = file_read("data.txt");
-let emails = extract_emails(raw);
-let report = analyze(emails);
-print("Found", report.total, "emails across domains:", report.domains);
 ```
 
 ### M18: Documentation
@@ -313,7 +397,7 @@ How code-as-DAG works:
 
 **Document 3: `docs/philosophy.md` — Everything Is Prompt**
 
-The design rationale:
+The design rationale — short, direct, opinionated:
 - Why no stdlib: the LLM is the standard library
 - Why CB exists: evolutionary pressure on agent design
 - Why validate: runtime contracts on non-deterministic outputs
@@ -321,6 +405,9 @@ The design rationale:
 - Why agents are pure: isolation enables fearless concurrency
 - Why content-addressed: reproducibility without text files
 - Comparison: "In Python you import pandas. In Agentis you prompt."
+- Anti-patterns: when NOT to use Agentis (tight loops, deterministic parsing,
+  sub-ms latency). This section is mandatory — honest scoping builds trust
+  faster than marketing
 
 ## Implementation Order
 
@@ -332,9 +419,12 @@ The design rationale:
 ## Success Criteria
 
 Phase 4 is complete when:
-1. `agentis init && agentis go example.ag --trace` shows a full agent run
-   with visible LLM calls, validation, and CB tracking
-2. Errors identify the DAG node and declaration path, not source line numbers
-3. 5 example programs run with any LLM backend (CLI/local/HTTP)
-4. A new user can read the docs and understand what Agentis is, why it exists,
+1. `agentis go fast-demo.ag` produces visible output in under 8 seconds on
+   a local model, with LLM wait indicator visible even in quiet mode
+2. `agentis go example.ag --trace` shows a full agent run with visible LLM
+   calls, validation, and CB tracking
+3. `agentis doctor` validates the environment and reports problems clearly
+4. Errors identify the DAG node and declaration path, not source line numbers
+5. 6 example programs run with any LLM backend (CLI/local/HTTP)
+6. A new user can read the docs and understand what Agentis is, why it exists,
    and how to write their first agent — in under 10 minutes
