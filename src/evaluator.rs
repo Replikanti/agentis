@@ -9,6 +9,7 @@ use crate::llm::LlmBackend;
 use crate::refs::Refs;
 use crate::snapshot::{MemorySnapshot, SnapshotManager};
 use crate::storage::ObjectStore;
+use crate::trace::Tracer;
 
 // --- Runtime Values ---
 
@@ -217,6 +218,7 @@ pub struct Evaluator<'a> {
     functions: HashMap<String, Callable>,
     types: HashMap<String, TypeDecl>,
     budget: u64,
+    initial_budget: u64,
     output: Vec<String>,
     vcs: Option<(&'a ObjectStore, &'a Refs)>,
     explore_branches: Vec<String>,
@@ -225,9 +227,11 @@ pub struct Evaluator<'a> {
     snapshot_mgr: Option<SnapshotManager<'a>>,
     llm_backend: Option<&'a dyn LlmBackend>,
     io_context: Option<&'a IoContext>,
+    tracer: Option<&'a Tracer>,
     imported_hashes: std::collections::HashSet<String>,
     max_concurrent_agents: u32,
     active_agents: Arc<AtomicU32>,
+    spawn_counter: u32,
 }
 
 impl<'a> Evaluator<'a> {
@@ -237,6 +241,7 @@ impl<'a> Evaluator<'a> {
             functions: HashMap::new(),
             types: HashMap::new(),
             budget,
+            initial_budget: budget,
             output: Vec::new(),
             vcs: None,
             explore_branches: Vec::new(),
@@ -245,9 +250,11 @@ impl<'a> Evaluator<'a> {
             snapshot_mgr: None,
             llm_backend: None,
             io_context: None,
+            tracer: None,
             imported_hashes: std::collections::HashSet::new(),
             max_concurrent_agents: 16,
             active_agents: Arc::new(AtomicU32::new(0)),
+            spawn_counter: 0,
         }
     }
 
@@ -268,6 +275,11 @@ impl<'a> Evaluator<'a> {
 
     pub fn with_max_agents(mut self, max: u32) -> Self {
         self.max_concurrent_agents = max;
+        self
+    }
+
+    pub fn with_tracer(mut self, tracer: &'a Tracer) -> Self {
+        self.tracer = Some(tracer);
         self
     }
 
@@ -405,6 +417,10 @@ impl<'a> Evaluator<'a> {
             )));
         }
         self.imported_hashes.insert(imp.hash.clone());
+
+        if let Some(t) = &self.tracer {
+            t.import_resolved(&imp.hash, imp.alias.as_deref());
+        }
 
         // Load the program from object store
         let store = match &self.vcs {
@@ -898,6 +914,13 @@ impl<'a> Evaluator<'a> {
             arg_values.push(self.eval_expr(arg)?);
         }
 
+        // Trace agent entry
+        if is_agent {
+            if let Some(t) = &self.tracer {
+                t.agent_entered(&expr.callee, self.budget);
+            }
+        }
+
         // Save state for agents (isolated scope)
         let saved_env = if is_agent { Some(self.env.clone()) } else { None };
 
@@ -924,6 +947,9 @@ impl<'a> Evaluator<'a> {
 
         // Restore env for agents
         if let Some(env) = saved_env {
+            if let Some(t) = &self.tracer {
+                t.agent_exited(&expr.callee, result.type_name());
+            }
             self.env = env;
         }
 
@@ -972,6 +998,11 @@ impl<'a> Evaluator<'a> {
         let input = self.eval_expr(&expr.input)?;
         let input_str = format!("{input}");
 
+        let return_type_str = Self::format_type_annotation(&expr.return_type);
+        if let Some(t) = &self.tracer {
+            t.prompt_call(&expr.instruction, &return_type_str);
+        }
+
         // Collect type field info for user-defined types
         let type_fields = self.collect_type_fields(&expr.return_type);
         let fields_ref: Vec<(&str, &str)> = type_fields
@@ -984,15 +1015,106 @@ impl<'a> Evaluator<'a> {
             Some(fields_ref.as_slice())
         };
 
-        if let Some(backend) = self.llm_backend {
-            backend
+        let backend: &dyn LlmBackend = match self.llm_backend {
+            Some(b) => b,
+            None => &crate::llm::MockBackend,
+        };
+
+        // Trace LLM request with wait timer
+        let is_mock = self.llm_backend.is_none();
+        if let Some(t) = &self.tracer {
+            if is_mock {
+                t.llm_requesting("mock", "");
+            }
+            // For real backends, llm_requesting is called inside the timed block
+        }
+
+        let result = if is_mock {
+            let r = backend
                 .complete(&expr.instruction, &input_str, &expr.return_type, fields_opt)
-                .map_err(|e| EvalError::General(format!("{e}")))
+                .map_err(|e| EvalError::General(format!("{e}")));
+            if let Some(t) = &self.tracer {
+                t.llm_received(0.0);
+            }
+            r
         } else {
-            // Fallback: built-in mock
-            crate::llm::MockBackend::new()
-                .complete(&expr.instruction, &input_str, &expr.return_type, fields_opt)
-                .map_err(|e| EvalError::General(format!("{e}")))
+            self.call_llm_with_timer(backend, &expr.instruction, &input_str, &expr.return_type, fields_opt)?
+        };
+
+        if let Some(t) = &self.tracer {
+            if let Ok(ref v) = result {
+                t.llm_response(v);
+            }
+            t.cb_remaining(self.budget, self.initial_budget);
+        }
+
+        result
+    }
+
+    /// Call LLM backend with a "still waiting" timer on a background thread.
+    fn call_llm_with_timer(
+        &self,
+        backend: &dyn LlmBackend,
+        instruction: &str,
+        input: &str,
+        return_type: &TypeAnnotation,
+        fields: Option<&[(&str, &str)]>,
+    ) -> Result<Result<Value, EvalError>, EvalError> {
+        use std::sync::atomic::{AtomicBool, Ordering as AtomOrd};
+        use std::time::{Duration, Instant};
+
+        // Determine backend name for trace
+        let backend_name = if self.io_context.is_some() { "cli/http" } else { "http" };
+        if let Some(t) = &self.tracer {
+            t.llm_requesting(backend_name, "");
+        }
+
+        let start = Instant::now();
+        let done = Arc::new(AtomicBool::new(false));
+        let done_clone = done.clone();
+
+        // Spawn timer thread that prints "still waiting" every 4 seconds.
+        // Uses eprintln! directly to avoid sending Tracer across threads.
+        let has_tracer = self.tracer.is_some();
+        let timer_thread = std::thread::spawn(move || {
+            if !has_tracer {
+                return;
+            }
+            let interval = Duration::from_secs(4);
+            let mut next_tick = start + interval;
+            while !done_clone.load(AtomOrd::Relaxed) {
+                std::thread::sleep(Duration::from_millis(100));
+                if !done_clone.load(AtomOrd::Relaxed)
+                    && Instant::now() >= next_tick
+                {
+                    let elapsed = start.elapsed().as_secs_f64();
+                    eprintln!("[llm] still waiting ... ({elapsed:.1}s)");
+                    next_tick += interval;
+                }
+            }
+        });
+
+        let result = backend
+            .complete(instruction, input, return_type, fields)
+            .map_err(|e| EvalError::General(format!("{e}")));
+
+        done.store(true, Ordering::Relaxed);
+        let _ = timer_thread.join();
+
+        if let Some(t) = &self.tracer {
+            t.llm_received(start.elapsed().as_secs_f64());
+        }
+
+        Ok(result)
+    }
+
+    fn format_type_annotation(ann: &TypeAnnotation) -> String {
+        match ann {
+            TypeAnnotation::Named(name) => name.clone(),
+            TypeAnnotation::Generic(name, args) => {
+                let args_str: Vec<String> = args.iter().map(Self::format_type_annotation).collect();
+                format!("{}<{}>", name, args_str.join(", "))
+            }
         }
     }
 
@@ -1017,13 +1139,22 @@ impl<'a> Evaluator<'a> {
 
     fn eval_validate(&mut self, expr: &ValidateExpr) -> Result<Value, EvalError> {
         let target = self.eval_expr(&expr.target)?;
+        let count = expr.predicates.len();
 
         for (i, predicate) in expr.predicates.iter().enumerate() {
             self.spend(1)?;
             let result = self.eval_expr(predicate)?;
             match result {
-                Value::Bool(true) => {}
+                Value::Bool(true) => {
+                    if let Some(t) = &self.tracer {
+                        t.validate_detail(i, true);
+                    }
+                }
                 Value::Bool(false) => {
+                    if let Some(t) = &self.tracer {
+                        t.validate_detail(i, false);
+                        t.validate_result(count, false);
+                    }
                     return Err(EvalError::ValidationFailed {
                         predicate_index: i,
                         detail: format!("predicate #{i} evaluated to false"),
@@ -1038,6 +1169,9 @@ impl<'a> Evaluator<'a> {
             }
         }
 
+        if let Some(t) = &self.tracer {
+            t.validate_result(count, true);
+        }
         Ok(target)
     }
 
@@ -1049,6 +1183,9 @@ impl<'a> Evaluator<'a> {
         if current >= self.max_concurrent_agents {
             return Err(EvalError::General("agent limit exceeded".into()));
         }
+
+        self.spawn_counter += 1;
+        let handle_id = self.spawn_counter;
 
         // Look up the agent
         let callable = self.functions.get(&expr.agent_name).cloned()
@@ -1086,6 +1223,10 @@ impl<'a> Evaluator<'a> {
             .collect();
         let max_agents = self.max_concurrent_agents;
         let active_counter = self.active_agents.clone();
+
+        if let Some(t) = &self.tracer {
+            t.spawn_agent(&expr.agent_name, child_budget, handle_id);
+        }
 
         active_counter.fetch_add(1, Ordering::SeqCst);
         let counter_for_thread = active_counter.clone();
@@ -1137,10 +1278,21 @@ impl<'a> Evaluator<'a> {
             .take()
             .ok_or_else(|| EvalError::General("agent already awaited".into()))?;
 
-        match join_handle.join() {
+        let result = match join_handle.join() {
             Ok(result) => result,
             Err(_) => Err(EvalError::General("spawned agent panicked".into())),
+        };
+
+        if let Some(t) = &self.tracer {
+            let result_type = match &result {
+                Ok(v) => v.type_name().to_string(),
+                Err(e) => format!("error: {e}"),
+            };
+            // Use spawn_counter as rough handle ID for trace
+            t.await_completed(0, &result_type);
         }
+
+        result
     }
 
     fn await_agent_timeout(&mut self, handle_val: Value, ms: u64) -> Result<Value, EvalError> {
@@ -1192,6 +1344,10 @@ impl<'a> Evaluator<'a> {
         self.require_cap(CapKind::VcsWrite)?;
         self.spend(1)?;
 
+        if let Some(t) = &self.tracer {
+            t.explore_entered(&expr.name, self.budget);
+        }
+
         // Save current state
         let saved_env = self.env.clone();
         let saved_budget = self.budget;
@@ -1207,11 +1363,17 @@ impl<'a> Evaluator<'a> {
                     let _ = store;
                     self.explore_branches.push(expr.name.clone());
                 }
+                if let Some(t) = &self.tracer {
+                    t.explore_outcome(&expr.name, true);
+                }
                 // Transaction boundary: explore block completed, call stack empty
                 self.persist_snapshot();
                 Ok(value)
             }
             Err(e) => {
+                if let Some(t) = &self.tracer {
+                    t.explore_outcome(&expr.name, false);
+                }
                 // Failure: restore everything, no side effects
                 self.env = saved_env;
                 self.budget = saved_budget;
