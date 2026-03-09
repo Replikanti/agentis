@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::ast::*;
 use crate::capabilities::{CapError, CapKind, CapabilityRegistry};
 use crate::refs::Refs;
+use crate::snapshot::{MemorySnapshot, SnapshotManager};
 use crate::storage::ObjectStore;
 
 // --- Runtime Values ---
@@ -150,6 +151,14 @@ impl Environment {
         }
         None
     }
+
+    fn snapshot_scopes(&self) -> Vec<HashMap<String, Value>> {
+        self.scopes.clone()
+    }
+
+    fn restore_scopes(&mut self, scopes: Vec<HashMap<String, Value>>) {
+        self.scopes = scopes;
+    }
 }
 
 // --- Evaluator ---
@@ -164,6 +173,7 @@ pub struct Evaluator<'a> {
     explore_branches: Vec<String>,
     cap_registry: CapabilityRegistry,
     caps: HashMap<CapKind, Vec<crate::capabilities::CapHandle>>,
+    snapshot_mgr: Option<SnapshotManager<'a>>,
 }
 
 impl<'a> Evaluator<'a> {
@@ -178,11 +188,17 @@ impl<'a> Evaluator<'a> {
             explore_branches: Vec::new(),
             cap_registry: CapabilityRegistry::new(),
             caps: HashMap::new(),
+            snapshot_mgr: None,
         }
     }
 
     pub fn with_vcs(mut self, store: &'a ObjectStore, refs: &'a Refs) -> Self {
         self.vcs = Some((store, refs));
+        self
+    }
+
+    pub fn with_persistence(mut self, store: &'a ObjectStore) -> Self {
+        self.snapshot_mgr = Some(SnapshotManager::new(store));
         self
     }
 
@@ -218,6 +234,38 @@ impl<'a> Evaluator<'a> {
             None => Err(EvalError::CapabilityDenied(
                 CapError::MissingCapability(kind),
             )),
+        }
+    }
+
+    pub fn capture_snapshot(&self) -> MemorySnapshot {
+        MemorySnapshot {
+            scopes: self.env.snapshot_scopes(),
+            budget_remaining: self.budget,
+            output: self.output.clone(),
+        }
+    }
+
+    pub fn restore_snapshot(&mut self, snapshot: &MemorySnapshot) {
+        self.env.restore_scopes(snapshot.scopes.clone());
+        self.budget = snapshot.budget_remaining;
+        self.output = snapshot.output.clone();
+    }
+
+    fn persist_snapshot(&mut self) {
+        if let Some(ref mut mgr) = self.snapshot_mgr {
+            let snap = MemorySnapshot {
+                scopes: self.env.snapshot_scopes(),
+                budget_remaining: self.budget,
+                output: self.output.clone(),
+            };
+            let _ = mgr.save(&snap);
+        }
+    }
+
+    pub fn snapshot_history(&self) -> &[crate::storage::Hash] {
+        match &self.snapshot_mgr {
+            Some(mgr) => mgr.history(),
+            None => &[],
         }
     }
 
@@ -258,10 +306,13 @@ impl<'a> Evaluator<'a> {
         }
 
         // Second pass: execute top-level statements
+        // Each top-level statement is a transaction boundary —
+        // snapshot after completion (call stack is empty).
         let mut last = Value::Void;
         for decl in &program.declarations {
             if let Declaration::Statement(stmt) = decl {
                 last = self.eval_statement(stmt)?;
+                self.persist_snapshot();
             }
         }
         Ok(last)
@@ -633,13 +684,12 @@ impl<'a> Evaluator<'a> {
             Ok(value) => {
                 // Success: create a VCS branch if store/refs are available
                 if let Some((store, refs)) = &self.vcs {
-                    // Store the branch name as a marker — the actual program
-                    // will be committed separately. We create the branch pointing
-                    // to the current branch's commit.
                     let _ = refs.create_branch(&expr.name, None);
-                    let _ = store; // used implicitly through refs
+                    let _ = store;
                     self.explore_branches.push(expr.name.clone());
                 }
+                // Transaction boundary: explore block completed, call stack empty
+                self.persist_snapshot();
                 Ok(value)
             }
             Err(e) => {
@@ -1245,5 +1295,144 @@ mod tests {
             }
             other => panic!("expected CapabilityDenied, got {other:?}"),
         }
+    }
+
+    // --- Orthogonal Persistence ---
+
+    #[test]
+    fn capture_and_restore_snapshot() {
+        let program = Parser::parse_source("let x = 42; let y = 10;").unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+
+        let snap = evaluator.capture_snapshot();
+        assert_eq!(snap.budget_remaining, evaluator.budget_remaining());
+
+        // Create a fresh evaluator and restore
+        let mut evaluator2 = Evaluator::new(0);
+        evaluator2.grant_all();
+        evaluator2.restore_snapshot(&snap);
+        assert_eq!(evaluator2.budget_remaining(), snap.budget_remaining);
+    }
+
+    #[test]
+    fn persistence_creates_snapshots_per_statement() {
+        let dir = crate::storage::tempfile::tempdir().unwrap();
+        let store = crate::storage::ObjectStore::init(dir.path()).unwrap();
+
+        let program = Parser::parse_source("let x = 1; let y = 2; let z = 3;").unwrap();
+        let mut evaluator = Evaluator::new(10000)
+            .with_persistence(&store);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+
+        // 3 top-level statements → 3 snapshots
+        assert_eq!(evaluator.snapshot_history().len(), 3);
+    }
+
+    #[test]
+    fn persistence_snapshots_are_loadable() {
+        let dir = crate::storage::tempfile::tempdir().unwrap();
+        let store = crate::storage::ObjectStore::init(dir.path()).unwrap();
+
+        let program = Parser::parse_source("let x = 42;").unwrap();
+        let mut evaluator = Evaluator::new(10000)
+            .with_persistence(&store);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+
+        let hash = &evaluator.snapshot_history()[0];
+        let mgr = crate::snapshot::SnapshotManager::new(&store);
+        let snap = mgr.load(hash).unwrap();
+        assert!(snap.budget_remaining < 10000);
+        assert_eq!(snap.scopes.len(), 1); // global scope
+    }
+
+    #[test]
+    fn persistence_rollback_restores_earlier_state() {
+        let dir = crate::storage::tempfile::tempdir().unwrap();
+        let store = crate::storage::ObjectStore::init(dir.path()).unwrap();
+
+        let program = Parser::parse_source("let x = 1; let y = 2;").unwrap();
+        let mut evaluator = Evaluator::new(10000)
+            .with_persistence(&store);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+
+        let history = evaluator.snapshot_history().to_vec();
+        assert_eq!(history.len(), 2);
+
+        // Load first snapshot (after "let x = 1;")
+        let mgr = crate::snapshot::SnapshotManager::new(&store);
+        let snap1 = mgr.load(&history[0]).unwrap();
+
+        // First snapshot should have x=1 but not y
+        let scope = &snap1.scopes[0];
+        assert_eq!(scope.get("x"), Some(&Value::Int(1)));
+        assert_eq!(scope.get("y"), None);
+
+        // Second snapshot should have both
+        let snap2 = mgr.load(&history[1]).unwrap();
+        let scope2 = &snap2.scopes[0];
+        assert_eq!(scope2.get("x"), Some(&Value::Int(1)));
+        assert_eq!(scope2.get("y"), Some(&Value::Int(2)));
+    }
+
+    #[test]
+    fn no_persistence_without_store() {
+        let program = Parser::parse_source("let x = 1;").unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+        // No persistence configured → no snapshots
+        assert!(evaluator.snapshot_history().is_empty());
+    }
+
+    #[test]
+    fn persistence_with_output() {
+        let dir = crate::storage::tempfile::tempdir().unwrap();
+        let store = crate::storage::ObjectStore::init(dir.path()).unwrap();
+
+        let program = Parser::parse_source(r#"print(42); print(99);"#).unwrap();
+        let mut evaluator = Evaluator::new(10000)
+            .with_persistence(&store);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+
+        let history = evaluator.snapshot_history().to_vec();
+        let mgr = crate::snapshot::SnapshotManager::new(&store);
+
+        // After first print: output has ["42"]
+        let snap1 = mgr.load(&history[0]).unwrap();
+        assert_eq!(snap1.output, vec!["42"]);
+
+        // After second print: output has ["42", "99"]
+        let snap2 = mgr.load(&history[1]).unwrap();
+        assert_eq!(snap2.output, vec!["42", "99"]);
+    }
+
+    #[test]
+    fn snapshot_content_addressed_dedup() {
+        let dir = crate::storage::tempfile::tempdir().unwrap();
+        let store = crate::storage::ObjectStore::init(dir.path()).unwrap();
+
+        // Two identical programs should produce identical snapshot hashes
+        // for equivalent states
+        let program = Parser::parse_source("let x = 42;").unwrap();
+
+        let mut eval1 = Evaluator::new(10000).with_persistence(&store);
+        eval1.grant_all();
+        eval1.eval_program(&program).unwrap();
+
+        let mut eval2 = Evaluator::new(10000).with_persistence(&store);
+        eval2.grant_all();
+        eval2.eval_program(&program).unwrap();
+
+        assert_eq!(
+            eval1.snapshot_history()[0],
+            eval2.snapshot_history()[0],
+            "identical state should produce identical snapshot hash"
+        );
     }
 }
