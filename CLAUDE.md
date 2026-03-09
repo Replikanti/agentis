@@ -86,8 +86,10 @@ cargo run -- log               # Show commit log
 - **JSON Utility:** Hand-rolled JSON builder/parser (`json.rs`). Safe string escaping, no serde.
 - **Config System:** Simple `key = value` format in `.agentis/config`.
 
-## Phase 5 Features (Data Guardians — in progress)
+## Phase 5 Features (Data Guardians — complete)
 
 - **PiiTransmit Capability:** New `CapKind::PiiTransmit` excluded from `grant_all()`. Must be explicitly granted via `--grant-pii` CLI flag or `pii_transmit = allow` in config.
 - **Internal PII Guard:** `pii.rs` scans prompt inputs for email, phone, credit card, Czech birth number, IBAN, IPv4, SSN. Blocks prompt if PII detected without PiiTransmit. Zero CB cost.
-- **Audit Log:** Every `prompt()` call logged to `.agentis/audit/prompts.jsonl` (JSONL). Fields: timestamp, agent name, instruction/input hashes, PII scan result, capability status, backend. Opt-in: enabled when `.agentis/audit/` directory exists. Uses `json.rs`, no new dependencies.
+- **Audit Log:** Every `prompt()` call logged to `.agentis/audit/prompts.jsonl` (JSONL). Fields: timestamp, agent name, instruction/input hashes, PII scan result, capability status, backend. Opt-in: enabled when `.agentis/audit/` directory exists.
+- **Audit CLI:** `agentis audit` displays audit log table. Filters: `--last N`, `--pii-only`, `--agent <name>`, `--blocked`.
+- **Secure Init:** `agentis init --secure` creates locked-down config (PiiTransmit denied, audit enabled, mock backend).

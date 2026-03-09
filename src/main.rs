@@ -37,7 +37,10 @@ fn main() {
     }
 
     let result = match args[1].as_str() {
-        "init" => cmd_init(),
+        "init" => {
+            let secure = args.iter().any(|a| a == "--secure");
+            cmd_init(secure)
+        }
         "commit" => {
             if args.len() < 3 {
                 eprintln!("Usage: agentis commit <source_file>");
@@ -121,7 +124,7 @@ fn print_usage() {
     eprintln!("Usage: agentis <command> [args]");
     eprintln!();
     eprintln!("Commands:");
-    eprintln!("  init                 Initialize a new Agentis repository");
+    eprintln!("  init [--secure]       Initialize a new Agentis repository");
     eprintln!("  go <file> [--trace]  Commit and run in one step (the demo command)");
     eprintln!("  commit <file>        Parse source file, store AST, update current branch");
     eprintln!("  run <branch>         Execute code from a branch's root hash");
@@ -150,7 +153,7 @@ fn ensure_initialized() -> Result<(ObjectStore, Refs), AgentisError> {
     Ok((ObjectStore::new(&root), Refs::new(&root)))
 }
 
-fn cmd_init() -> Result<(), AgentisError> {
+fn cmd_init(secure: bool) -> Result<(), AgentisError> {
     let root = agentis_root();
     if root.exists() {
         return Err(AgentisError::General(
@@ -165,9 +168,15 @@ fn cmd_init() -> Result<(), AgentisError> {
     let sandbox = root.join("sandbox");
     std::fs::create_dir_all(&sandbox)?;
 
-    // Write default config with templates
+    // Write config (secure or default)
     let config_path = root.join("config");
-    std::fs::write(&config_path, DEFAULT_CONFIG)?;
+    if secure {
+        std::fs::write(&config_path, SECURE_CONFIG)?;
+        // Create audit directory (enables audit logging)
+        std::fs::create_dir_all(root.join("audit"))?;
+    } else {
+        std::fs::write(&config_path, DEFAULT_CONFIG)?;
+    }
 
     // Extract bundled examples
     let examples_dir = Path::new("examples");
@@ -181,9 +190,16 @@ fn cmd_init() -> Result<(), AgentisError> {
         println!("Created examples/ directory with 6 programs.");
     }
 
-    println!("Initialized empty Agentis repository with genesis branch.");
-    println!();
-    println!("  agentis go examples/fast-demo.ag    # try it now");
+    if secure {
+        println!("Initialized secure Agentis repository with genesis branch.");
+        println!("  PII guard:  ON (PiiTransmit denied by default)");
+        println!("  Audit log:  ON (.agentis/audit/)");
+        println!("  LLM:        mock (configure in .agentis/config)");
+    } else {
+        println!("Initialized empty Agentis repository with genesis branch.");
+        println!();
+        println!("  agentis go examples/fast-demo.ag    # try it now");
+    }
     Ok(())
 }
 
@@ -231,6 +247,43 @@ llm.backend = mock
 # llm.endpoint = https://api.x.ai/v1/messages
 # llm.model = grok-3
 # llm.api_key_env = XAI_API_KEY
+
+# Agent limits
+# max_concurrent_agents = 16
+
+# Trace (quiet = only LLM wait, normal = agent lifecycle, verbose = everything)
+trace.level = normal
+";
+
+const SECURE_CONFIG: &str = "\
+# Agentis Configuration (--secure)
+# Security-first defaults for production use.
+
+llm.backend = mock
+
+# --- Claude CLI (flat-rate, recommended) ---
+# llm.backend = cli
+# llm.command = claude
+# llm.args = -p --output-format text
+
+# --- Ollama (local, free — recommended for sensitive data) ---
+# llm.backend = cli
+# llm.command = ollama
+# llm.args = run llama3
+
+# --- Anthropic API (per-token) ---
+# llm.backend = http
+# llm.endpoint = https://api.anthropic.com/v1/messages
+# llm.model = claude-sonnet-4-20250514
+# llm.api_key_env = ANTHROPIC_API_KEY
+
+# PII Protection (Phase 5: Data Guardians)
+# PiiTransmit is DENIED by default. To allow PII in prompts:
+# pii_transmit = allow
+pii_transmit = deny
+
+# Audit logging (enabled — all prompts are logged)
+audit = on
 
 # Agent limits
 # max_concurrent_agents = 16
