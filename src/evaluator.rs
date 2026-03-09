@@ -126,6 +126,25 @@ pub enum EvalError {
     NotAStruct(String),
     CapabilityDenied(CapError),
     General(String),
+    /// Wraps an inner error with DAG context path.
+    InContext { context: Vec<String>, inner: Box<EvalError> },
+}
+
+impl EvalError {
+    /// Wrap this error with a DAG context entry (unless it's a Return).
+    fn with_context(self, ctx: String) -> Self {
+        match self {
+            EvalError::Return(_) => self,
+            EvalError::InContext { mut context, inner } => {
+                context.insert(0, ctx);
+                EvalError::InContext { context, inner }
+            }
+            other => EvalError::InContext {
+                context: vec![ctx],
+                inner: Box::new(other),
+            },
+        }
+    }
 }
 
 impl std::fmt::Display for EvalError {
@@ -153,6 +172,10 @@ impl std::fmt::Display for EvalError {
             EvalError::NotAStruct(t) => write!(f, "field access on non-struct type: {t}"),
             EvalError::CapabilityDenied(e) => write!(f, "capability denied: {e}"),
             EvalError::General(msg) => write!(f, "{msg}"),
+            EvalError::InContext { context, inner } => {
+                let path = context.join(" -> ");
+                write!(f, "{path}:\n  {inner}")
+            }
         }
     }
 }
@@ -931,6 +954,8 @@ impl<'a> Evaluator<'a> {
         }
 
         // Execute body
+        let callee_name = expr.callee.clone();
+        let kind = if is_agent { "agent" } else { "fn" };
         let result = match self.eval_block_inner(&body.statements) {
             Ok(v) => v,
             Err(EvalError::Return(v)) => v,
@@ -939,7 +964,7 @@ impl<'a> Evaluator<'a> {
                 if let Some(env) = saved_env {
                     self.env = env;
                 }
-                return Err(e);
+                return Err(e.with_context(format!("{kind} \"{callee_name}\"")));
             }
         };
 
@@ -1377,7 +1402,7 @@ impl<'a> Evaluator<'a> {
                 // Failure: restore everything, no side effects
                 self.env = saved_env;
                 self.budget = saved_budget;
-                Err(e)
+                Err(e.with_context(format!("explore \"{}\"", expr.name)))
             }
         }
     }
@@ -1651,7 +1676,10 @@ mod tests {
             }
             loop_forever(0);
         "#, 100);
-        assert!(matches!(result, Err(EvalError::CognitiveOverload { .. })));
+        // Error is wrapped in InContext from the call chain
+        assert!(result.is_err());
+        let err_str = format!("{}", result.unwrap_err());
+        assert!(err_str.contains("CognitiveOverload"));
     }
 
     // --- Agent ---
@@ -2704,5 +2732,58 @@ mod tests {
             await(h);
         "#);
         assert_eq!(output, vec!["agent_handle"]);
+    }
+
+    // --- AST-native diagnostics ---
+
+    #[test]
+    fn error_context_in_function() {
+        let result = eval(r#"
+            fn bad() -> int {
+                return x;
+            }
+            bad();
+        "#);
+        let err_str = format!("{}", result.unwrap_err());
+        assert!(err_str.contains("fn \"bad\""));
+        assert!(err_str.contains("undefined variable: x"));
+    }
+
+    #[test]
+    fn error_context_in_agent() {
+        let result = eval(r#"
+            agent broken() -> int {
+                return y;
+            }
+            broken();
+        "#);
+        let err_str = format!("{}", result.unwrap_err());
+        assert!(err_str.contains("agent \"broken\""));
+        assert!(err_str.contains("undefined variable: y"));
+    }
+
+    #[test]
+    fn error_context_nested() {
+        let result = eval(r#"
+            fn inner() -> int {
+                return z;
+            }
+            fn outer() -> int {
+                return inner();
+            }
+            outer();
+        "#);
+        let err_str = format!("{}", result.unwrap_err());
+        assert!(err_str.contains("fn \"inner\""));
+        assert!(err_str.contains("fn \"outer\""));
+        assert!(err_str.contains("undefined variable: z"));
+    }
+
+    #[test]
+    fn error_in_context_display() {
+        let inner = EvalError::UndefinedVariable("x".into());
+        let wrapped = inner.with_context("fn \"calc\"".into());
+        let s = format!("{wrapped}");
+        assert_eq!(s, "fn \"calc\":\n  undefined variable: x");
     }
 }
