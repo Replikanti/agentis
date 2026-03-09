@@ -65,12 +65,15 @@ indicator to stderr before and after any LLM network call:
 
 ```
 [llm] requesting claude-sonnet-4-20250514 ...
-[llm] received (4.2s)
+[llm] still waiting ... (5.0s)
+[llm] received (7.8s)
 ```
 
+The "still waiting" line repeats every 4 seconds if the LLM hasn't responded.
 This is not optional. Without it, 60–80% of new users will Ctrl+C during
 their first `agentis go` because the terminal appears frozen. No external
 spinner crates — plain `eprint!` / `eprintln!` with `Instant::elapsed()`.
+Implementation: spawn a timer thread that prints to stderr; cancel on response.
 
 **Trace events** (written to stderr, not stdout):
 
