@@ -39,6 +39,8 @@ const TAG_VALUE_STRING: u8 = 0xB2;
 const TAG_VALUE_BOOL: u8 = 0xB3;
 const TAG_VALUE_STRUCT: u8 = 0xB4;
 const TAG_VALUE_VOID: u8 = 0xB5;
+const TAG_VALUE_LIST: u8 = 0xB6;
+const TAG_VALUE_MAP: u8 = 0xB7;
 const TAG_SCOPE: u8 = 0xC0;
 
 // --- Memory Snapshot ---
@@ -217,6 +219,23 @@ fn write_value(buf: &mut Vec<u8>, val: &Value) {
         Value::Void => {
             buf.push(TAG_VALUE_VOID);
         }
+        Value::List(items) => {
+            buf.push(TAG_VALUE_LIST);
+            write_u32(buf, items.len() as u32);
+            for item in items {
+                write_value(buf, item);
+            }
+        }
+        Value::Map(entries) => {
+            buf.push(TAG_VALUE_MAP);
+            write_u32(buf, entries.len() as u32);
+            let mut sorted: Vec<_> = entries.iter().collect();
+            sorted.sort_by(|(a, _), (b, _)| format!("{a}").cmp(&format!("{b}")));
+            for (k, v) in sorted {
+                write_value(buf, k);
+                write_value(buf, v);
+            }
+        }
     }
 }
 
@@ -292,6 +311,24 @@ fn read_value(data: &[u8], pos: &mut usize) -> Result<Value, SnapshotError> {
             Ok(Value::Struct(name, fields))
         }
         TAG_VALUE_VOID => Ok(Value::Void),
+        TAG_VALUE_LIST => {
+            let count = read_u32(data, pos)?;
+            let mut items = Vec::new();
+            for _ in 0..count {
+                items.push(read_value(data, pos)?);
+            }
+            Ok(Value::List(items))
+        }
+        TAG_VALUE_MAP => {
+            let count = read_u32(data, pos)?;
+            let mut entries = Vec::new();
+            for _ in 0..count {
+                let k = read_value(data, pos)?;
+                let v = read_value(data, pos)?;
+                entries.push((k, v));
+            }
+            Ok(Value::Map(entries))
+        }
         _ => Err(SnapshotError::InvalidFormat(format!(
             "unknown value tag: 0x{tag:02x}"
         ))),

@@ -53,6 +53,8 @@ pub enum Token {
     RParen,      // )
     LBrace,      // {
     RBrace,      // }
+    LBracket,    // [
+    RBracket,    // ]
     Comma,       // ,
     Semicolon,   // ;
     Colon,       // :
@@ -315,6 +317,8 @@ impl Lexer {
             ')' => Token::RParen,
             '{' => Token::LBrace,
             '}' => Token::RBrace,
+            '[' => Token::LBracket,
+            ']' => Token::RBracket,
             ',' => Token::Comma,
             ';' => Token::Semicolon,
             ':' => Token::Colon,

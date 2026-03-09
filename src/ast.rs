@@ -145,6 +145,8 @@ pub enum Expr {
     Validate(Box<ValidateExpr>),
     Explore(Box<ExploreBlock>),
     FieldAccess(Box<FieldAccessExpr>),
+    ListLiteral(Vec<Expr>),
+    MapLiteral(Vec<(Expr, Expr)>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -558,6 +560,8 @@ const TAG_EXPR_PROMPT: u8 = 0x59;
 const TAG_EXPR_VALIDATE: u8 = 0x5A;
 const TAG_EXPR_EXPLORE: u8 = 0x5B;
 const TAG_EXPR_FIELD_ACCESS: u8 = 0x5C;
+const TAG_EXPR_LIST: u8 = 0x5D;
+const TAG_EXPR_MAP: u8 = 0x5E;
 
 impl Expr {
     fn write(&self, w: &mut Writer) {
@@ -633,6 +637,21 @@ impl Expr {
                 fa.object.write(w);
                 w.write_str(&fa.field);
             }
+            Expr::ListLiteral(items) => {
+                w.write_u8(TAG_EXPR_LIST);
+                w.write_u16(items.len() as u16);
+                for item in items {
+                    item.write(w);
+                }
+            }
+            Expr::MapLiteral(entries) => {
+                w.write_u8(TAG_EXPR_MAP);
+                w.write_u16(entries.len() as u16);
+                for (k, v) in entries {
+                    k.write(w);
+                    v.write(w);
+                }
+            }
         }
     }
 
@@ -694,6 +713,24 @@ impl Expr {
                 let object = Expr::read(r)?;
                 let field = r.read_str()?;
                 Ok(Expr::FieldAccess(Box::new(FieldAccessExpr { object, field })))
+            }
+            TAG_EXPR_LIST => {
+                let count = r.read_u16()? as usize;
+                let mut items = Vec::with_capacity(count);
+                for _ in 0..count {
+                    items.push(Expr::read(r)?);
+                }
+                Ok(Expr::ListLiteral(items))
+            }
+            TAG_EXPR_MAP => {
+                let count = r.read_u16()? as usize;
+                let mut entries = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let k = Expr::read(r)?;
+                    let v = Expr::read(r)?;
+                    entries.push((k, v));
+                }
+                Ok(Expr::MapLiteral(entries))
             }
             _ => Err(SerError(format!("unknown expr tag: 0x{tag:02X}"))),
         }
@@ -1463,5 +1500,27 @@ mod tests {
         let bytes1 = program.to_bytes();
         let bytes2 = program.to_bytes();
         assert_eq!(bytes1, bytes2, "serialization must be deterministic");
+    }
+
+    #[test]
+    fn serialize_list_literal_empty() {
+        round_trip(&Expr::ListLiteral(vec![]));
+    }
+
+    #[test]
+    fn serialize_list_literal_items() {
+        round_trip(&Expr::ListLiteral(vec![
+            Expr::IntLiteral(1),
+            Expr::StringLiteral("hello".into()),
+            Expr::BoolLiteral(true),
+        ]));
+    }
+
+    #[test]
+    fn serialize_map_literal() {
+        round_trip(&Expr::MapLiteral(vec![
+            (Expr::StringLiteral("key".into()), Expr::IntLiteral(42)),
+            (Expr::IntLiteral(1), Expr::BoolLiteral(false)),
+        ]));
     }
 }

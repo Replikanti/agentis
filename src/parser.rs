@@ -17,11 +17,12 @@ impl std::fmt::Display for ParseError {
 pub struct Parser {
     tokens: Vec<SpannedToken>,
     pos: usize,
+    errors: Vec<ParseError>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
-        Self { tokens, pos: 0 }
+        Self { tokens, pos: 0, errors: Vec::new() }
     }
 
     pub fn parse_source(source: &str) -> Result<Program, ParseError> {
@@ -34,12 +35,57 @@ impl Parser {
         parser.parse_program()
     }
 
+    /// Parse and return all collected errors (for multi-error reporting).
+    pub fn parse_source_multi(source: &str) -> Result<Program, Vec<ParseError>> {
+        let tokens = Lexer::new(source).tokenize().map_err(|e| vec![ParseError {
+            message: e.message,
+            line: e.line,
+            column: e.column,
+        }])?;
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program_recovering();
+        if parser.errors.is_empty() {
+            Ok(program)
+        } else {
+            Err(parser.errors)
+        }
+    }
+
     pub fn parse_program(&mut self) -> Result<Program, ParseError> {
         let mut declarations = Vec::new();
         while !self.is_at_end() {
             declarations.push(self.parse_declaration()?);
         }
         Ok(Program { declarations })
+    }
+
+    fn parse_program_recovering(&mut self) -> Program {
+        let mut declarations = Vec::new();
+        while !self.is_at_end() {
+            match self.parse_declaration() {
+                Ok(decl) => declarations.push(decl),
+                Err(e) => {
+                    self.errors.push(e);
+                    self.synchronize();
+                }
+            }
+        }
+        Program { declarations }
+    }
+
+    fn synchronize(&mut self) {
+        self.advance();
+        while !self.is_at_end() {
+            // Stop at statement boundaries
+            match self.current_token() {
+                Token::Fn | Token::Agent | Token::Type | Token::Let | Token::Return => return,
+                Token::Semicolon => {
+                    self.advance();
+                    return;
+                }
+                _ => self.advance(),
+            }
+        }
     }
 
     // --- Declarations ---
@@ -336,6 +382,7 @@ impl Parser {
             Token::Prompt => self.parse_prompt_expr(),
             Token::Validate => self.parse_validate_expr(),
             Token::Explore => self.parse_explore_expr(),
+            Token::LBracket => self.parse_list_literal(),
             Token::Identifier(_) => {
                 let name = self.expect_identifier()?;
                 Ok(Expr::Identifier(name))
@@ -422,6 +469,20 @@ impl Parser {
         };
         let body = self.parse_block()?;
         Ok(Expr::Explore(Box::new(ExploreBlock { name, body })))
+    }
+
+    // [expr, expr, ...]
+    fn parse_list_literal(&mut self) -> Result<Expr, ParseError> {
+        self.expect(Token::LBracket)?;
+        let mut items = Vec::new();
+        while self.current_token() != Token::RBracket {
+            items.push(self.parse_expression()?);
+            if self.current_token() == Token::Comma {
+                self.advance();
+            }
+        }
+        self.expect(Token::RBracket)?;
+        Ok(Expr::ListLiteral(items))
     }
 
     // --- Token helpers ---
@@ -1027,5 +1088,49 @@ mod tests {
         let err = parse_err("let x = ;");
         assert!(err.line > 0);
         assert!(err.column > 0);
+    }
+
+    // --- Multi-error recovery ---
+
+    #[test]
+    fn multi_error_collects_multiple() {
+        let result = Parser::parse_source_multi("let x = ; let y = 42; let z = ;");
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.len() >= 2, "expected at least 2 errors, got {}", errors.len());
+    }
+
+    #[test]
+    fn multi_error_valid_source() {
+        let result = Parser::parse_source_multi("let x = 42;");
+        assert!(result.is_ok());
+    }
+
+    // --- List literal parsing ---
+
+    #[test]
+    fn parse_empty_list() {
+        let program = parse("[];");
+        match &program.declarations[0] {
+            Declaration::Statement(Statement::Expression(es)) => {
+                assert!(matches!(es.expr, Expr::ListLiteral(ref items) if items.is_empty()));
+            }
+            _ => panic!("expected expression statement"),
+        }
+    }
+
+    #[test]
+    fn parse_list_with_items() {
+        let program = parse("[1, 2, 3];");
+        match &program.declarations[0] {
+            Declaration::Statement(Statement::Expression(es)) => {
+                if let Expr::ListLiteral(items) = &es.expr {
+                    assert_eq!(items.len(), 3);
+                } else {
+                    panic!("expected list literal");
+                }
+            }
+            _ => panic!("expected expression statement"),
+        }
     }
 }
