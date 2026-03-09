@@ -6,29 +6,14 @@
 
 // --- Binary format tag bytes ---
 // Each node type gets a unique tag byte for deserialization dispatch.
+// Top-level and structural tags:
 const TAG_PROGRAM: u8 = 0x01;
-const TAG_FN_DECL: u8 = 0x02;
-const TAG_AGENT_DECL: u8 = 0x03;
-const TAG_TYPE_DECL: u8 = 0x04;
-const TAG_LET_STMT: u8 = 0x05;
-const TAG_RETURN_STMT: u8 = 0x06;
-const TAG_EXPR_STMT: u8 = 0x07;
-const TAG_CB_STMT: u8 = 0x08;
-const TAG_IF_EXPR: u8 = 0x10;
-const TAG_CALL_EXPR: u8 = 0x11;
-const TAG_BINARY_EXPR: u8 = 0x12;
-const TAG_UNARY_EXPR: u8 = 0x13;
-const TAG_IDENTIFIER: u8 = 0x14;
-const TAG_INT_LITERAL: u8 = 0x15;
-const TAG_FLOAT_LITERAL: u8 = 0x16;
-const TAG_STRING_LITERAL: u8 = 0x17;
-const TAG_BOOL_LITERAL: u8 = 0x18;
-const TAG_EXPLORE_BLOCK: u8 = 0x20;
-const TAG_PROMPT_EXPR: u8 = 0x21;
-const TAG_VALIDATE_EXPR: u8 = 0x22;
 const TAG_BLOCK: u8 = 0x30;
 const TAG_TYPE_NAMED: u8 = 0x40;
 const TAG_TYPE_GENERIC: u8 = 0x41;
+// Expression tags (TAG_EXPR_*) defined near Expr::write/read.
+// Declaration tags (TAG_DECL_*) defined near Declaration::write/read.
+// Statement tags (TAG_STMT_*) defined near Statement::write/read.
 
 // Binary operator tags
 const OP_ADD: u8 = 0x01;

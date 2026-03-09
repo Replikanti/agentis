@@ -66,12 +66,6 @@ pub struct CapHandle {
     token: [u8; 32],
 }
 
-impl CapHandle {
-    pub fn kind(&self) -> CapKind {
-        self.kind
-    }
-}
-
 // --- Capability Error ---
 
 #[derive(Debug, Clone, PartialEq)]
@@ -120,10 +114,6 @@ impl CapabilityRegistry {
         CapHandle { kind, token }
     }
 
-    pub fn grant_all(&mut self) -> Vec<CapHandle> {
-        CapKind::all().iter().map(|k| self.grant(*k)).collect()
-    }
-
     pub fn check(&self, handle: &CapHandle, kind: CapKind) -> Result<(), CapError> {
         if handle.kind != kind {
             return Err(CapError::InvalidHandle);
@@ -141,18 +131,6 @@ impl CapabilityRegistry {
         self.revoked.insert(handle.token);
     }
 
-    pub fn revoke_kind(&mut self, kind: CapKind) {
-        let tokens: Vec<[u8; 32]> = self
-            .granted
-            .iter()
-            .filter(|(_, k)| **k == kind)
-            .map(|(t, _)| *t)
-            .collect();
-        for token in tokens {
-            self.revoked.insert(token);
-        }
-    }
-
     fn mint_token(&mut self, kind: CapKind) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(self.secret);
@@ -165,26 +143,6 @@ impl CapabilityRegistry {
         token
     }
 }
-
-/// WASM host import signatures for capability-gated operations.
-///
-/// Module: "agentis_cap"
-///
-/// Functions:
-///   cap_check(kind: i32) -> i32
-///     Returns 1 if the calling module holds a capability of the given kind.
-///
-///   cap_prompt(instruction_ptr: i32, instruction_len: i32,
-///              input_ptr: i32, input_len: i32,
-///              result_ptr: i32) -> i32
-///     Performs an LLM prompt call. Requires CapKind::Prompt.
-///
-///   cap_print(ptr: i32, len: i32)
-///     Prints a string to stdout. Requires CapKind::Stdout.
-///
-///   cap_vcs_branch(name_ptr: i32, name_len: i32) -> i32
-///     Creates a VCS branch. Requires CapKind::VcsWrite.
-pub const WASM_IMPORT_MODULE: &str = "agentis_cap";
 
 fn generate_secret() -> [u8; 32] {
     // Try /dev/urandom first (available on Linux/macOS)
@@ -224,7 +182,7 @@ mod tests {
     fn grant_returns_valid_handle() {
         let mut reg = CapabilityRegistry::new();
         let handle = reg.grant(CapKind::Prompt);
-        assert_eq!(handle.kind(), CapKind::Prompt);
+        assert_eq!(handle.kind, CapKind::Prompt);
     }
 
     #[test]
@@ -266,28 +224,6 @@ mod tests {
             reg.check(&fake, CapKind::Prompt),
             Err(CapError::InvalidHandle)
         ));
-    }
-
-    #[test]
-    fn grant_all_covers_all_kinds() {
-        let mut reg = CapabilityRegistry::new();
-        let handles = reg.grant_all();
-        assert_eq!(handles.len(), CapKind::all().len());
-        for kind in CapKind::all() {
-            assert!(handles.iter().any(|h| h.kind() == *kind));
-        }
-    }
-
-    #[test]
-    fn revoke_kind_revokes_all_of_kind() {
-        let mut reg = CapabilityRegistry::new();
-        let h1 = reg.grant(CapKind::Stdout);
-        let h2 = reg.grant(CapKind::Stdout);
-        let h_other = reg.grant(CapKind::Prompt);
-        reg.revoke_kind(CapKind::Stdout);
-        assert!(reg.check(&h1, CapKind::Stdout).is_err());
-        assert!(reg.check(&h2, CapKind::Stdout).is_err());
-        assert!(reg.check(&h_other, CapKind::Prompt).is_ok());
     }
 
     #[test]
@@ -347,15 +283,6 @@ mod tests {
             token: [0xFF; 32],
         };
         reg.revoke(&fake); // Should not panic
-    }
-
-    #[test]
-    fn new_grant_after_revoke_kind_works() {
-        let mut reg = CapabilityRegistry::new();
-        let _h1 = reg.grant(CapKind::Stdout);
-        reg.revoke_kind(CapKind::Stdout);
-        let h2 = reg.grant(CapKind::Stdout);
-        assert!(reg.check(&h2, CapKind::Stdout).is_ok());
     }
 
     #[test]
