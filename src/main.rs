@@ -164,9 +164,35 @@ fn cmd_init() -> Result<(), AgentisError> {
     let config_path = root.join("config");
     std::fs::write(&config_path, DEFAULT_CONFIG)?;
 
+    // Extract bundled examples
+    let examples_dir = Path::new("examples");
+    if !examples_dir.exists() {
+        std::fs::create_dir_all(examples_dir)?;
+        for (name, content) in BUNDLED_EXAMPLES {
+            std::fs::write(examples_dir.join(name), content)?;
+        }
+        // Also copy data.txt to sandbox for pipeline example
+        std::fs::write(sandbox.join("data.txt"), EXAMPLE_DATA)?;
+        println!("Created examples/ directory with 6 programs.");
+    }
+
     println!("Initialized empty Agentis repository with genesis branch.");
+    println!();
+    println!("  agentis go examples/fast-demo.ag    # try it now");
     Ok(())
 }
+
+const BUNDLED_EXAMPLES: &[(&str, &str)] = &[
+    ("fast-demo.ag", include_str!("../examples/fast-demo.ag")),
+    ("hello.ag", include_str!("../examples/hello.ag")),
+    ("classify.ag", include_str!("../examples/classify.ag")),
+    ("pipeline.ag", include_str!("../examples/pipeline.ag")),
+    ("parallel.ag", include_str!("../examples/parallel.ag")),
+    ("explore.ag", include_str!("../examples/explore.ag")),
+    ("README.md", include_str!("../examples/README.md")),
+];
+
+const EXAMPLE_DATA: &str = include_str!("../examples/data.txt");
 
 const DEFAULT_CONFIG: &str = "\
 # Agentis Configuration
