@@ -551,6 +551,9 @@ impl Compiler {
             Expr::MapLiteral(_) => Err(CompileError::UnsupportedFeature(
                 "map literal".to_string(),
             )),
+            Expr::Spawn(_) => Err(CompileError::UnsupportedFeature(
+                "spawn".to_string(),
+            )),
         }
     }
 }

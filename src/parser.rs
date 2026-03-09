@@ -425,6 +425,7 @@ impl Parser {
             Token::Validate => self.parse_validate_expr(),
             Token::Explore => self.parse_explore_expr(),
             Token::LBracket => self.parse_list_literal(),
+            Token::Spawn => self.parse_spawn_expr(),
             Token::Identifier(_) => {
                 let name = self.expect_identifier()?;
                 Ok(Expr::Identifier(name))
@@ -525,6 +526,22 @@ impl Parser {
         }
         self.expect(Token::RBracket)?;
         Ok(Expr::ListLiteral(items))
+    }
+
+    /// Parse `spawn agent_name(args...)`
+    fn parse_spawn_expr(&mut self) -> Result<Expr, ParseError> {
+        self.expect(Token::Spawn)?;
+        let agent_name = self.expect_identifier()?;
+        self.expect(Token::LParen)?;
+        let mut args = Vec::new();
+        while self.current_token() != Token::RParen {
+            args.push(self.parse_expression()?);
+            if self.current_token() == Token::Comma {
+                self.advance();
+            }
+        }
+        self.expect(Token::RParen)?;
+        Ok(Expr::Spawn(Box::new(SpawnExpr { agent_name, args })))
     }
 
     // --- Token helpers ---
@@ -1222,5 +1239,37 @@ mod tests {
         assert_eq!(program.declarations.len(), 2);
         assert!(matches!(&program.declarations[0], Declaration::Import(_)));
         assert!(matches!(&program.declarations[1], Declaration::Function(_)));
+    }
+
+    #[test]
+    fn parse_spawn_no_args() {
+        let program = parse("let h = spawn worker();");
+        if let Declaration::Statement(Statement::Let(l)) = &program.declarations[0] {
+            match &l.value {
+                Expr::Spawn(s) => {
+                    assert_eq!(s.agent_name, "worker");
+                    assert!(s.args.is_empty());
+                }
+                _ => panic!("expected spawn expr"),
+            }
+        } else {
+            panic!("expected let statement");
+        }
+    }
+
+    #[test]
+    fn parse_spawn_with_args() {
+        let program = parse(r#"let h = spawn scanner("url", 42);"#);
+        if let Declaration::Statement(Statement::Let(l)) = &program.declarations[0] {
+            match &l.value {
+                Expr::Spawn(s) => {
+                    assert_eq!(s.agent_name, "scanner");
+                    assert_eq!(s.args.len(), 2);
+                }
+                _ => panic!("expected spawn expr"),
+            }
+        } else {
+            panic!("expected let statement");
+        }
     }
 }

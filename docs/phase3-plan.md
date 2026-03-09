@@ -43,7 +43,7 @@ no wasmer, no wasmi). Therefore:
 - [x] M11: Pluggable LLM Backend (prompt stops being a mock)
 - [x] M12: Capability-Gated I/O (real file read/write + HTTP via OCap)
 - [x] M13: Module System (import/export across Agentis repositories)
-- [ ] M14: Multi-Agent Orchestration (message passing, parallel agents)
+- [x] M14: Multi-Agent Orchestration (message passing, parallel agents)
 
 ### M11: Pluggable LLM Backend
 

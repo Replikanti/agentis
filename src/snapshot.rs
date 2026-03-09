@@ -236,6 +236,10 @@ fn write_value(buf: &mut Vec<u8>, val: &Value) {
                 write_value(buf, v);
             }
         }
+        Value::AgentHandle(_) => {
+            // Agent handles are transient — snapshot as void
+            buf.push(TAG_VALUE_VOID);
+        }
     }
 }
 
