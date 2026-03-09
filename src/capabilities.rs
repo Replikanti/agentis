@@ -13,9 +13,14 @@ pub enum CapKind {
     VcsRead,
     VcsWrite,
     Stdout,
+    /// Allow sending data containing potential PII to LLM backends.
+    /// Excluded from `grant_all()` — must be granted explicitly.
+    PiiTransmit,
 }
 
 impl CapKind {
+    /// All capabilities EXCEPT PiiTransmit.
+    /// PiiTransmit must be granted explicitly — it is never part of grant_all().
     pub fn all() -> &'static [CapKind] {
         &[
             CapKind::Prompt,
@@ -39,6 +44,7 @@ impl CapKind {
             CapKind::VcsRead => 0x06,
             CapKind::VcsWrite => 0x07,
             CapKind::Stdout => 0x08,
+            CapKind::PiiTransmit => 0x09,
         }
     }
 }
@@ -54,6 +60,7 @@ impl std::fmt::Display for CapKind {
             CapKind::VcsRead => write!(f, "vcs_read"),
             CapKind::VcsWrite => write!(f, "vcs_write"),
             CapKind::Stdout => write!(f, "stdout"),
+            CapKind::PiiTransmit => write!(f, "pii_transmit"),
         }
     }
 }

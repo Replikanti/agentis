@@ -10,6 +10,7 @@ mod lexer;
 mod llm;
 mod network;
 mod parser;
+mod pii;
 mod refs;
 mod snapshot;
 mod storage;
@@ -52,11 +53,12 @@ fn main() {
         }
         "go" => {
             if args.len() < 3 {
-                eprintln!("Usage: agentis go <source_file> [--trace]");
+                eprintln!("Usage: agentis go <source_file> [--trace] [--grant-pii]");
                 process::exit(1);
             }
             let force_verbose = args.iter().any(|a| a == "--trace");
-            cmd_go(&args[2], force_verbose)
+            let grant_pii = args.iter().any(|a| a == "--grant-pii");
+            cmd_go(&args[2], force_verbose, grant_pii)
         }
         "doctor" => cmd_doctor(),
         "branch" => {
@@ -234,7 +236,7 @@ llm.backend = mock
 trace.level = normal
 ";
 
-fn cmd_go(source_file: &str, force_verbose: bool) -> Result<(), AgentisError> {
+fn cmd_go(source_file: &str, force_verbose: bool, grant_pii: bool) -> Result<(), AgentisError> {
     let (store, refs) = ensure_initialized()?;
 
     // Commit
@@ -271,6 +273,11 @@ fn cmd_go(source_file: &str, force_verbose: bool) -> Result<(), AgentisError> {
         .with_max_agents(max_agents)
         .with_tracer(&tracer);
     evaluator.grant_all();
+
+    // PiiTransmit: grant only if --grant-pii flag or config says allow
+    if grant_pii || cfg.get("pii_transmit").is_some_and(|v| v == "allow") {
+        evaluator.grant(capabilities::CapKind::PiiTransmit);
+    }
     match evaluator.eval_program(&program) {
         Ok(_) => {
             for line in evaluator.output() {
@@ -330,6 +337,12 @@ fn cmd_run(branch: &str) -> Result<(), AgentisError> {
         .with_max_agents(max_agents)
         .with_tracer(&tracer);
     evaluator.grant_all();
+
+    // PiiTransmit from config only (no CLI flag for `run`)
+    if cfg.get("pii_transmit").is_some_and(|v| v == "allow") {
+        evaluator.grant(capabilities::CapKind::PiiTransmit);
+    }
+
     match evaluator.eval_program(&program) {
         Ok(_) => {
             for line in evaluator.output() {
