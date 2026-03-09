@@ -1,45 +1,102 @@
 # Agentis
 
-**Agentis** is not just another programming language. It is a system where the **programming language and the Version Control System (VCS) are fused into a single identity.**
+An AI-native programming language fused with a Version Control System.
+Code is a binary, hashed DAG — not text files. The LLM is the standard library.
 
-In the traditional world, code is plain text and Git tries to track it. In Agentis, there are no text files. Code is a binary, hashed Directed Acyclic Graph (DAG), stored directly in the `.agentis/objects/` directory.
-
-### Why Agentis?
-* **Zero-Dependency Rust:** No SQLite, no Tokio, no bulky frameworks. Pure, raw Rust (only `sha2` for integrity).
-* **AI-Native:** Designed for agents. Instead of merge conflicts, we use semantic branching (`explore` blocks).
-* **Cognitive Budget (CB):** Every operation costs "fuel". Agentis kills infinite loops before they eat your CPU.
-* **P2P Decentralized:** Built-in synchronization over raw TCP. No central server, no middlemen.
-* **Genesis-First:** Forget `main`. Everything begins with the `genesis` branch.
-
----
-
-## Architecture (Hardcore Vanilla)
-
-Agentis works as a hybrid between a compiler and Git internals:
-1. **Lexer/Parser:** Transforms code into an Abstract Syntax Tree (AST).
-2. **Hashing:** Every AST node gets a unique SHA-256 hash.
-3. **Storage:** Nodes are saved as binary objects (content-addressable storage).
-4. **Interpreter:** Executes the AST directly while enforcing the **Cognitive Budget (CB)**.
-5. **P2P Sync:** Code synchronization happens over raw TCP sockets via an "inventory walk" protocol.
-
-## Cognitive Budget (CB)
-To prevent hallucinating agents from bringing down the system, we use **CB**.
-* Math operations: 1 CB
-* Function calls: 5 CB
-* Memory allocation: Dynamic based on size
-
-Once the budget hits zero, the system raises a `CognitiveOverload` and safely terminates the execution branch.
-
-## Getting Started
+## Install
 
 ```bash
-# Initialize a new repository and the genesis branch
-agentis init
-
-# Execute code from a specific branch
-agentis run genesis
+curl -fsSL https://raw.githubusercontent.com/Replikanti/agentis/main/install.sh | sh
 ```
 
----
+Or download a binary directly from [Releases](https://github.com/Replikanti/agentis/releases).
 
-> "Agentis uses text files today only so it can eliminate them forever tomorrow."
+| Platform | Binary |
+|----------|--------|
+| Linux x86_64 | `agentis-linux-x86_64` |
+| Linux aarch64 | `agentis-linux-aarch64` |
+| macOS x86_64 | `agentis-macos-x86_64` |
+| macOS Apple Silicon | `agentis-macos-aarch64` |
+
+## Quick Start
+
+```bash
+agentis init                          # creates .agentis/ with config
+# Edit .agentis/config — uncomment your LLM backend (claude, ollama, API)
+agentis go examples/fast-demo.ag      # first run — output in 3-8 seconds
+```
+
+## Everything Is Prompt
+
+In Ruby, everything is an object. In Agentis, **everything is a prompt**.
+
+There is no stdlib. No `string.split()`. No `list.filter()`. If an agent
+needs to split a string, it asks the LLM. The LLM is the standard library.
+
+```
+// Extract emails — no regex, no stdlib, just a prompt
+let emails = prompt("Extract all email addresses", text) -> list<string>;
+
+// Classify with typed output + validation
+agent classifier(text: string) -> Category {
+    cb 200;
+    let result = prompt("Classify this text", text) -> Category;
+    validate result {
+        result.confidence > 0.5
+    };
+    return result;
+}
+
+// Evolutionary branching — survive or die
+explore "approach-a" {
+    let sol = solver(problem);
+    validate sol { sol.score > 70 };
+}
+```
+
+## LLM Backends
+
+Configure in `.agentis/config` (created by `agentis init`):
+
+| Backend | Config | Cost |
+|---------|--------|------|
+| **Claude CLI** (recommended) | `llm.backend = cli` | Flat-rate subscription |
+| **Ollama** (local) | `llm.backend = cli`, `llm.command = ollama` | Free |
+| **Anthropic API** | `llm.backend = http` | Per-token |
+| **Gemini CLI** | `llm.backend = cli`, `llm.command = gemini` | Flat-rate |
+| **Mock** (default) | `llm.backend = mock` | No LLM needed |
+
+## CLI
+
+```bash
+agentis init                  # Create .agentis/ with genesis branch
+agentis go <file.ag>          # Commit + run in one step
+agentis go <file.ag> --trace  # Same, with verbose trace output
+agentis doctor                # Pre-flight environment check
+agentis commit <file.ag>      # Parse and store AST
+agentis run <branch>          # Execute code from a branch
+agentis branch                # List branches
+agentis branch <name>         # Create new branch
+agentis switch <name>         # Switch branch
+agentis log                   # Show commit history
+```
+
+## Why Agentis?
+
+- **AI-native.** Designed for agents. `prompt` is a language primitive, not a library call.
+- **Cognitive Budget.** Every operation costs fuel. Prevents runaway agents. Forces efficient prompt design.
+- **Evolutionary branching.** `explore` blocks fork execution — success creates a branch, failure is silently discarded.
+- **Content-addressed code.** SHA-256 hashed AST. No merge conflicts. Import by hash.
+- **Sandboxed I/O.** File operations are jailed to `.agentis/sandbox/`. Network calls require domain whitelisting.
+- **Zero bloat.** Vanilla Rust. `sha2` + `ureq` only.
+
+## Docs
+
+- [Language Reference](docs/language.md) — syntax, types, built-ins, CB costs
+- [VCS Model](docs/vcs.md) — content-addressed storage, commits, branches
+- [Philosophy](docs/philosophy.md) — why everything is prompt
+- [Examples](examples/README.md) — 6 programs from hello world to evolutionary branching
+
+## License
+
+MIT
