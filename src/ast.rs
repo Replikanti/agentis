@@ -58,7 +58,15 @@ pub enum Declaration {
     Function(FnDecl),
     Agent(AgentDecl),
     Type(TypeDecl),
+    Import(ImportDecl),
     Statement(Statement),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportDecl {
+    pub hash: String,
+    pub alias: Option<String>,
+    pub names: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -866,6 +874,7 @@ const TAG_DECL_FN: u8 = 0x70;
 const TAG_DECL_AGENT: u8 = 0x71;
 const TAG_DECL_TYPE: u8 = 0x72;
 const TAG_DECL_STMT: u8 = 0x73;
+const TAG_DECL_IMPORT: u8 = 0x74;
 
 impl Declaration {
     fn write(&self, w: &mut Writer) {
@@ -901,6 +910,20 @@ impl Declaration {
                 for f in &t.fields {
                     f.write(w);
                 }
+            }
+            Declaration::Import(imp) => {
+                w.write_u8(TAG_DECL_IMPORT);
+                w.write_str(&imp.hash);
+                w.write_option(&imp.alias, |w| {
+                    w.write_str(imp.alias.as_ref().unwrap());
+                });
+                w.write_option(&imp.names, |w| {
+                    let names = imp.names.as_ref().unwrap();
+                    w.write_u16(names.len() as u16);
+                    for name in names {
+                        w.write_str(name);
+                    }
+                });
             }
             Declaration::Statement(s) => {
                 w.write_u8(TAG_DECL_STMT);
@@ -942,6 +965,19 @@ impl Declaration {
                     fields.push(TypeField::read(r)?);
                 }
                 Ok(Declaration::Type(TypeDecl { name, fields }))
+            }
+            TAG_DECL_IMPORT => {
+                let hash = r.read_str()?;
+                let alias = r.read_option(|r| r.read_str())?;
+                let names = r.read_option(|r| {
+                    let count = r.read_u16()? as usize;
+                    let mut names = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        names.push(r.read_str()?);
+                    }
+                    Ok(names)
+                })?;
+                Ok(Declaration::Import(ImportDecl { hash, alias, names }))
             }
             TAG_DECL_STMT => {
                 let stmt = Statement::read(r)?;
@@ -1522,5 +1558,65 @@ mod tests {
             (Expr::StringLiteral("key".into()), Expr::IntLiteral(42)),
             (Expr::IntLiteral(1), Expr::BoolLiteral(false)),
         ]));
+    }
+
+    #[test]
+    fn serialize_import_bare() {
+        let decl = Declaration::Import(ImportDecl {
+            hash: "abc123".into(),
+            alias: None,
+            names: None,
+        });
+        let bytes = decl.to_bytes();
+        let restored = Declaration::from_bytes(&bytes).unwrap();
+        assert_eq!(decl, restored);
+    }
+
+    #[test]
+    fn serialize_import_aliased() {
+        let decl = Declaration::Import(ImportDecl {
+            hash: "deadbeef".into(),
+            alias: Some("utils".into()),
+            names: None,
+        });
+        let bytes = decl.to_bytes();
+        let restored = Declaration::from_bytes(&bytes).unwrap();
+        assert_eq!(decl, restored);
+    }
+
+    #[test]
+    fn serialize_import_selective() {
+        let decl = Declaration::Import(ImportDecl {
+            hash: "hash456".into(),
+            alias: None,
+            names: Some(vec!["foo".into(), "bar".into()]),
+        });
+        let bytes = decl.to_bytes();
+        let restored = Declaration::from_bytes(&bytes).unwrap();
+        assert_eq!(decl, restored);
+    }
+
+    #[test]
+    fn serialize_program_with_import() {
+        let program = Program {
+            declarations: vec![
+                Declaration::Import(ImportDecl {
+                    hash: "libhash".into(),
+                    alias: None,
+                    names: Some(vec!["helper".into()]),
+                }),
+                Declaration::Function(FnDecl {
+                    name: "main".into(),
+                    params: vec![],
+                    return_type: Some(TypeAnnotation::Named("int".into())),
+                    body: Block { statements: vec![Statement::Return(ReturnStmt {
+                        value: Some(Expr::IntLiteral(42)),
+                    })] },
+                }),
+            ],
+        };
+        let bytes = program.to_bytes();
+        let restored = Program::from_bytes(&bytes).unwrap();
+        assert_eq!(program, restored);
     }
 }

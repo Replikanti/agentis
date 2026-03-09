@@ -78,7 +78,7 @@ impl Parser {
         while !self.is_at_end() {
             // Stop at statement boundaries
             match self.current_token() {
-                Token::Fn | Token::Agent | Token::Type | Token::Let | Token::Return => return,
+                Token::Fn | Token::Agent | Token::Type | Token::Import | Token::Let | Token::Return => return,
                 Token::Semicolon => {
                     self.advance();
                     return;
@@ -95,6 +95,7 @@ impl Parser {
             Token::Fn => Ok(Declaration::Function(self.parse_fn_decl()?)),
             Token::Agent => Ok(Declaration::Agent(self.parse_agent_decl()?)),
             Token::Type => Ok(Declaration::Type(self.parse_type_decl()?)),
+            Token::Import => Ok(Declaration::Import(self.parse_import_decl()?)),
             _ => Ok(Declaration::Statement(self.parse_statement()?)),
         }
     }
@@ -133,6 +134,47 @@ impl Parser {
         }
         self.expect(Token::RBrace)?;
         Ok(TypeDecl { name, fields })
+    }
+
+    /// Parse `import "hash" as alias;` or `import "hash" { name1, name2 };`
+    fn parse_import_decl(&mut self) -> Result<ImportDecl, ParseError> {
+        self.expect(Token::Import)?;
+        let hash = match self.current_token() {
+            Token::StringLiteral(s) => {
+                let h = s.clone();
+                self.advance();
+                h
+            }
+            other => {
+                return Err(self.error(&format!(
+                    "expected string literal (hash), got {other:?}"
+                )));
+            }
+        };
+
+        let mut alias = None;
+        let mut names = None;
+
+        if self.current_token() == Token::As {
+            // import "hash" as alias;
+            self.advance();
+            alias = Some(self.expect_identifier()?);
+        } else if self.current_token() == Token::LBrace {
+            // import "hash" { name1, name2 };
+            self.advance();
+            let mut name_list = Vec::new();
+            while self.current_token() != Token::RBrace {
+                name_list.push(self.expect_identifier()?);
+                if self.current_token() == Token::Comma {
+                    self.advance();
+                }
+            }
+            self.expect(Token::RBrace)?;
+            names = Some(name_list);
+        }
+
+        self.expect(Token::Semicolon)?;
+        Ok(ImportDecl { hash, alias, names })
     }
 
     fn parse_param_list(&mut self) -> Result<Vec<Param>, ParseError> {
@@ -1132,5 +1174,53 @@ mod tests {
             }
             _ => panic!("expected expression statement"),
         }
+    }
+
+    #[test]
+    fn parse_import_bare() {
+        let program = parse(r#"import "abc123";"#);
+        assert_eq!(program.declarations.len(), 1);
+        match &program.declarations[0] {
+            Declaration::Import(imp) => {
+                assert_eq!(imp.hash, "abc123");
+                assert!(imp.alias.is_none());
+                assert!(imp.names.is_none());
+            }
+            _ => panic!("expected import"),
+        }
+    }
+
+    #[test]
+    fn parse_import_with_alias() {
+        let program = parse(r#"import "deadbeef" as utils;"#);
+        match &program.declarations[0] {
+            Declaration::Import(imp) => {
+                assert_eq!(imp.hash, "deadbeef");
+                assert_eq!(imp.alias.as_deref(), Some("utils"));
+                assert!(imp.names.is_none());
+            }
+            _ => panic!("expected import"),
+        }
+    }
+
+    #[test]
+    fn parse_import_selective() {
+        let program = parse(r#"import "hash123" { foo, bar };"#);
+        match &program.declarations[0] {
+            Declaration::Import(imp) => {
+                assert_eq!(imp.hash, "hash123");
+                assert!(imp.alias.is_none());
+                assert_eq!(imp.names.as_ref().unwrap(), &["foo", "bar"]);
+            }
+            _ => panic!("expected import"),
+        }
+    }
+
+    #[test]
+    fn parse_import_before_function() {
+        let program = parse(r#"import "lib"; fn main() -> int { return 1; }"#);
+        assert_eq!(program.declarations.len(), 2);
+        assert!(matches!(&program.declarations[0], Declaration::Import(_)));
+        assert!(matches!(&program.declarations[1], Declaration::Function(_)));
     }
 }

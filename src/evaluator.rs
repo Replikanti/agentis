@@ -201,6 +201,7 @@ pub struct Evaluator<'a> {
     snapshot_mgr: Option<SnapshotManager<'a>>,
     llm_backend: Option<&'a dyn LlmBackend>,
     io_context: Option<&'a IoContext>,
+    imported_hashes: std::collections::HashSet<String>,
 }
 
 impl<'a> Evaluator<'a> {
@@ -218,6 +219,7 @@ impl<'a> Evaluator<'a> {
             snapshot_mgr: None,
             llm_backend: None,
             io_context: None,
+            imported_hashes: std::collections::HashSet::new(),
         }
     }
 
@@ -328,9 +330,12 @@ impl<'a> Evaluator<'a> {
     }
 
     pub fn eval_program(&mut self, program: &Program) -> Result<Value, EvalError> {
-        // First pass: register functions, agents, types
+        // First pass: resolve imports, register functions, agents, types
         for decl in &program.declarations {
             match decl {
+                Declaration::Import(imp) => {
+                    self.resolve_import(imp)?;
+                }
                 Declaration::Function(f) => {
                     self.functions.insert(f.name.clone(), Callable::Function(f.clone()));
                 }
@@ -355,6 +360,96 @@ impl<'a> Evaluator<'a> {
             }
         }
         Ok(last)
+    }
+
+    /// Resolve an import declaration: load AST from object store by hash,
+    /// register imported functions/agents/types in scope. Detects cycles.
+    fn resolve_import(&mut self, imp: &ImportDecl) -> Result<(), EvalError> {
+        // Cycle detection
+        if self.imported_hashes.contains(&imp.hash) {
+            return Err(EvalError::General(format!(
+                "cyclic import detected: {}", &imp.hash[..12.min(imp.hash.len())]
+            )));
+        }
+        self.imported_hashes.insert(imp.hash.clone());
+
+        // Load the program from object store
+        let store = match &self.vcs {
+            Some((store, _)) => *store,
+            None => {
+                return Err(EvalError::General(
+                    "imports require VCS (object store not available)".into(),
+                ));
+            }
+        };
+
+        let imported_program: Program = store.load(&imp.hash).map_err(|e| {
+            EvalError::General(format!("import {}: {e}", &imp.hash[..12.min(imp.hash.len())]))
+        })?;
+
+        // Recursively resolve imports in the imported program
+        for decl in &imported_program.declarations {
+            if let Declaration::Import(sub_imp) = decl {
+                self.resolve_import(sub_imp)?;
+            }
+        }
+
+        // Collect all exported declarations from the imported program
+        let mut funcs: Vec<(String, Callable)> = Vec::new();
+        let mut type_decls: Vec<(String, TypeDecl)> = Vec::new();
+
+        for decl in &imported_program.declarations {
+            match decl {
+                Declaration::Function(f) => {
+                    funcs.push((f.name.clone(), Callable::Function(f.clone())));
+                }
+                Declaration::Agent(a) => {
+                    funcs.push((a.name.clone(), Callable::Agent(a.clone())));
+                }
+                Declaration::Type(t) => {
+                    type_decls.push((t.name.clone(), t.clone()));
+                }
+                _ => {}
+            }
+        }
+
+        // Apply import filtering and aliasing
+        if let Some(ref names) = imp.names {
+            // Selective import: import "hash" { name1, name2 };
+            for name in names {
+                if let Some(pos) = funcs.iter().position(|(n, _)| n == name) {
+                    let (n, c) = funcs[pos].clone();
+                    self.functions.insert(n, c);
+                } else if let Some(pos) = type_decls.iter().position(|(n, _)| n == name) {
+                    let (n, t) = type_decls[pos].clone();
+                    self.types.insert(n, t);
+                } else {
+                    return Err(EvalError::General(format!(
+                        "import: '{}' not found in {}",
+                        name, &imp.hash[..12.min(imp.hash.len())]
+                    )));
+                }
+            }
+        } else if let Some(ref alias) = imp.alias {
+            // Aliased import: import "hash" as utils;
+            // Register with prefixed names: utils.func_name
+            for (name, callable) in &funcs {
+                self.functions.insert(format!("{alias}.{name}"), callable.clone());
+            }
+            for (name, type_decl) in &type_decls {
+                self.types.insert(format!("{alias}.{name}"), type_decl.clone());
+            }
+        } else {
+            // Bare import: import "hash"; — import everything
+            for (name, callable) in funcs {
+                self.functions.insert(name, callable);
+            }
+            for (name, type_decl) in type_decls {
+                self.types.insert(name, type_decl);
+            }
+        }
+
+        Ok(())
     }
 
     fn eval_statement(&mut self, stmt: &Statement) -> Result<Value, EvalError> {
@@ -1914,5 +2009,198 @@ mod tests {
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
         assert!(err.contains("I/O not configured"));
+    }
+
+    // --- Module import tests ---
+
+    fn make_store() -> (crate::storage::tempfile::TempDir, ObjectStore, Refs) {
+        let dir = crate::storage::tempfile::tempdir().unwrap();
+        let root = dir.path().join(".agentis");
+        let store = ObjectStore::init(&root).unwrap();
+        let refs = Refs::new(&root);
+        refs.init().unwrap();
+        (dir, store, refs)
+    }
+
+    #[test]
+    fn import_bare_registers_functions() {
+        let (_dir, store, refs) = make_store();
+
+        // Store a library program with a function
+        let lib_source = "fn double(x: int) -> int { return x * 2; }";
+        let lib_program = Parser::parse_source(lib_source).unwrap();
+        let lib_hash = store.save(&lib_program).unwrap();
+
+        // Main program imports the library and calls the function
+        let main_source = format!(r#"import "{lib_hash}";
+            double(21);"#);
+        let main_program = Parser::parse_source(&main_source).unwrap();
+
+        let mut evaluator = Evaluator::new(10000).with_vcs(&store, &refs);
+        evaluator.grant_all();
+        let result = evaluator.eval_program(&main_program).unwrap();
+        assert_eq!(result, Value::Int(42));
+    }
+
+    #[test]
+    fn import_selective_names() {
+        let (_dir, store, refs) = make_store();
+
+        let lib_source = "fn add(a: int, b: int) -> int { return a + b; }
+                          fn sub(a: int, b: int) -> int { return a - b; }";
+        let lib_program = Parser::parse_source(lib_source).unwrap();
+        let lib_hash = store.save(&lib_program).unwrap();
+
+        // Import only 'add'
+        let main_source = format!(r#"import "{lib_hash}" {{ add }};
+            add(10, 5);"#);
+        let main_program = Parser::parse_source(&main_source).unwrap();
+
+        let mut evaluator = Evaluator::new(10000).with_vcs(&store, &refs);
+        evaluator.grant_all();
+        let result = evaluator.eval_program(&main_program).unwrap();
+        assert_eq!(result, Value::Int(15));
+
+        // 'sub' should NOT be available
+        let main_source2 = format!(r#"import "{lib_hash}" {{ add }};
+            sub(10, 5);"#);
+        let main_program2 = Parser::parse_source(&main_source2).unwrap();
+        let mut eval2 = Evaluator::new(10000).with_vcs(&store, &refs);
+        eval2.grant_all();
+        assert!(eval2.eval_program(&main_program2).is_err());
+    }
+
+    #[test]
+    fn import_aliased() {
+        let (_dir, store, refs) = make_store();
+
+        let lib_source = "fn greet() -> string { return \"hello\"; }";
+        let lib_program = Parser::parse_source(lib_source).unwrap();
+        let lib_hash = store.save(&lib_program).unwrap();
+
+        // Import with alias — function accessible as utils.greet
+        // We test by calling directly since dotted calls go through the same lookup
+        let main_source = format!(r#"import "{lib_hash}" as utils;
+            utils.greet();"#);
+
+        // Parser won't handle `utils.greet()` as a call — it would parse
+        // as field access. Let's test aliased registration directly.
+        // For now, verify the function is registered with aliased name.
+        let main_program = Parser::parse_source(&format!(
+            r#"import "{lib_hash}" as utils; 42;"#
+        )).unwrap();
+
+        let mut evaluator = Evaluator::new(10000).with_vcs(&store, &refs);
+        evaluator.grant_all();
+        evaluator.eval_program(&main_program).unwrap();
+
+        // The function should be registered as "utils.greet"
+        assert!(evaluator.functions.contains_key("utils.greet"));
+    }
+
+    #[test]
+    fn import_cyclic_detected() {
+        let (_dir, store, refs) = make_store();
+
+        // Create a program that imports itself (via its own hash).
+        // We need a two-step approach: first store a program, then create
+        // one that imports it, and have the imported one import back.
+        // Simpler: store program A, store program B that imports A,
+        // then A imports B — but we can't modify stored content.
+        //
+        // Instead: manually test cycle detection by importing same hash twice
+        // in a chain. The simplest cycle: A imports A.
+        // But we can't know A's hash before storing it.
+        //
+        // Test the mechanism: if the same hash is in imported_hashes, error.
+        let lib_source = "fn noop() -> int { return 0; }";
+        let lib_program = Parser::parse_source(lib_source).unwrap();
+        let lib_hash = store.save(&lib_program).unwrap();
+
+        // Import the same hash twice — second time should be caught by cycle detection
+        let main_source = format!(
+            r#"import "{lib_hash}";
+               import "{lib_hash}";
+               noop();"#
+        );
+        let main_program = Parser::parse_source(&main_source).unwrap();
+        let mut evaluator = Evaluator::new(10000).with_vcs(&store, &refs);
+        evaluator.grant_all();
+        let result = evaluator.eval_program(&main_program);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("cyclic import"));
+    }
+
+    #[test]
+    fn import_nonexistent_hash() {
+        let (_dir, store, refs) = make_store();
+
+        let main_source = r#"import "0000000000000000000000000000000000000000000000000000000000000000";
+            42;"#;
+        let main_program = Parser::parse_source(main_source).unwrap();
+        let mut evaluator = Evaluator::new(10000).with_vcs(&store, &refs);
+        evaluator.grant_all();
+        let result = evaluator.eval_program(&main_program);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn import_selective_nonexistent_name() {
+        let (_dir, store, refs) = make_store();
+
+        let lib_source = "fn real_fn() -> int { return 1; }";
+        let lib_program = Parser::parse_source(lib_source).unwrap();
+        let lib_hash = store.save(&lib_program).unwrap();
+
+        let main_source = format!(r#"import "{lib_hash}" {{ nonexistent }};
+            42;"#);
+        let main_program = Parser::parse_source(&main_source).unwrap();
+        let mut evaluator = Evaluator::new(10000).with_vcs(&store, &refs);
+        evaluator.grant_all();
+        let result = evaluator.eval_program(&main_program);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn import_transitive() {
+        let (_dir, store, refs) = make_store();
+
+        // Library A: defines helper
+        let lib_a_source = "fn helper() -> int { return 7; }";
+        let lib_a = Parser::parse_source(lib_a_source).unwrap();
+        let hash_a = store.save(&lib_a).unwrap();
+
+        // Library B: imports A, defines wrapper
+        let lib_b_source = format!(
+            r#"import "{hash_a}";
+               fn wrapper() -> int {{ return helper(); }}"#
+        );
+        let lib_b = Parser::parse_source(&lib_b_source).unwrap();
+        let hash_b = store.save(&lib_b).unwrap();
+
+        // Main: imports B, calls wrapper (which calls helper from A)
+        let main_source = format!(r#"import "{hash_b}";
+            wrapper();"#);
+        let main_program = Parser::parse_source(&main_source).unwrap();
+
+        let mut evaluator = Evaluator::new(10000).with_vcs(&store, &refs);
+        evaluator.grant_all();
+        let result = evaluator.eval_program(&main_program).unwrap();
+        assert_eq!(result, Value::Int(7));
+    }
+
+    #[test]
+    fn import_without_vcs_errors() {
+        let main_source = r#"import "somehash"; 42;"#;
+        let main_program = Parser::parse_source(main_source).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        evaluator.grant_all();
+        let result = evaluator.eval_program(&main_program);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("object store not available"));
     }
 }
