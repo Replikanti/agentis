@@ -50,6 +50,15 @@ fn main() {
             }
             cmd_run(&args[2])
         }
+        "go" => {
+            if args.len() < 3 {
+                eprintln!("Usage: agentis go <source_file> [--trace]");
+                process::exit(1);
+            }
+            let force_verbose = args.iter().any(|a| a == "--trace");
+            cmd_go(&args[2], force_verbose)
+        }
+        "doctor" => cmd_doctor(),
         "branch" => {
             if args.len() < 3 {
                 cmd_list_branches()
@@ -109,8 +118,10 @@ fn print_usage() {
     eprintln!();
     eprintln!("Commands:");
     eprintln!("  init                 Initialize a new Agentis repository");
+    eprintln!("  go <file> [--trace]  Commit and run in one step (the demo command)");
     eprintln!("  commit <file>        Parse source file, store AST, update current branch");
     eprintln!("  run <branch>         Execute code from a branch's root hash");
+    eprintln!("  doctor               Check environment and configuration");
     eprintln!("  branch [name]        List branches or create a new one");
     eprintln!("  switch <branch>      Switch to a different branch");
     eprintln!("  compile <branch> [o] Compile branch to WASM binary");
@@ -144,8 +155,108 @@ fn cmd_init() -> Result<(), AgentisError> {
     ObjectStore::init(&root)?;
     let refs = Refs::new(&root);
     refs.init()?;
+
+    // Create sandbox directory
+    let sandbox = root.join("sandbox");
+    std::fs::create_dir_all(&sandbox)?;
+
+    // Write default config with templates
+    let config_path = root.join("config");
+    std::fs::write(&config_path, DEFAULT_CONFIG)?;
+
     println!("Initialized empty Agentis repository with genesis branch.");
     Ok(())
+}
+
+const DEFAULT_CONFIG: &str = "\
+# Agentis Configuration
+# Uncomment ONE LLM backend section below.
+
+llm.backend = mock
+
+# --- Claude CLI (flat-rate, recommended) ---
+# llm.backend = cli
+# llm.command = claude
+# llm.args = -p --output-format text
+
+# --- Ollama (local, free) ---
+# llm.backend = cli
+# llm.command = ollama
+# llm.args = run llama3
+
+# --- Anthropic API (per-token) ---
+# llm.backend = http
+# llm.endpoint = https://api.anthropic.com/v1/messages
+# llm.model = claude-sonnet-4-20250514
+# llm.api_key_env = ANTHROPIC_API_KEY
+
+# --- Gemini CLI ---
+# llm.backend = cli
+# llm.command = gemini
+# llm.args = -p
+
+# --- xAI / Grok API ---
+# llm.backend = http
+# llm.endpoint = https://api.x.ai/v1/messages
+# llm.model = grok-3
+# llm.api_key_env = XAI_API_KEY
+
+# Agent limits
+# max_concurrent_agents = 16
+
+# Trace (quiet = only LLM wait, normal = agent lifecycle, verbose = everything)
+trace.level = normal
+";
+
+fn cmd_go(source_file: &str, force_verbose: bool) -> Result<(), AgentisError> {
+    let (store, refs) = ensure_initialized()?;
+
+    // Commit
+    let source = std::fs::read_to_string(source_file)?;
+    let program = Parser::parse_source(&source)?;
+    let tree_hash = store.save(&program)?;
+    let (branch, commit_hash) = refs.commit(&tree_hash, &store)?;
+    eprintln!("[{branch}] {}", &commit_hash[..12]);
+
+    // Type check
+    let type_errors = typechecker::check(&program);
+    for err in &type_errors {
+        eprintln!("warning: {err}");
+    }
+
+    // Run
+    let cfg = config::Config::load(&agentis_root());
+    let llm_backend = llm::create_backend(&cfg)
+        .map_err(|e| AgentisError::General(format!("{e}")))?;
+    let io_ctx = io::IoContext::new(&agentis_root(), &cfg);
+    let trace_level = if force_verbose {
+        trace::TraceLevel::Verbose
+    } else {
+        trace::TraceLevel::from_str(&cfg.get_or("trace.level", "normal"))
+    };
+    let tracer = trace::Tracer::new(trace_level);
+
+    let max_agents = cfg.get_u64("max_concurrent_agents", 16) as u32;
+    let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
+        .with_vcs(&store, &refs)
+        .with_persistence(&store)
+        .with_llm(llm_backend.as_ref())
+        .with_io(&io_ctx)
+        .with_max_agents(max_agents)
+        .with_tracer(&tracer);
+    evaluator.grant_all();
+    match evaluator.eval_program(&program) {
+        Ok(_) => {
+            for line in evaluator.output() {
+                println!("{line}");
+            }
+            for b in evaluator.explore_branches() {
+                println!("  explore: created branch '{b}'");
+            }
+            Ok(())
+        }
+        Err(e) => Err(AgentisError::Eval(e)),
+    }
 }
 
 fn cmd_commit(source_file: &str) -> Result<(), AgentisError> {
@@ -207,6 +318,87 @@ fn cmd_run(branch: &str) -> Result<(), AgentisError> {
         }
         Err(e) => Err(AgentisError::Eval(e)),
     }
+}
+
+fn cmd_doctor() -> Result<(), AgentisError> {
+    let root = agentis_root();
+
+    // Check .agentis/ exists
+    if !root.exists() {
+        println!("[!!] .agentis/ not found (run 'agentis init')");
+        return Ok(());
+    }
+    println!("[ok] .agentis/ repository found");
+
+    // Check config
+    let cfg = config::Config::load(&root);
+    let backend = cfg.get_or("llm.backend", "mock");
+    println!("[ok] config loaded (llm.backend = {backend})");
+
+    // Check LLM backend
+    match backend.as_str() {
+        "cli" => {
+            let command = cfg.get_or("llm.command", "claude");
+            match which_command(&command) {
+                Some(path) => println!("[ok] {command} found in PATH ({path})"),
+                None => println!("[!!] {command} NOT found in PATH"),
+            }
+        }
+        "http" => {
+            let endpoint = cfg.get_or("llm.endpoint", "(not set)");
+            println!("[ok] HTTP endpoint: {endpoint}");
+            let key_env = cfg.get_or("llm.api_key_env", "ANTHROPIC_API_KEY");
+            if std::env::var(&key_env).is_ok() {
+                println!("[ok] {key_env} environment variable is set");
+            } else {
+                println!("[!!] {key_env} environment variable NOT set");
+            }
+        }
+        "mock" => {
+            println!("[ok] using mock backend (no LLM calls)");
+        }
+        other => {
+            println!("[!!] unknown backend: {other}");
+        }
+    }
+
+    // Check sandbox
+    let sandbox = root.join("sandbox");
+    if sandbox.exists() {
+        // Test writability
+        let test_file = sandbox.join(".doctor_test");
+        match std::fs::write(&test_file, b"test") {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&test_file);
+                println!("[ok] .agentis/sandbox/ exists (writable)");
+            }
+            Err(_) => println!("[!!] .agentis/sandbox/ exists but NOT writable"),
+        }
+    } else {
+        println!("[!!] .agentis/sandbox/ does not exist");
+    }
+
+    // Trace level
+    let trace_level = cfg.get_or("trace.level", "normal");
+    if trace_level == "quiet" {
+        println!("[..] trace.level = quiet (consider 'normal' for debugging)");
+    } else {
+        println!("[ok] trace.level = {trace_level}");
+    }
+
+    Ok(())
+}
+
+/// Check if a command exists in PATH (like `which`).
+fn which_command(cmd: &str) -> Option<String> {
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    for dir in path_var.split(':') {
+        let full = Path::new(dir).join(cmd);
+        if full.exists() {
+            return Some(full.display().to_string());
+        }
+    }
+    None
 }
 
 fn cmd_list_branches() -> Result<(), AgentisError> {
