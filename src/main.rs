@@ -13,6 +13,7 @@ mod parser;
 mod refs;
 mod snapshot;
 mod storage;
+mod trace;
 mod typechecker;
 
 use std::path::Path;
@@ -173,11 +174,15 @@ fn cmd_run(branch: &str) -> Result<(), AgentisError> {
         eprintln!("warning: {err}");
     }
 
-    // Load config, LLM backend, and I/O context
+    // Load config, LLM backend, I/O context, and tracer
     let cfg = config::Config::load(&agentis_root());
     let llm_backend = llm::create_backend(&cfg)
         .map_err(|e| AgentisError::General(format!("{e}")))?;
     let io_ctx = io::IoContext::new(&agentis_root(), &cfg);
+    let trace_level = trace::TraceLevel::from_str(
+        &cfg.get_or("trace.level", "normal"),
+    );
+    let tracer = trace::Tracer::new(trace_level);
 
     let max_agents = cfg.get_u64("max_concurrent_agents", 16) as u32;
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
@@ -185,7 +190,8 @@ fn cmd_run(branch: &str) -> Result<(), AgentisError> {
         .with_persistence(&store)
         .with_llm(llm_backend.as_ref())
         .with_io(&io_ctx)
-        .with_max_agents(max_agents);
+        .with_max_agents(max_agents)
+        .with_tracer(&tracer);
     evaluator.grant_all();
     match evaluator.eval_program(&program) {
         Ok(_) => {
