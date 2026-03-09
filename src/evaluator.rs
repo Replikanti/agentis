@@ -1028,6 +1028,20 @@ impl<'a> Evaluator<'a> {
             t.prompt_call(&expr.instruction, &return_type_str);
         }
 
+        // PII guard: scan input, block if PII detected without PiiTransmit
+        let pii_result = crate::pii::scan(&input_str);
+        if !pii_result.is_clean() {
+            let has_pii_cap = self.require_cap(CapKind::PiiTransmit).is_ok();
+            if let Some(t) = &self.tracer {
+                t.pii_scan_result(&pii_result.types_str(), has_pii_cap);
+            }
+            if !has_pii_cap {
+                return Err(EvalError::CapabilityDenied(
+                    crate::capabilities::CapError::MissingCapability(CapKind::PiiTransmit),
+                ));
+            }
+        }
+
         // Collect type field info for user-defined types
         let type_fields = self.collect_type_fields(&expr.return_type);
         let fields_ref: Vec<(&str, &str)> = type_fields
@@ -2782,5 +2796,74 @@ mod tests {
         let wrapped = inner.with_context("fn \"calc\"".into());
         let s = format!("{wrapped}");
         assert_eq!(s, "fn \"calc\":\n  undefined variable: x");
+    }
+
+    // --- PII Guard tests ---
+
+    #[test]
+    fn pii_guard_blocks_email_in_prompt() {
+        let program = Parser::parse_source(
+            r#"let x = prompt("analyze", "contact user@example.com") -> string;"#
+        ).unwrap();
+        let mut ev = Evaluator::new(1000);
+        ev.grant_all();
+        let result = ev.eval_program(&program);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("pii_transmit"), "expected PII capability error, got: {err}");
+    }
+
+    #[test]
+    fn pii_guard_allows_with_pii_transmit() {
+        let program = Parser::parse_source(
+            r#"let x = prompt("analyze", "contact user@example.com") -> string;"#
+        ).unwrap();
+        let mut ev = Evaluator::new(1000);
+        ev.grant_all();
+        ev.grant(CapKind::PiiTransmit);
+        let result = ev.eval_program(&program);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn pii_guard_passes_clean_text() {
+        let program = Parser::parse_source(
+            r#"let x = prompt("analyze", "hello world") -> string;"#
+        ).unwrap();
+        let mut ev = Evaluator::new(1000);
+        ev.grant_all();
+        let result = ev.eval_program(&program);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn pii_guard_blocks_phone() {
+        let program = Parser::parse_source(
+            r#"let x = prompt("analyze", "call +420 123 456 789") -> string;"#
+        ).unwrap();
+        let mut ev = Evaluator::new(1000);
+        ev.grant_all();
+        let result = ev.eval_program(&program);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("pii_transmit"));
+    }
+
+    #[test]
+    fn pii_guard_blocks_credit_card() {
+        let program = Parser::parse_source(
+            r#"let x = prompt("analyze", "card 4111 1111 1111 1111") -> string;"#
+        ).unwrap();
+        let mut ev = Evaluator::new(1000);
+        ev.grant_all();
+        let result = ev.eval_program(&program);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn pii_guard_grant_all_excludes_pii_transmit() {
+        let mut ev = Evaluator::new(1000);
+        ev.grant_all();
+        assert!(ev.require_cap(CapKind::PiiTransmit).is_err());
     }
 }

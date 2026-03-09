@@ -202,6 +202,19 @@ impl Tracer {
         }
     }
 
+    /// PII scan result — always shown (even in quiet mode, like LLM wait).
+    pub fn pii_scan_result(&self, types: &str, granted: bool) {
+        if granted {
+            self.output.write_trace(&format!(
+                "[pii] scan: detected ({types}) — PiiTransmit granted, proceeding"
+            ));
+        } else {
+            self.output.write_trace(&format!(
+                "[pii] scan: detected ({types}) — BLOCKED (PiiTransmit not granted)"
+            ));
+        }
+    }
+
     // --- Verbose level ---
 
     pub fn llm_response(&self, response: &impl fmt::Display) {
