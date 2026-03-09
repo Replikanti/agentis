@@ -187,6 +187,16 @@ impl CapabilityRegistry {
 pub const WASM_IMPORT_MODULE: &str = "agentis_cap";
 
 fn generate_secret() -> [u8; 32] {
+    // Try /dev/urandom first (available on Linux/macOS)
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        use std::io::Read;
+        let mut secret = [0u8; 32];
+        if f.read_exact(&mut secret).is_ok() {
+            return secret;
+        }
+    }
+
+    // Fallback: mix multiple entropy sources through SHA-256
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     use std::time::SystemTime;

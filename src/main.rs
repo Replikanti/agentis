@@ -9,6 +9,7 @@ mod parser;
 mod refs;
 mod snapshot;
 mod storage;
+mod typechecker;
 
 use std::path::Path;
 use std::process;
@@ -161,6 +162,12 @@ fn cmd_run(branch: &str) -> Result<(), AgentisError> {
         .ok_or_else(|| AgentisError::General(format!("branch '{branch}' has no commits")))?;
 
     let program: ast::Program = store.load(&tree_hash)?;
+
+    // Static type check (warnings only — does not block execution)
+    let type_errors = typechecker::check(&program);
+    for err in &type_errors {
+        eprintln!("warning: {err}");
+    }
 
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
         .with_vcs(&store, &refs)

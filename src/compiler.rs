@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use wasm_encoder::{
-    CodeSection, ExportKind, ExportSection, Function, FunctionSection, GlobalSection, GlobalType,
-    Instruction, Module, TypeSection, ValType,
+    CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection, GlobalSection,
+    GlobalType, ImportSection, Instruction, Module, TypeSection, ValType,
 };
 
 use crate::ast::*;
@@ -77,6 +77,17 @@ struct FuncInfo {
     has_return: bool,
 }
 
+// --- OCap host import definitions ---
+// These are the host functions that a WASM runtime must provide for OCap.
+// Type indices 0..NUM_IMPORTS are reserved for imports.
+
+const NUM_IMPORTS: u32 = 3;
+
+// Import type indices (in the type section)
+const TYPE_CAP_CHECK: u32 = 0;   // (i64) -> i32
+const TYPE_CAP_REVOKE: u32 = 1;  // (i64) -> ()
+const TYPE_HOST_PRINT: u32 = 2;  // (i32, i32) -> ()
+
 // --- Compiler ---
 
 struct Compiler {
@@ -97,7 +108,8 @@ impl Compiler {
     }
 
     fn collect_declarations(&mut self, program: &Program) -> Result<(), CompileError> {
-        let mut idx: u32 = 0;
+        // Function indices start after imported functions
+        let mut idx: u32 = NUM_IMPORTS;
         for decl in &program.declarations {
             match decl {
                 Declaration::Function(f) => {
@@ -145,8 +157,24 @@ impl Compiler {
         *self.func_index.get("__run").unwrap()
     }
 
+    fn build_import_section(&self) -> ImportSection {
+        let mut imports = ImportSection::new();
+        imports.import("env", "cap_check", EntityType::Function(TYPE_CAP_CHECK));
+        imports.import("env", "cap_revoke", EntityType::Function(TYPE_CAP_REVOKE));
+        imports.import("env", "host_print", EntityType::Function(TYPE_HOST_PRINT));
+        imports
+    }
+
     fn build_type_section(&self) -> TypeSection {
         let mut types = TypeSection::new();
+
+        // Import function types (must come first, indices 0..NUM_IMPORTS)
+        // Type 0: cap_check (i64) -> i32
+        types.ty().function([ValType::I64], [ValType::I32]);
+        // Type 1: cap_revoke (i64) -> ()
+        types.ty().function([ValType::I64], []);
+        // Type 2: host_print (i32, i32) -> ()
+        types.ty().function([ValType::I32, ValType::I32], []);
 
         // One type per user function
         for (_name, info) in &self.functions {
@@ -169,7 +197,8 @@ impl Compiler {
         let mut funcs = FunctionSection::new();
         let total = self.functions.len() + 1; // +1 for run
         for i in 0..total {
-            funcs.function(i as u32);
+            // Type indices are offset by NUM_IMPORTS (import types come first)
+            funcs.function(NUM_IMPORTS + i as u32);
         }
         funcs
     }
@@ -513,6 +542,12 @@ impl Compiler {
             Expr::FieldAccess(_) => Err(CompileError::UnsupportedFeature(
                 "field access".to_string(),
             )),
+            Expr::ListLiteral(_) => Err(CompileError::UnsupportedFeature(
+                "list literal".to_string(),
+            )),
+            Expr::MapLiteral(_) => Err(CompileError::UnsupportedFeature(
+                "map literal".to_string(),
+            )),
         }
     }
 }
@@ -581,6 +616,9 @@ pub fn compile_program(program: &Program) -> Result<Vec<u8>, CompileError> {
 
     let types = compiler.build_type_section();
     module.section(&types);
+
+    let imports = compiler.build_import_section();
+    module.section(&imports);
 
     let functions = compiler.build_function_section();
     module.section(&functions);

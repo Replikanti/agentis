@@ -14,6 +14,8 @@ pub enum Value {
     Float(f64),
     String(String),
     Bool(bool),
+    List(Vec<Value>),
+    Map(Vec<(Value, Value)>),
     Struct(String, HashMap<String, Value>),
     Void,
 }
@@ -25,6 +27,8 @@ impl Value {
             Value::Float(_) => "float",
             Value::String(_) => "string",
             Value::Bool(_) => "bool",
+            Value::List(_) => "list",
+            Value::Map(_) => "map",
             Value::Struct(name, _) => name,
             Value::Void => "void",
         }
@@ -35,6 +39,7 @@ impl Value {
             Value::Bool(b) => *b,
             Value::Int(n) => *n != 0,
             Value::String(s) => !s.is_empty(),
+            Value::List(items) => !items.is_empty(),
             _ => true,
         }
     }
@@ -47,6 +52,22 @@ impl std::fmt::Display for Value {
             Value::Float(n) => write!(f, "{n}"),
             Value::String(s) => write!(f, "{s}"),
             Value::Bool(b) => write!(f, "{b}"),
+            Value::List(items) => {
+                write!(f, "[")?;
+                for (i, v) in items.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{v}")?;
+                }
+                write!(f, "]")
+            }
+            Value::Map(entries) => {
+                write!(f, "{{")?;
+                for (i, (k, v)) in entries.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{k}: {v}")?;
+                }
+                write!(f, "}}")
+            }
             Value::Struct(name, fields) => {
                 write!(f, "{name} {{ ")?;
                 for (i, (k, v)) in fields.iter().enumerate() {
@@ -76,6 +97,7 @@ pub enum EvalError {
     Return(Value),
     NotAStruct(String),
     CapabilityDenied(CapError),
+    General(String),
 }
 
 impl std::fmt::Display for EvalError {
@@ -103,6 +125,7 @@ impl std::fmt::Display for EvalError {
             EvalError::Return(_) => write!(f, "return outside function"),
             EvalError::NotAStruct(t) => write!(f, "field access on non-struct type: {t}"),
             EvalError::CapabilityDenied(e) => write!(f, "capability denied: {e}"),
+            EvalError::General(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -372,6 +395,22 @@ impl<'a> Evaluator<'a> {
             Expr::Prompt(p) => self.eval_prompt(p),
             Expr::Validate(v) => self.eval_validate(v),
             Expr::Explore(e) => self.eval_explore(e),
+            Expr::ListLiteral(items) => {
+                self.spend(1)?;
+                let mut vals = Vec::with_capacity(items.len());
+                for item in items {
+                    vals.push(self.eval_expr(item)?);
+                }
+                Ok(Value::List(vals))
+            }
+            Expr::MapLiteral(entries) => {
+                self.spend(1)?;
+                let mut vals = Vec::with_capacity(entries.len());
+                for (k, v) in entries {
+                    vals.push((self.eval_expr(k)?, self.eval_expr(v)?));
+                }
+                Ok(Value::Map(vals))
+            }
         }
     }
 
@@ -501,11 +540,73 @@ impl<'a> Evaluator<'a> {
                 let val = self.eval_expr(&expr.args[0])?;
                 return match val {
                     Value::String(s) => Ok(Value::Int(s.len() as i64)),
+                    Value::List(items) => Ok(Value::Int(items.len() as i64)),
+                    Value::Map(entries) => Ok(Value::Int(entries.len() as i64)),
                     _ => Err(EvalError::TypeError {
-                        expected: "string".into(),
+                        expected: "string, list, or map".into(),
                         got: val.type_name().to_string(),
                     }),
                 };
+            }
+            "push" => {
+                if expr.args.len() != 2 {
+                    return Err(EvalError::ArityMismatch { expected: 2, got: expr.args.len() });
+                }
+                let list = self.eval_expr(&expr.args[0])?;
+                let item = self.eval_expr(&expr.args[1])?;
+                return match list {
+                    Value::List(mut items) => {
+                        items.push(item);
+                        Ok(Value::List(items))
+                    }
+                    _ => Err(EvalError::TypeError {
+                        expected: "list".into(),
+                        got: list.type_name().to_string(),
+                    }),
+                };
+            }
+            "get" => {
+                if expr.args.len() != 2 {
+                    return Err(EvalError::ArityMismatch { expected: 2, got: expr.args.len() });
+                }
+                let collection = self.eval_expr(&expr.args[0])?;
+                let key = self.eval_expr(&expr.args[1])?;
+                return match (&collection, &key) {
+                    (Value::List(items), Value::Int(idx)) => {
+                        let i = *idx as usize;
+                        items.get(i).cloned().ok_or_else(|| EvalError::General(
+                            format!("index {i} out of bounds (len {})", items.len()),
+                        ))
+                    }
+                    (Value::Map(entries), _) => {
+                        for (k, v) in entries {
+                            if *k == key {
+                                return Ok(v.clone());
+                            }
+                        }
+                        Err(EvalError::General(format!("key not found in map")))
+                    }
+                    _ => Err(EvalError::TypeError {
+                        expected: "list or map".into(),
+                        got: collection.type_name().to_string(),
+                    }),
+                };
+            }
+            "map_of" => {
+                if expr.args.len() % 2 != 0 {
+                    return Err(EvalError::General(
+                        "map_of requires an even number of arguments (key, value pairs)".into(),
+                    ));
+                }
+                let mut entries = Vec::new();
+                let mut i = 0;
+                while i < expr.args.len() {
+                    let k = self.eval_expr(&expr.args[i])?;
+                    let v = self.eval_expr(&expr.args[i + 1])?;
+                    entries.push((k, v));
+                    i += 2;
+                }
+                return Ok(Value::Map(entries));
             }
             "typeof" => {
                 if expr.args.len() != 1 {
@@ -1434,5 +1535,132 @@ mod tests {
             eval2.snapshot_history()[0],
             "identical state should produce identical snapshot hash"
         );
+    }
+
+    // --- Collections ---
+
+    #[test]
+    fn list_literal_empty() {
+        assert_eq!(eval("[];"), Ok(Value::List(vec![])));
+    }
+
+    #[test]
+    fn list_literal_items() {
+        assert_eq!(
+            eval("[1, 2, 3];"),
+            Ok(Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]))
+        );
+    }
+
+    #[test]
+    fn list_len() {
+        assert_eq!(eval("len([1, 2, 3]);"), Ok(Value::Int(3)));
+    }
+
+    #[test]
+    fn list_push() {
+        assert_eq!(
+            eval("push([1, 2], 3);"),
+            Ok(Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]))
+        );
+    }
+
+    #[test]
+    fn list_get() {
+        assert_eq!(eval("get([10, 20, 30], 1);"), Ok(Value::Int(20)));
+    }
+
+    #[test]
+    fn list_get_out_of_bounds() {
+        assert!(matches!(eval("get([1], 5);"), Err(EvalError::General(_))));
+    }
+
+    #[test]
+    fn list_is_truthy() {
+        let output = eval_output("if [1] { print(\"yes\"); } if [] { print(\"no\"); }");
+        assert_eq!(output, vec!["yes"]);
+    }
+
+    #[test]
+    fn list_display() {
+        let output = eval_output("print([1, 2, 3]);");
+        assert_eq!(output, vec!["[1, 2, 3]"]);
+    }
+
+    #[test]
+    fn map_of_builtin() {
+        assert_eq!(
+            eval("map_of(\"a\", 1, \"b\", 2);"),
+            Ok(Value::Map(vec![
+                (Value::String("a".into()), Value::Int(1)),
+                (Value::String("b".into()), Value::Int(2)),
+            ]))
+        );
+    }
+
+    #[test]
+    fn map_of_odd_args_error() {
+        assert!(matches!(eval("map_of(\"a\", 1, \"b\");"), Err(EvalError::General(_))));
+    }
+
+    #[test]
+    fn map_len() {
+        assert_eq!(eval("len(map_of(\"x\", 1, \"y\", 2));"), Ok(Value::Int(2)));
+    }
+
+    #[test]
+    fn map_get() {
+        assert_eq!(eval("get(map_of(\"a\", 42), \"a\");"), Ok(Value::Int(42)));
+    }
+
+    #[test]
+    fn map_get_missing_key() {
+        assert!(matches!(eval("get(map_of(\"a\", 1), \"z\");"), Err(EvalError::General(_))));
+    }
+
+    #[test]
+    fn list_in_variable() {
+        let output = eval_output("let xs = [1, 2]; let ys = push(xs, 3); print(len(ys));");
+        assert_eq!(output, vec!["3"]);
+    }
+
+    #[test]
+    fn snapshot_list_round_trip() {
+        let dir = crate::storage::tempfile::tempdir().unwrap();
+        let store = crate::storage::ObjectStore::init(dir.path()).unwrap();
+
+        let program = Parser::parse_source("let xs = [1, 2, 3];").unwrap();
+        let mut evaluator = Evaluator::new(10000).with_persistence(&store);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+
+        let history = evaluator.snapshot_history().to_vec();
+        assert!(!history.is_empty());
+
+        let mgr = crate::snapshot::SnapshotManager::new(&store);
+        let snap = mgr.load(&history[0]).unwrap();
+        assert!(snap.scopes.iter().any(|scope| {
+            scope.get("xs") == Some(&Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]))
+        }));
+    }
+
+    #[test]
+    fn snapshot_map_round_trip() {
+        let dir = crate::storage::tempfile::tempdir().unwrap();
+        let store = crate::storage::ObjectStore::init(dir.path()).unwrap();
+
+        let program = Parser::parse_source("let m = map_of(\"a\", 1);").unwrap();
+        let mut evaluator = Evaluator::new(10000).with_persistence(&store);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+
+        let history = evaluator.snapshot_history().to_vec();
+        let mgr = crate::snapshot::SnapshotManager::new(&store);
+        let snap = mgr.load(&history[0]).unwrap();
+        assert!(snap.scopes.iter().any(|scope| {
+            scope.get("m") == Some(&Value::Map(vec![
+                (Value::String("a".into()), Value::Int(1)),
+            ]))
+        }));
     }
 }
