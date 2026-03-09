@@ -79,11 +79,23 @@ Implementations:
 **Configuration** (`.agentis/config`, simple `key = value` format):
 
 ```
-# Option 1: CLI backend (flat-rate, recommended)
+# Option 1: CLI backend — Claude (flat-rate, recommended)
 llm.backend = cli
 llm.command = claude
+llm.args = -p --output-format text
 llm.model = claude-sonnet-4-20250514
 llm.max_retries = 2
+
+# Option 1b: CLI backend — Gemini
+# llm.backend = cli
+# llm.command = gemini
+# llm.args = -p
+# llm.model = gemini-2.5-pro
+
+# Option 1c: CLI backend — any tool accepting stdin
+# llm.backend = cli
+# llm.command = my-tool
+# llm.args = --json --stdin
 
 # Option 2: HTTP API backend (per-token billing)
 # llm.backend = http

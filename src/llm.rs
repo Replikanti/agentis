@@ -318,10 +318,16 @@ impl HttpBackend {
 
 // --- CLI Backend ---
 
-/// Runs prompts through the `claude` CLI (Claude Code).
-/// Uses flat-rate subscription instead of per-token API billing.
+/// Runs prompts through any CLI tool that accepts prompt on stdin and
+/// returns response on stdout. Works with flat-rate subscriptions.
+///
+/// Config examples:
+///   claude:  llm.command = claude,  llm.args = -p --output-format text
+///   gemini:  llm.command = gemini,  llm.args = -p
+///   custom:  llm.command = my-tool, llm.args = --json --stdin
 pub struct CliBackend {
     command: String,
+    args: Vec<String>,
     model: Option<String>,
     max_retries: u32,
 }
@@ -329,10 +335,16 @@ pub struct CliBackend {
 impl CliBackend {
     pub fn from_config(config: &Config) -> Result<Self, LlmError> {
         let command = config.get_or("llm.command", "claude");
+        let args_str = config.get_or("llm.args", "-p --output-format text");
+        let args: Vec<String> = args_str
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .collect();
         let model = config.get("llm.model").map(|s| s.to_string());
         let max_retries = config.get_u64("llm.max_retries", 2) as u32;
         Ok(Self {
             command,
+            args,
             model,
             max_retries,
         })
@@ -354,15 +366,15 @@ impl CliBackend {
         use std::process::{Command, Stdio};
 
         let mut cmd = Command::new(&self.command);
-        cmd.arg("-p")
-            .arg("--output-format").arg("text")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
+        for arg in &self.args {
+            cmd.arg(arg);
+        }
         if let Some(model) = &self.model {
             cmd.arg("--model").arg(model);
         }
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         let mut child = cmd.spawn().map_err(|e| {
             LlmError::Transport(format!(
@@ -695,6 +707,7 @@ mod tests {
         let config = Config::parse("llm.command = claude\nllm.max_retries = 3");
         let backend = CliBackend::from_config(&config).unwrap();
         assert_eq!(backend.command, "claude");
+        assert_eq!(backend.args, vec!["-p", "--output-format", "text"]);
         assert_eq!(backend.max_retries, 3);
         assert!(backend.model.is_none());
     }
@@ -704,7 +717,16 @@ mod tests {
         let config = Config::parse("llm.command = /usr/local/bin/claude\nllm.model = opus");
         let backend = CliBackend::from_config(&config).unwrap();
         assert_eq!(backend.command, "/usr/local/bin/claude");
+        assert_eq!(backend.args, vec!["-p", "--output-format", "text"]);
         assert_eq!(backend.model.as_deref(), Some("opus"));
+    }
+
+    #[test]
+    fn cli_backend_custom_args() {
+        let config = Config::parse("llm.command = gemini\nllm.args = -p --json");
+        let backend = CliBackend::from_config(&config).unwrap();
+        assert_eq!(backend.command, "gemini");
+        assert_eq!(backend.args, vec!["-p", "--json"]);
     }
 
     #[test]
