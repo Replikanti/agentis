@@ -1,4 +1,5 @@
 mod ast;
+mod audit;
 mod capabilities;
 mod compiler;
 mod config;
@@ -264,6 +265,8 @@ fn cmd_go(source_file: &str, force_verbose: bool, grant_pii: bool) -> Result<(),
     };
     let tracer = trace::Tracer::new(trace_level);
 
+    let audit_log = audit::AuditLog::open(&agentis_root());
+
     let max_agents = cfg.get_u64("max_concurrent_agents", 16) as u32;
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
         .with_vcs(&store, &refs)
@@ -272,6 +275,9 @@ fn cmd_go(source_file: &str, force_verbose: bool, grant_pii: bool) -> Result<(),
         .with_io(&io_ctx)
         .with_max_agents(max_agents)
         .with_tracer(&tracer);
+    if let Some(ref audit) = audit_log {
+        evaluator = evaluator.with_audit(audit);
+    }
     evaluator.grant_all();
 
     // PiiTransmit: grant only if --grant-pii flag or config says allow
@@ -328,6 +334,8 @@ fn cmd_run(branch: &str) -> Result<(), AgentisError> {
     );
     let tracer = trace::Tracer::new(trace_level);
 
+    let audit_log = audit::AuditLog::open(&agentis_root());
+
     let max_agents = cfg.get_u64("max_concurrent_agents", 16) as u32;
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
         .with_vcs(&store, &refs)
@@ -336,6 +344,9 @@ fn cmd_run(branch: &str) -> Result<(), AgentisError> {
         .with_io(&io_ctx)
         .with_max_agents(max_agents)
         .with_tracer(&tracer);
+    if let Some(ref audit) = audit_log {
+        evaluator = evaluator.with_audit(audit);
+    }
     evaluator.grant_all();
 
     // PiiTransmit from config only (no CLI flag for `run`)

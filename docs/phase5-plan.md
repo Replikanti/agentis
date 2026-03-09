@@ -44,8 +44,8 @@ mock backend works. No special syntax, no config overrides in agent bodies.
 
 ## Milestones
 
-- [ ] M19: PiiTransmit Capability + Internal Guard
-- [ ] M20: Audit Log
+- [x] M19: PiiTransmit Capability + Internal Guard
+- [x] M20: Audit Log
 - [ ] M21: `agentis audit` CLI
 - [ ] M22: `agentis init --secure`
 
