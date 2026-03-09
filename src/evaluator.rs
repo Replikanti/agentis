@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::ast::*;
 use crate::capabilities::{CapError, CapKind, CapabilityRegistry};
+use crate::llm::LlmBackend;
 use crate::refs::Refs;
 use crate::snapshot::{MemorySnapshot, SnapshotManager};
 use crate::storage::ObjectStore;
@@ -197,6 +198,7 @@ pub struct Evaluator<'a> {
     cap_registry: CapabilityRegistry,
     caps: HashMap<CapKind, Vec<crate::capabilities::CapHandle>>,
     snapshot_mgr: Option<SnapshotManager<'a>>,
+    llm_backend: Option<&'a dyn LlmBackend>,
 }
 
 impl<'a> Evaluator<'a> {
@@ -212,11 +214,17 @@ impl<'a> Evaluator<'a> {
             cap_registry: CapabilityRegistry::new(),
             caps: HashMap::new(),
             snapshot_mgr: None,
+            llm_backend: None,
         }
     }
 
     pub fn with_vcs(mut self, store: &'a ObjectStore, refs: &'a Refs) -> Self {
         self.vcs = Some((store, refs));
+        self
+    }
+
+    pub fn with_llm(mut self, backend: &'a dyn LlmBackend) -> Self {
+        self.llm_backend = Some(backend);
         self
     }
 
@@ -711,37 +719,50 @@ impl<'a> Evaluator<'a> {
     fn eval_prompt(&mut self, expr: &PromptExpr) -> Result<Value, EvalError> {
         self.require_cap(CapKind::Prompt)?;
         self.spend(50)?;
-        // Evaluate input (to spend CB and validate it exists)
-        let _input = self.eval_expr(&expr.input)?;
+        let input = self.eval_expr(&expr.input)?;
+        let input_str = format!("{input}");
 
-        // Mock: generate deterministic stub data based on return type
-        self.mock_value_for_type(&expr.return_type)
+        // Collect type field info for user-defined types
+        let type_fields = self.collect_type_fields(&expr.return_type);
+        let fields_ref: Vec<(&str, &str)> = type_fields
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let fields_opt = if fields_ref.is_empty() {
+            None
+        } else {
+            Some(fields_ref.as_slice())
+        };
+
+        if let Some(backend) = self.llm_backend {
+            backend
+                .complete(&expr.instruction, &input_str, &expr.return_type, fields_opt)
+                .map_err(|e| EvalError::General(format!("{e}")))
+        } else {
+            // Fallback: built-in mock
+            crate::llm::MockBackend::new()
+                .complete(&expr.instruction, &input_str, &expr.return_type, fields_opt)
+                .map_err(|e| EvalError::General(format!("{e}")))
+        }
     }
 
-    fn mock_value_for_type(&self, type_ann: &TypeAnnotation) -> Result<Value, EvalError> {
-        match type_ann {
-            TypeAnnotation::Named(name) => match name.as_str() {
-                "int" => Ok(Value::Int(0)),
-                "float" => Ok(Value::Float(0.0)),
-                "string" => Ok(Value::String("mock".to_string())),
-                "bool" => Ok(Value::Bool(true)),
-                _ => {
-                    // Look up user-defined type and generate mock struct
-                    let type_decl = self.types.get(name).cloned()
-                        .ok_or_else(|| EvalError::UndefinedType(name.clone()))?;
-                    let mut fields = HashMap::new();
-                    for field in &type_decl.fields {
-                        let value = self.mock_value_for_type(&field.type_annotation)?;
-                        fields.insert(field.name.clone(), value);
-                    }
-                    Ok(Value::Struct(name.clone(), fields))
-                }
-            },
-            TypeAnnotation::Generic(_, _) => {
-                // For Phase 1, generic collections return a simple default
-                Ok(Value::String("mock_collection".to_string()))
+    fn collect_type_fields(&self, type_ann: &TypeAnnotation) -> Vec<(String, String)> {
+        if let TypeAnnotation::Named(name) = type_ann {
+            if let Some(type_decl) = self.types.get(name) {
+                return type_decl
+                    .fields
+                    .iter()
+                    .map(|f| {
+                        let type_name = match &f.type_annotation {
+                            TypeAnnotation::Named(n) => n.clone(),
+                            TypeAnnotation::Generic(n, _) => n.clone(),
+                        };
+                        (f.name.clone(), type_name)
+                    })
+                    .collect();
             }
         }
+        Vec::new()
     }
 
     fn eval_validate(&mut self, expr: &ValidateExpr) -> Result<Value, EvalError> {

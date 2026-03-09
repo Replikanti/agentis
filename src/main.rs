@@ -1,9 +1,12 @@
 mod ast;
 mod capabilities;
 mod compiler;
+mod config;
 mod error;
 mod evaluator;
+mod json;
 mod lexer;
+mod llm;
 mod network;
 mod parser;
 mod refs;
@@ -169,9 +172,15 @@ fn cmd_run(branch: &str) -> Result<(), AgentisError> {
         eprintln!("warning: {err}");
     }
 
+    // Load LLM backend from config
+    let cfg = config::Config::load(&agentis_root());
+    let llm_backend = llm::create_backend(&cfg)
+        .map_err(|e| AgentisError::General(format!("{e}")))?;
+
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
         .with_vcs(&store, &refs)
-        .with_persistence(&store);
+        .with_persistence(&store)
+        .with_llm(llm_backend.as_ref());
     evaluator.grant_all();
     match evaluator.eval_program(&program) {
         Ok(_) => {
