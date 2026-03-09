@@ -6,6 +6,7 @@ mod evaluator;
 mod lexer;
 mod parser;
 mod refs;
+mod snapshot;
 mod storage;
 
 use std::path::Path;
@@ -148,7 +149,8 @@ fn cmd_run(branch: &str) -> Result<(), AgentisError> {
     let program: ast::Program = store.load(&tree_hash)?;
 
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
-        .with_vcs(&store, &refs);
+        .with_vcs(&store, &refs)
+        .with_persistence(&store);
     evaluator.grant_all();
     match evaluator.eval_program(&program) {
         Ok(_) => {

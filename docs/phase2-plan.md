@@ -18,7 +18,7 @@ Compile AST directly to WebAssembly (WASM), implement Capability-Based Security
 - [x] M8: WASM Compiler Backend (DAG-to-WASM & CB Injection)
 - [ ] M7: Raw TCP Peer-to-Peer Sync
 - [x] M9: Capability-Based Security (OCap)
-- [ ] M10: Orthogonal Persistence (State-as-Memory)
+- [x] M10: Orthogonal Persistence (State-as-Memory)
 
 ### M7: Raw TCP Peer-to-Peer Sync
 
