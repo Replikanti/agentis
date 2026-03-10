@@ -98,6 +98,7 @@ fn main() {
             let addr = args.get(2).map(|s| s.as_str()).unwrap_or("0.0.0.0:9461");
             cmd_serve(addr)
         }
+        "snapshot" => cmd_snapshot(&args[2..]),
         "audit" => cmd_audit(&args[2..]),
         "log" => {
             let branch = args.get(2).map(|s| s.as_str());
@@ -135,6 +136,7 @@ fn print_usage() {
     eprintln!("  sync <host:port>     Sync objects with a remote peer");
     eprintln!("  serve [addr:port]    Listen for incoming sync connections");
     eprintln!("  log [branch]         Show commit log for a branch");
+    eprintln!("  snapshot list|show   List or inspect snapshots");
     eprintln!("  audit [flags]        Show prompt audit log");
     eprintln!("  version              Show version");
 }
@@ -326,6 +328,7 @@ fn cmd_go(source_file: &str, force_verbose: bool, grant_pii: bool) -> Result<(),
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
         .with_vcs(&store, &refs)
         .with_persistence(&store)
+        .with_snapshot_registry(&agentis_root())
         .with_llm(llm_backend.as_ref())
         .with_io(&io_ctx)
         .with_max_agents(max_agents)
@@ -395,6 +398,7 @@ fn cmd_run(branch: &str) -> Result<(), AgentisError> {
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
         .with_vcs(&store, &refs)
         .with_persistence(&store)
+        .with_snapshot_registry(&agentis_root())
         .with_llm(llm_backend.as_ref())
         .with_io(&io_ctx)
         .with_max_agents(max_agents)
@@ -590,6 +594,107 @@ fn cmd_log(branch: Option<&str>) -> Result<(), AgentisError> {
         }
     }
     Ok(())
+}
+
+fn cmd_snapshot(args: &[String]) -> Result<(), AgentisError> {
+    let (store, _refs) = ensure_initialized()?;
+    let root = agentis_root();
+
+    let subcmd = args.first().map(|s| s.as_str()).unwrap_or("--help");
+
+    match subcmd {
+        "list" => {
+            let mgr = snapshot::SnapshotManager::new(&store).with_registry(&root);
+            let snapshots = mgr.list_all();
+            if snapshots.is_empty() {
+                println!("No snapshots found.");
+                return Ok(());
+            }
+            println!(
+                "{:<14} {:<12} {:<9} {}",
+                "HASH", "CB", "OUTPUT", "SCOPES"
+            );
+            for info in &snapshots {
+                let short_hash = if info.hash.len() >= 12 {
+                    &info.hash[..12]
+                } else {
+                    &info.hash
+                };
+                let output_desc = if info.output_lines == 1 {
+                    "1 line".to_string()
+                } else {
+                    format!("{} lines", info.output_lines)
+                };
+                println!(
+                    "{:<14} {:<12} {:<9} {}",
+                    short_hash,
+                    format!("{}", info.budget_remaining),
+                    output_desc,
+                    info.scope_count,
+                );
+            }
+        }
+        "show" => {
+            let hash_arg = args.get(1).ok_or_else(|| {
+                AgentisError::General("Usage: agentis snapshot show <hash>".to_string())
+            })?;
+            // Support prefix matching
+            let full_hash = resolve_snapshot_hash(&root, hash_arg)?;
+            let snap = snapshot::SnapshotManager::new(&store)
+                .with_registry(&root)
+                .load(&full_hash)
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+
+            println!("Snapshot: {full_hash}");
+            println!("Budget:   {}", snap.budget_remaining);
+            println!("Output:   {} lines", snap.output.len());
+            println!("Scopes:   {}", snap.scopes.len());
+
+            if !snap.output.is_empty() {
+                println!();
+                println!("--- Output ---");
+                for line in &snap.output {
+                    println!("  {line}");
+                }
+            }
+
+            for (i, scope) in snap.scopes.iter().enumerate() {
+                println!();
+                println!("--- Scope {} ({} bindings) ---", i, scope.len());
+                let mut keys: Vec<&String> = scope.keys().collect();
+                keys.sort();
+                for key in keys {
+                    let val = &scope[key];
+                    println!("  {key} = {val}");
+                }
+            }
+        }
+        "--help" | "help" | _ => {
+            eprintln!("Usage: agentis snapshot <command>");
+            eprintln!();
+            eprintln!("Commands:");
+            eprintln!("  list              List all snapshots");
+            eprintln!("  show <hash>       Show snapshot details");
+        }
+    }
+
+    Ok(())
+}
+
+/// Resolve a possibly-abbreviated snapshot hash to its full hash.
+fn resolve_snapshot_hash(agentis_root: &std::path::Path, prefix: &str) -> Result<String, AgentisError> {
+    let hashes = snapshot::load_registry(agentis_root);
+    let matches: Vec<&String> = hashes.iter().filter(|h| h.starts_with(prefix)).collect();
+    match matches.len() {
+        0 => Err(AgentisError::General(format!(
+            "no snapshot matching '{prefix}'"
+        ))),
+        1 => Ok(matches[0].clone()),
+        _ => Err(AgentisError::General(format!(
+            "ambiguous prefix '{prefix}': matches {} snapshots",
+            matches.len()
+        ))),
+    }
 }
 
 fn cmd_audit(args: &[String]) -> Result<(), AgentisError> {
