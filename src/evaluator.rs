@@ -321,6 +321,15 @@ impl<'a> Evaluator<'a> {
         self
     }
 
+    /// Enable persistent snapshot registry at the given `.agentis` root.
+    /// Must be called after `with_persistence`.
+    pub fn with_snapshot_registry(mut self, agentis_root: &std::path::Path) -> Self {
+        if let Some(mgr) = self.snapshot_mgr.take() {
+            self.snapshot_mgr = Some(mgr.with_registry(agentis_root));
+        }
+        self
+    }
+
     pub fn grant(&mut self, kind: CapKind) {
         let handle = self.cap_registry.grant(kind);
         self.caps.entry(kind).or_default().push(handle);
@@ -367,6 +376,15 @@ impl<'a> Evaluator<'a> {
     pub fn restore_snapshot(&mut self, snapshot: &MemorySnapshot) {
         self.env.restore_scopes(snapshot.scopes.clone());
         self.budget = snapshot.budget_remaining;
+        self.output = snapshot.output.clone();
+    }
+
+    /// Restore from snapshot with 30% CB penalty (resurrection tax).
+    /// Resurrected agents have less fuel than before death — evolutionary
+    /// pressure against fragile agents that die repeatedly.
+    pub fn restore_snapshot_with_penalty(&mut self, snapshot: &MemorySnapshot) {
+        self.env.restore_scopes(snapshot.scopes.clone());
+        self.budget = (snapshot.budget_remaining as f64 * 0.7) as u64;
         self.output = snapshot.output.clone();
     }
 
@@ -2090,6 +2108,25 @@ mod tests {
         evaluator2.grant_all();
         evaluator2.restore_snapshot(&snap);
         assert_eq!(evaluator2.budget_remaining(), snap.budget_remaining);
+    }
+
+    #[test]
+    fn restore_snapshot_with_cb_penalty() {
+        let program = Parser::parse_source("let x = 42;").unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+
+        let snap = evaluator.capture_snapshot();
+        let original_budget = snap.budget_remaining;
+
+        let mut evaluator2 = Evaluator::new(0);
+        evaluator2.grant_all();
+        evaluator2.restore_snapshot_with_penalty(&snap);
+
+        let expected = (original_budget as f64 * 0.7) as u64;
+        assert_eq!(evaluator2.budget_remaining(), expected);
+        assert!(evaluator2.budget_remaining() < original_budget);
     }
 
     #[test]

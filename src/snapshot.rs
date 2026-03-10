@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::evaluator::Value;
 use crate::storage::{Hash, ObjectStore, StorageError};
@@ -138,9 +139,21 @@ impl MemorySnapshot {
 
 // --- Snapshot Manager ---
 
+/// Summary of a snapshot for CLI listing.
+pub struct SnapshotInfo {
+    pub hash: Hash,
+    pub budget_remaining: u64,
+    pub output_lines: usize,
+    pub scope_count: usize,
+}
+
 pub struct SnapshotManager<'a> {
     store: &'a ObjectStore,
     history: Vec<Hash>,
+    /// Path to the persistent snapshot registry file (`.agentis/snapshots`).
+    /// When set, every save appends the hash to this file so snapshots
+    /// survive process restarts and can be discovered by the CLI.
+    registry_path: Option<PathBuf>,
 }
 
 impl<'a> SnapshotManager<'a> {
@@ -148,13 +161,32 @@ impl<'a> SnapshotManager<'a> {
         Self {
             store,
             history: Vec::new(),
+            registry_path: None,
         }
+    }
+
+    /// Enable persistent snapshot registry at the given `.agentis` root.
+    /// Creates/appends to `.agentis/snapshots`.
+    pub fn with_registry(mut self, agentis_root: &Path) -> Self {
+        self.registry_path = Some(agentis_root.join("snapshots"));
+        self
     }
 
     pub fn save(&mut self, snapshot: &MemorySnapshot) -> Result<Hash, SnapshotError> {
         let bytes = snapshot.to_bytes();
         let hash = self.store.save_raw(&bytes)?;
         self.history.push(hash.clone());
+        // Persist to registry file
+        if let Some(ref path) = self.registry_path {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = writeln!(f, "{hash}");
+            }
+        }
         Ok(hash)
     }
 
@@ -174,6 +206,59 @@ impl<'a> SnapshotManager<'a> {
     pub fn rollback_to(&self, hash: &str) -> Result<MemorySnapshot, SnapshotError> {
         self.load(hash)
     }
+
+    /// List all known snapshots from the persistent registry.
+    /// Returns snapshot info (hash, budget, output line count, scope count)
+    /// for each valid snapshot. Invalid/missing entries are silently skipped.
+    pub fn list_all(&self) -> Vec<SnapshotInfo> {
+        let path = match &self.registry_path {
+            Some(p) => p.clone(),
+            None => return Vec::new(),
+        };
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        let mut seen = std::collections::HashSet::new();
+        let mut result = Vec::new();
+        for line in content.lines() {
+            let hash = line.trim();
+            if hash.is_empty() || !seen.insert(hash.to_string()) {
+                continue;
+            }
+            if let Ok(snap) = self.load(hash) {
+                result.push(SnapshotInfo {
+                    hash: hash.to_string(),
+                    budget_remaining: snap.budget_remaining,
+                    output_lines: snap.output.len(),
+                    scope_count: snap.scopes.len(),
+                });
+            }
+        }
+        result
+    }
+}
+
+/// Load all snapshot hashes from the persistent registry at the given root.
+/// Standalone function for use by CLI without a full SnapshotManager.
+pub fn load_registry(agentis_root: &Path) -> Vec<Hash> {
+    let path = agentis_root.join("snapshots");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let mut seen = std::collections::HashSet::new();
+    content
+        .lines()
+        .filter_map(|line| {
+            let h = line.trim();
+            if h.is_empty() || !seen.insert(h.to_string()) {
+                None
+            } else {
+                Some(h.to_string())
+            }
+        })
+        .collect()
 }
 
 // --- Serialization helpers ---
@@ -588,5 +673,130 @@ mod tests {
         assert_eq!(format!("{e}"), "snapshot storage error: disk full");
         let e = SnapshotError::InvalidFormat("bad tag".to_string());
         assert_eq!(format!("{e}"), "invalid snapshot format: bad tag");
+    }
+
+    // --- Persistent registry ---
+
+    #[test]
+    fn save_with_registry_persists_hashes() {
+        let (store, dir) = test_store();
+        let root = dir.path().to_path_buf();
+        let mut mgr = SnapshotManager::new(&store).with_registry(&root);
+
+        let snap = MemorySnapshot {
+            scopes: vec![],
+            budget_remaining: 100,
+            output: vec![],
+        };
+        let hash = mgr.save(&snap).unwrap();
+
+        // Registry file should exist and contain the hash
+        let registry = std::fs::read_to_string(root.join("snapshots")).unwrap();
+        assert!(registry.contains(&hash));
+    }
+
+    #[test]
+    fn list_all_returns_saved_snapshots() {
+        let (store, dir) = test_store();
+        let root = dir.path().to_path_buf();
+        let mut mgr = SnapshotManager::new(&store).with_registry(&root);
+
+        let snap1 = MemorySnapshot {
+            scopes: vec![],
+            budget_remaining: 100,
+            output: vec![],
+        };
+        let snap2 = MemorySnapshot {
+            scopes: vec![],
+            budget_remaining: 200,
+            output: vec!["hi".to_string()],
+        };
+
+        mgr.save(&snap1).unwrap();
+        mgr.save(&snap2).unwrap();
+
+        let all = mgr.list_all();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].budget_remaining, 100);
+        assert_eq!(all[0].output_lines, 0);
+        assert_eq!(all[1].budget_remaining, 200);
+        assert_eq!(all[1].output_lines, 1);
+    }
+
+    #[test]
+    fn list_all_deduplicates() {
+        let (store, dir) = test_store();
+        let root = dir.path().to_path_buf();
+        let mut mgr = SnapshotManager::new(&store).with_registry(&root);
+
+        // Save same snapshot twice (content-addressed = same hash, but
+        // the registry appends both times)
+        let snap = MemorySnapshot {
+            scopes: vec![],
+            budget_remaining: 100,
+            output: vec![],
+        };
+        mgr.save(&snap).unwrap();
+        mgr.save(&snap).unwrap();
+
+        let all = mgr.list_all();
+        assert_eq!(all.len(), 1, "duplicates should be removed");
+    }
+
+    #[test]
+    fn list_all_empty_without_registry() {
+        let (store, _dir) = test_store();
+        let mgr = SnapshotManager::new(&store);
+        assert!(mgr.list_all().is_empty());
+    }
+
+    #[test]
+    fn list_all_empty_with_no_snapshots() {
+        let (store, dir) = test_store();
+        let root = dir.path().to_path_buf();
+        let mgr = SnapshotManager::new(&store).with_registry(&root);
+        assert!(mgr.list_all().is_empty());
+    }
+
+    #[test]
+    fn load_registry_standalone() {
+        let (store, dir) = test_store();
+        let root = dir.path().to_path_buf();
+        let mut mgr = SnapshotManager::new(&store).with_registry(&root);
+
+        let snap = MemorySnapshot {
+            scopes: vec![],
+            budget_remaining: 42,
+            output: vec![],
+        };
+        let hash = mgr.save(&snap).unwrap();
+
+        // Use standalone function
+        let hashes = load_registry(&root);
+        assert_eq!(hashes.len(), 1);
+        assert_eq!(hashes[0], hash);
+    }
+
+    #[test]
+    fn list_all_shows_scope_count() {
+        let (store, dir) = test_store();
+        let root = dir.path().to_path_buf();
+        let mut mgr = SnapshotManager::new(&store).with_registry(&root);
+
+        let mut s1 = HashMap::new();
+        s1.insert("x".to_string(), Value::Int(1));
+        let mut s2 = HashMap::new();
+        s2.insert("y".to_string(), Value::Int(2));
+
+        let snap = MemorySnapshot {
+            scopes: vec![s1, s2],
+            budget_remaining: 500,
+            output: vec![],
+        };
+        mgr.save(&snap).unwrap();
+
+        let all = mgr.list_all();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].scope_count, 2);
     }
 }

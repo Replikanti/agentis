@@ -52,7 +52,7 @@ Storage: AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (465)
+cargo test                     # Run all tests (473)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
@@ -66,6 +66,8 @@ cargo run -- compile <branch>   # Compile branch to WASM binary
 cargo run -- sync <host:port>  # Sync objects with remote peer
 cargo run -- serve [addr:port] # Listen for incoming sync connections
 cargo run -- log               # Show commit log
+cargo run -- snapshot list     # List all persisted snapshots
+cargo run -- snapshot show <h> # Show snapshot details (variables, budget, output)
 ```
 
 ## Phase 2 Features
