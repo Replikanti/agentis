@@ -88,6 +88,45 @@ impl Parser {
         }
     }
 
+    /// Parse a single REPL input line (may be a declaration, statement, or bare expression).
+    /// Bare expressions without trailing `;` are accepted.
+    pub fn parse_repl_input(source: &str) -> Result<Declaration, ParseError> {
+        let tokens = Lexer::new(source).tokenize().map_err(|e| ParseError {
+            message: e.message,
+            line: e.line,
+            column: e.column,
+        })?;
+        let mut parser = Parser::new(tokens);
+        if parser.is_at_end() {
+            return Ok(Declaration::Statement(Statement::Expression(ExprStmt {
+                expr: Expr::Identifier("void".to_string()),
+            })));
+        }
+        let decl = parser.parse_repl_declaration()?;
+        Ok(decl)
+    }
+
+    /// Like parse_declaration but allows bare expressions without semicolons.
+    fn parse_repl_declaration(&mut self) -> Result<Declaration, ParseError> {
+        match self.current_token() {
+            Token::Fn => Ok(Declaration::Function(self.parse_fn_decl()?)),
+            Token::Agent => Ok(Declaration::Agent(self.parse_agent_decl()?)),
+            Token::Type => Ok(Declaration::Type(self.parse_type_decl()?)),
+            Token::Import => Ok(Declaration::Import(self.parse_import_decl()?)),
+            Token::Let => Ok(Declaration::Statement(self.parse_let_stmt()?)),
+            Token::Return => Ok(Declaration::Statement(self.parse_return_stmt()?)),
+            Token::Cb => Ok(Declaration::Statement(self.parse_cb_stmt()?)),
+            _ => {
+                // Parse expression; semicolon is optional in REPL
+                let expr = self.parse_expression()?;
+                if self.current_token() == Token::Semicolon {
+                    self.advance();
+                }
+                Ok(Declaration::Statement(Statement::Expression(ExprStmt { expr })))
+            }
+        }
+    }
+
     // --- Declarations ---
 
     fn parse_declaration(&mut self) -> Result<Declaration, ParseError> {

@@ -20,7 +20,7 @@ the canonical reference is always the DAG path.
 ## Milestones
 
 - [x] M23: Snapshot CLI + Resurrection
-- [ ] M24: REPL (`agentis repl`)
+- [x] M24: REPL (`agentis repl`)
 - [ ] M25: Test Runner (`agentis test`)
 - [ ] M26: Rich Error Context
 

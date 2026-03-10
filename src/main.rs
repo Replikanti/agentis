@@ -64,6 +64,7 @@ fn main() {
             let grant_pii = args.iter().any(|a| a == "--grant-pii");
             cmd_go(&args[2], force_verbose, grant_pii)
         }
+        "repl" => cmd_repl(&args[2..]),
         "doctor" => cmd_doctor(),
         "branch" => {
             if args.len() < 3 {
@@ -127,6 +128,7 @@ fn print_usage() {
     eprintln!("Commands:");
     eprintln!("  init [--secure]       Initialize a new Agentis repository");
     eprintln!("  go <file> [--trace]  Commit and run in one step (the demo command)");
+    eprintln!("  repl [--resume <h>]  Interactive evaluator (REPL)");
     eprintln!("  commit <file>        Parse source file, store AST, update current branch");
     eprintln!("  run <branch>         Execute code from a branch's root hash");
     eprintln!("  doctor               Check environment and configuration");
@@ -593,6 +595,197 @@ fn cmd_log(branch: Option<&str>) -> Result<(), AgentisError> {
             println!("commit  tree:{short_tree}  ({branch_name})");
         }
     }
+    Ok(())
+}
+
+fn cmd_repl(args: &[String]) -> Result<(), AgentisError> {
+    let (store, refs) = ensure_initialized()?;
+    let root = agentis_root();
+
+    let cfg = config::Config::load(&root);
+    let llm_backend = llm::create_backend(&cfg)
+        .map_err(|e| AgentisError::General(format!("{e}")))?;
+    let io_ctx = io::IoContext::new(&root, &cfg);
+    let trace_level = trace::TraceLevel::from_str(&cfg.get_or("trace.level", "normal"));
+    let tracer = trace::Tracer::new(trace_level);
+    let audit_log = audit::AuditLog::open(&root);
+
+    let max_agents = cfg.get_u64("max_concurrent_agents", 16) as u32;
+    let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
+        .with_vcs(&store, &refs)
+        .with_persistence(&store)
+        .with_snapshot_registry(&root)
+        .with_llm(llm_backend.as_ref())
+        .with_io(&io_ctx)
+        .with_max_agents(max_agents)
+        .with_tracer(&tracer);
+    if let Some(ref audit) = audit_log {
+        evaluator = evaluator.with_audit(audit);
+    }
+    evaluator.grant_all();
+
+    if cfg.get("pii_transmit").is_some_and(|v| v == "allow") {
+        evaluator.grant(capabilities::CapKind::PiiTransmit);
+    }
+
+    // Load current branch program (register functions/types/agents)
+    let branch_name = refs.current_branch().unwrap_or_else(|_| "genesis".to_string());
+    if let Ok(Some(tree_hash)) = refs.resolve_tree(&branch_name, &store) {
+        if let Ok(program) = store.load::<ast::Program>(&tree_hash) {
+            for decl in &program.declarations {
+                match decl {
+                    ast::Declaration::Function(f) => {
+                        let _ = evaluator.eval_repl_declaration(
+                            &ast::Declaration::Function(f.clone()),
+                        );
+                    }
+                    ast::Declaration::Agent(a) => {
+                        let _ = evaluator.eval_repl_declaration(
+                            &ast::Declaration::Agent(a.clone()),
+                        );
+                    }
+                    ast::Declaration::Type(t) => {
+                        let _ = evaluator.eval_repl_declaration(
+                            &ast::Declaration::Type(t.clone()),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // --resume <hash>: restore snapshot with CB penalty
+    let resume_hash = args.windows(2).find_map(|w| {
+        if w[0] == "--resume" { Some(w[1].clone()) } else { None }
+    });
+    if let Some(ref prefix) = resume_hash {
+        let full_hash = resolve_snapshot_hash(&root, prefix)?;
+        let mgr = snapshot::SnapshotManager::new(&store).with_registry(&root);
+        let snap = mgr.load(&full_hash)
+            .map_err(|e| AgentisError::General(format!("{e}")))?;
+        evaluator.restore_snapshot_with_penalty(&snap);
+        eprintln!("Restored snapshot {}", &full_hash[..12]);
+        eprintln!("  Budget: {} (after 30% resurrection tax)", evaluator.budget_remaining());
+        eprintln!("  Output: {} lines", evaluator.output().len());
+    }
+
+    eprintln!("agentis repl — type .help for commands, .exit to quit");
+
+    let stdin = std::io::stdin();
+    let mut input_buf = String::new();
+    let initial_budget = DEFAULT_BUDGET;
+    let mut output_shown = evaluator.output().len();
+
+    loop {
+        // Prompt
+        if input_buf.is_empty() {
+            eprint!("agentis> ");
+        } else {
+            eprint!("   ...> ");
+        }
+
+        let mut line = String::new();
+        if stdin.read_line(&mut line).unwrap_or(0) == 0 {
+            // EOF
+            break;
+        }
+
+        // Handle dot-commands (only on fresh input, not continuations)
+        let trimmed = line.trim();
+        if input_buf.is_empty() && trimmed.starts_with('.') {
+            match trimmed {
+                ".exit" | ".quit" => break,
+                ".budget" => {
+                    eprintln!("CB: {}/{}", evaluator.budget_remaining(), initial_budget);
+                }
+                ".snapshot" => {
+                    let snap = evaluator.capture_snapshot();
+                    let mgr_result = snapshot::SnapshotManager::new(&store)
+                        .with_registry(&root)
+                        .save(&snap);
+                    match mgr_result {
+                        Ok(hash) => eprintln!("Snapshot saved: {}", &hash[..12]),
+                        Err(e) => eprintln!("Snapshot error: {e}"),
+                    }
+                }
+                ".output" => {
+                    let output = evaluator.output();
+                    if output.is_empty() {
+                        eprintln!("(no output)");
+                    } else {
+                        for line in output {
+                            println!("{line}");
+                        }
+                    }
+                }
+                ".help" => {
+                    eprintln!("  .exit      Quit REPL");
+                    eprintln!("  .budget    Show remaining CB / initial budget");
+                    eprintln!("  .snapshot  Manually save snapshot");
+                    eprintln!("  .output    Show accumulated output buffer");
+                    eprintln!("  .help      Show this help");
+                }
+                other => {
+                    eprintln!("Unknown command: {other}");
+                    eprintln!("Type .help for available commands.");
+                }
+            }
+            continue;
+        }
+
+        input_buf.push_str(&line);
+
+        // Multi-line detection: if braces aren't balanced, continue reading
+        let open = input_buf.matches('{').count();
+        let close = input_buf.matches('}').count();
+        if open > close {
+            continue;
+        }
+
+        let input = input_buf.trim().to_string();
+        input_buf.clear();
+
+        if input.is_empty() {
+            continue;
+        }
+
+        // Parse and evaluate
+        match parser::Parser::parse_repl_input(&input) {
+            Ok(decl) => {
+                // For let statements, we want to show the assigned value
+                let is_let = matches!(&decl, ast::Declaration::Statement(ast::Statement::Let(_)));
+
+                match evaluator.eval_repl_declaration(&decl) {
+                    Ok(val) => {
+                        // Flush new print() output
+                        let current_output = evaluator.output();
+                        for line in &current_output[output_shown..] {
+                            println!("{line}");
+                        }
+                        output_shown = current_output.len();
+
+                        if is_let {
+                            if let ast::Declaration::Statement(ast::Statement::Let(l)) = &decl {
+                                if let Some(v) = evaluator.lookup_var(&l.name) {
+                                    println!("{v}");
+                                }
+                            }
+                        } else if val != evaluator::Value::Void {
+                            println!("{val}");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("parse error: {e}");
+            }
+        }
+    }
+
     Ok(())
 }
 
