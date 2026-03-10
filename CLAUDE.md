@@ -68,6 +68,8 @@ cargo run -- serve [addr:port] # Listen for incoming sync connections
 cargo run -- log               # Show commit log
 cargo run -- snapshot list     # List all persisted snapshots
 cargo run -- snapshot show <h> # Show snapshot details (variables, budget, output)
+cargo run -- repl              # Interactive evaluator (REPL)
+cargo run -- repl --resume <h> # Resume REPL from snapshot (30% CB penalty)
 ```
 
 ## Phase 2 Features

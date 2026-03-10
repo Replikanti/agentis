@@ -414,6 +414,11 @@ impl<'a> Evaluator<'a> {
         &self.output
     }
 
+    /// Look up a variable by name (for REPL display, no CB cost).
+    pub fn lookup_var(&self, name: &str) -> Option<Value> {
+        self.env.get(name).cloned()
+    }
+
     fn spend(&mut self, cost: u64) -> Result<(), EvalError> {
         if self.budget < cost {
             return Err(EvalError::CognitiveOverload {
@@ -456,6 +461,35 @@ impl<'a> Evaluator<'a> {
             }
         }
         Ok(last)
+    }
+
+    /// Evaluate a single declaration in REPL mode.
+    /// Registers functions/agents/types immediately and evaluates statements.
+    /// Returns the resulting value (for display in the REPL).
+    pub fn eval_repl_declaration(&mut self, decl: &Declaration) -> Result<Value, EvalError> {
+        match decl {
+            Declaration::Import(imp) => {
+                self.resolve_import(imp)?;
+                Ok(Value::Void)
+            }
+            Declaration::Function(f) => {
+                self.functions.insert(f.name.clone(), Callable::Function(f.clone()));
+                Ok(Value::Void)
+            }
+            Declaration::Agent(a) => {
+                self.functions.insert(a.name.clone(), Callable::Agent(a.clone()));
+                Ok(Value::Void)
+            }
+            Declaration::Type(t) => {
+                self.types.insert(t.name.clone(), t.clone());
+                Ok(Value::Void)
+            }
+            Declaration::Statement(stmt) => {
+                let val = self.eval_statement(stmt)?;
+                self.persist_snapshot();
+                Ok(val)
+            }
+        }
     }
 
     /// Resolve an import declaration: load AST from object store by hash,
