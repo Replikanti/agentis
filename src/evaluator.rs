@@ -237,6 +237,21 @@ impl Environment {
 
 // --- Evaluator ---
 
+/// Test outcome for a single explore block or validate expression.
+#[derive(Debug, Clone)]
+pub struct TestOutcome {
+    pub name: String,
+    pub kind: TestKind,
+    pub passed: bool,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TestKind {
+    Explore,
+    Validate,
+}
+
 pub struct Evaluator<'a> {
     env: Environment,
     functions: HashMap<String, Callable>,
@@ -258,6 +273,9 @@ pub struct Evaluator<'a> {
     max_concurrent_agents: u32,
     active_agents: Arc<AtomicU32>,
     spawn_counter: u32,
+    /// When Some, test mode is enabled: explore/validate outcomes are
+    /// collected instead of aborting on failure.
+    test_outcomes: Option<Vec<TestOutcome>>,
 }
 
 impl<'a> Evaluator<'a> {
@@ -283,6 +301,22 @@ impl<'a> Evaluator<'a> {
             max_concurrent_agents: 16,
             active_agents: Arc::new(AtomicU32::new(0)),
             spawn_counter: 0,
+            test_outcomes: None,
+        }
+    }
+
+    /// Enable test mode: explore/validate outcomes are collected instead
+    /// of aborting on failure.
+    pub fn with_test_mode(mut self) -> Self {
+        self.test_outcomes = Some(Vec::new());
+        self
+    }
+
+    /// Return collected test outcomes (only meaningful in test mode).
+    pub fn test_outcomes(&self) -> &[TestOutcome] {
+        match &self.test_outcomes {
+            Some(v) => v,
+            None => &[],
         }
     }
 
@@ -456,8 +490,45 @@ impl<'a> Evaluator<'a> {
         let mut last = Value::Void;
         for decl in &program.declarations {
             if let Declaration::Statement(stmt) = decl {
-                last = self.eval_statement(stmt)?;
-                self.persist_snapshot();
+                match self.eval_statement(stmt) {
+                    Ok(val) => {
+                        // In test mode, record validate successes for
+                        // top-level validate expressions.
+                        if self.test_outcomes.is_some() {
+                            if let Statement::Expression(expr_stmt) = stmt {
+                                if let Expr::Validate(v) = &expr_stmt.expr {
+                                    self.test_outcomes.as_mut().unwrap().push(TestOutcome {
+                                        name: format!("validate ({} predicates)", v.predicates.len()),
+                                        kind: TestKind::Validate,
+                                        passed: true,
+                                        detail: None,
+                                    });
+                                }
+                            }
+                        }
+                        last = val;
+                        self.persist_snapshot();
+                    }
+                    Err(e) => {
+                        if self.test_outcomes.is_some() {
+                            // In test mode: record the failure, continue
+                            if let Statement::Expression(expr_stmt) = stmt {
+                                if let Expr::Validate(v) = &expr_stmt.expr {
+                                    self.test_outcomes.as_mut().unwrap().push(TestOutcome {
+                                        name: format!("validate ({} predicates)", v.predicates.len()),
+                                        kind: TestKind::Validate,
+                                        passed: false,
+                                        detail: Some(format!("{e}")),
+                                    });
+                                    continue;
+                                }
+                            }
+                            // Non-validate error in test mode: still abort
+                            return Err(e);
+                        }
+                        return Err(e);
+                    }
+                }
             }
         }
         Ok(last)
@@ -1510,6 +1581,14 @@ impl<'a> Evaluator<'a> {
                 if let Some(t) = &self.tracer {
                     t.explore_outcome(&expr.name, true);
                 }
+                if self.test_outcomes.is_some() {
+                    self.test_outcomes.as_mut().unwrap().push(TestOutcome {
+                        name: expr.name.clone(),
+                        kind: TestKind::Explore,
+                        passed: true,
+                        detail: None,
+                    });
+                }
                 // Transaction boundary: explore block completed, call stack empty
                 self.persist_snapshot();
                 Ok(value)
@@ -1521,6 +1600,16 @@ impl<'a> Evaluator<'a> {
                 // Failure: restore everything, no side effects
                 self.env = saved_env;
                 self.budget = saved_budget;
+                // In test mode: record failure, continue
+                if self.test_outcomes.is_some() {
+                    self.test_outcomes.as_mut().unwrap().push(TestOutcome {
+                        name: expr.name.clone(),
+                        kind: TestKind::Explore,
+                        passed: false,
+                        detail: Some(format!("{}", e)),
+                    });
+                    return Ok(Value::Void);
+                }
                 Err(e.with_context(format!("explore \"{}\"", expr.name)))
             }
         }

@@ -70,6 +70,7 @@ cargo run -- snapshot list     # List all persisted snapshots
 cargo run -- snapshot show <h> # Show snapshot details (variables, budget, output)
 cargo run -- repl              # Interactive evaluator (REPL)
 cargo run -- repl --resume <h> # Resume REPL from snapshot (30% CB penalty)
+cargo run -- test <files|dir>  # Run tests (validate/explore outcomes)
 ```
 
 ## Phase 2 Features

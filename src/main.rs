@@ -65,6 +65,7 @@ fn main() {
             cmd_go(&args[2], force_verbose, grant_pii)
         }
         "repl" => cmd_repl(&args[2..]),
+        "test" => cmd_test(&args[2..]),
         "doctor" => cmd_doctor(),
         "branch" => {
             if args.len() < 3 {
@@ -129,6 +130,7 @@ fn print_usage() {
     eprintln!("  init [--secure]       Initialize a new Agentis repository");
     eprintln!("  go <file> [--trace]  Commit and run in one step (the demo command)");
     eprintln!("  repl [--resume <h>]  Interactive evaluator (REPL)");
+    eprintln!("  test <files|dir>     Run tests (validate/explore outcomes)");
     eprintln!("  commit <file>        Parse source file, store AST, update current branch");
     eprintln!("  run <branch>         Execute code from a branch's root hash");
     eprintln!("  doctor               Check environment and configuration");
@@ -594,6 +596,166 @@ fn cmd_log(branch: Option<&str>) -> Result<(), AgentisError> {
             };
             println!("commit  tree:{short_tree}  ({branch_name})");
         }
+    }
+    Ok(())
+}
+
+fn cmd_test(args: &[String]) -> Result<(), AgentisError> {
+    if args.is_empty() || args[0] == "--help" {
+        eprintln!("Usage: agentis test <files|dir> [--fail-fast] [--verbose]");
+        return Ok(());
+    }
+
+    let fail_fast = args.iter().any(|a| a == "--fail-fast");
+    let verbose = args.iter().any(|a| a == "--verbose");
+
+    // Collect file paths (expand directories)
+    let mut files = Vec::new();
+    for arg in args {
+        if arg.starts_with('-') {
+            continue;
+        }
+        let path = std::path::Path::new(arg);
+        if path.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(path) {
+                let mut dir_files: Vec<_> = entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| {
+                        e.path().extension().is_some_and(|ext| ext == "ag")
+                    })
+                    .map(|e| e.path().to_string_lossy().to_string())
+                    .collect();
+                dir_files.sort();
+                files.extend(dir_files);
+            }
+        } else {
+            files.push(arg.clone());
+        }
+    }
+
+    if files.is_empty() {
+        eprintln!("No .ag files found.");
+        return Ok(());
+    }
+
+    let (store, refs) = ensure_initialized()?;
+    let root = agentis_root();
+    let cfg = config::Config::load(&root);
+    let llm_backend = llm::create_backend(&cfg)
+        .map_err(|e| AgentisError::General(format!("{e}")))?;
+    let io_ctx = io::IoContext::new(&root, &cfg);
+    let trace_level = if verbose {
+        trace::TraceLevel::Verbose
+    } else {
+        trace::TraceLevel::Quiet
+    };
+    let tracer = trace::Tracer::new(trace_level);
+
+    let mut total_passed = 0usize;
+    let mut total_failed = 0usize;
+    let mut any_file_failed = false;
+
+    for file in &files {
+        let source = match std::fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{file}");
+                eprintln!("  ERROR: {e}");
+                total_failed += 1;
+                any_file_failed = true;
+                if fail_fast { break; }
+                continue;
+            }
+        };
+
+        let program = match Parser::parse_source(&source) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("{file}");
+                eprintln!("  PARSE ERROR: {e}");
+                total_failed += 1;
+                any_file_failed = true;
+                if fail_fast { break; }
+                continue;
+            }
+        };
+
+        // Commit (so VCS-dependent features work)
+        let _ = store.save(&program).ok();
+
+        let max_agents = cfg.get_u64("max_concurrent_agents", 16) as u32;
+        let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
+            .with_test_mode()
+            .with_vcs(&store, &refs)
+            .with_persistence(&store)
+            .with_snapshot_registry(&root)
+            .with_llm(llm_backend.as_ref())
+            .with_io(&io_ctx)
+            .with_max_agents(max_agents)
+            .with_tracer(&tracer);
+        evaluator.grant_all();
+
+        if cfg.get("pii_transmit").is_some_and(|v| v == "allow") {
+            evaluator.grant(capabilities::CapKind::PiiTransmit);
+        }
+
+        // Run the program in test mode
+        let run_error = evaluator.eval_program(&program).err();
+
+        let outcomes = evaluator.test_outcomes();
+        let file_has_tests = !outcomes.is_empty();
+
+        println!("{file}");
+
+        if !file_has_tests && run_error.is_none() {
+            println!("  (no explore/validate blocks)");
+        }
+
+        // Report per-test outcomes
+        for outcome in outcomes {
+            let status = if outcome.passed { "PASS" } else { "FAIL" };
+            let kind_label = match outcome.kind {
+                evaluator::TestKind::Explore => format!("explore \"{}\"", outcome.name),
+                evaluator::TestKind::Validate => outcome.name.clone(),
+            };
+            let dots = 40usize.saturating_sub(kind_label.len() + 2);
+            let dot_str: String = std::iter::repeat('.').take(dots).collect();
+            println!("  {kind_label} {dot_str} {status}");
+
+            if !outcome.passed {
+                if let Some(ref detail) = outcome.detail {
+                    if verbose {
+                        println!("    {detail}");
+                    }
+                }
+            }
+
+            if outcome.passed {
+                total_passed += 1;
+            } else {
+                total_failed += 1;
+                any_file_failed = true;
+            }
+        }
+
+        // Report fatal errors (not explore/validate failures)
+        if let Some(ref e) = run_error {
+            println!("  ERROR: {e}");
+            total_failed += 1;
+            any_file_failed = true;
+        }
+
+        if any_file_failed && fail_fast {
+            break;
+        }
+    }
+
+    println!();
+    let total = total_passed + total_failed;
+    println!("Results: {} passed, {} failed, {} total", total_passed, total_failed, total);
+
+    if any_file_failed {
+        process::exit(1);
     }
     Ok(())
 }
