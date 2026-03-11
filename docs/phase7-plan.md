@@ -201,8 +201,9 @@ Winner: variant-c.ag (score: 0.915)
   ```
   When called from `evolve`, entries include `"gen": 3, "round": 2`
   for post-processing across generations. Error strings are truncated
-  to 80 chars (`"error": "CognitiveOverload: budget exh..."`) to keep
-  JSON compact.
+  to 80 chars to keep JSON compact. When `--rounds > 1`, entries
+  include `"rounds": 5, "rounds_avg": true` to distinguish averaged
+  scores from single-run scores.
 - Exit code 0 if at least one variant succeeds.
 
 **What the arena is NOT:**
@@ -345,8 +346,11 @@ Gen 10: best=0.935  avg=0.812  prompts=2.4  (8 variants)
 
 Best agent: evolved/classify-g10-best.ag (score: 0.935)
   Lineage: classify.ag → g1-m3 → g4-m1 → g7-m2 → g10-best
-  Efficiency: prompt calls reduced by ~31% (3.5 → 2.4 avg)
+  Efficiency: prompt calls -31% (3.5 → 2.4 avg)
 ```
+
+Efficiency line adapts: "-31%" when reduced, "+12%" when increased
+(neutral — more prompts isn't necessarily bad), omitted if unchanged.
 
 **Algorithm:**
 
@@ -418,7 +422,7 @@ entries in memory.
 Output:
 
 ```
-classify.ag → g1-m3 (0.72) → g4-m1 (0.81) → g7-m2 (0.87) → g10-best (0.935)
+classify.ag (seed) → g1-m3 (0.72) → g4-m1 (0.81) → g7-m2 (0.87) → g10-best (0.935)
 ```
 
 **Convergence detection:**
