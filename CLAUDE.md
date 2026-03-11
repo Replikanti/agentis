@@ -16,8 +16,9 @@ Agentis is an AI-native programming language fused with a Version Control System
 
 ```
 src/
-  main.rs           # CLI (init, commit, run, branch, switch, compile, sync, serve, log, go --fitness, mutate, arena)
+  main.rs           # CLI (init, commit, run, branch, switch, compile, sync, serve, log, go, mutate, arena, evolve, lineage)
   arena.rs          # Arena runner (rank variants by fitness, table/JSON output)
+  evolve.rs         # Evolution loop (generational mutation→arena→select, lineage tracking)
   fitness.rs        # Fitness scoring (FitnessReport, FitnessWeights, JSONL registry)
   mutation.rs       # Mutation engine (extract agents, mock/LLM mutations, source reconstruction)
   lexer.rs          # Tokenizer
@@ -55,7 +56,7 @@ Storage: AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (519)
+cargo test                     # Run all tests (529)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
@@ -85,6 +86,11 @@ cargo run -- mutate file.ag --mutate-prompt T # Custom mutation template ({instr
 cargo run -- arena dir/                      # Rank all .ag files by fitness
 cargo run -- arena f1.ag f2.ag --rounds 5    # Run each 5 times, average scores
 cargo run -- arena dir/ --top 3 --json       # Top 3 as JSON
+cargo run -- evolve file.ag -g 10 -n 8      # Evolution: 10 gens, pop 8
+cargo run -- evolve file.ag --dry-run -g 10 -n 8  # Estimate cost
+cargo run -- evolve file.ag -g 5 -n 4 --show-lineage --out evolved/
+cargo run -- evolve file.ag -g 20 -n 8 --stop-on-stall 5
+cargo run -- lineage evolved/variant.ag     # Trace ancestry to seed
 ```
 
 ## Phase 2 Features
@@ -120,8 +126,9 @@ cargo run -- arena dir/ --top 3 --json       # Top 3 as JSON
 - **Test Runner:** `agentis test <files|dir>` — reports validate/explore outcomes. `--fail-fast`, `--verbose`. Exit code 0/1.
 - **Rich Errors:** `ErrorDetail` struct with agent name, expression description, actionable hints. Enhanced: prompt PII errors, undefined functions (with "did you mean?"), arity mismatches, CB exhaustion, validate failures.
 
-## Phase 7 Features (Agent Evolution — in progress)
+## Phase 7 Features (Agent Evolution — complete)
 
 - **Fitness Metrics (M27):** `agentis go file.ag --fitness` reports composite fitness score. `FitnessReport` with CB efficiency, validate rate, explore rate, prompt count. `FitnessWeights` configurable via `--weights 0.3,0.5,0.2` or config. Dynamic weight redistribution when validates/explores absent. JSONL registry at `.agentis/fitness.jsonl`.
 - **Mutation Engine (M29):** `agentis mutate file.ag` generates agent variants by mutating prompt instruction strings. Source-level string replacement (not AST rewrite). LLM-guided mutations with real backend; 8 deterministic perturbations with mock. Flags: `--count`, `--out`, `--agent`, `--mutate-prompt`, `--dry-run`, `--list-agents`.
 - **Arena Runner (M28):** `agentis arena dir/` runs variants side by side, ranks by fitness. Supports `--rounds N` (multi-round averaging), `--top N`, `--json`, `--weights`. Sequential execution, quiet tracing. Error variants scored 0.0 with truncated error messages.
+- **Evolution Loop (M30):** `agentis evolve file.ag -g G -n N` runs the full evolutionary loop: mutate → arena → select → repeat. Tournament selection (top K=N/2 survives). Per-generation JSONL lineage in `.agentis/fitness/`. Intermediate bests saved to `<out>/g{gen:02}-best.ag`. `--budget-cap`, `--stop-on-stall`, `--show-lineage`, `--dry-run`. `agentis lineage <file>` traces ancestry to seed.

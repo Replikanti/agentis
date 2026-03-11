@@ -6,6 +6,7 @@ mod compiler;
 mod config;
 mod error;
 mod evaluator;
+mod evolve;
 mod fitness;
 mod io;
 mod json;
@@ -122,6 +123,29 @@ fn main() {
             }
             cmd_mutate(&args[2], &args[3..])
         }
+        "evolve" => {
+            if args.len() < 3 {
+                eprintln!("Usage: agentis evolve <source_file> [flags]");
+                eprintln!("  -g/--generations N  Number of generations (default: 5)");
+                eprintln!("  -n/--population N   Population size (default: 4)");
+                eprintln!("  --out <dir>         Output directory (default: evolved/)");
+                eprintln!("  --agent <name>      Mutate only specific agent");
+                eprintln!("  --weights W         Fitness weights (cb,val,exp)");
+                eprintln!("  --budget-cap N      Max total CB across all evaluations");
+                eprintln!("  --stop-on-stall N   Stop if no improvement for N generations");
+                eprintln!("  --show-lineage      Show best agent's lineage");
+                eprintln!("  --dry-run           Estimate cost without running");
+                process::exit(1);
+            }
+            cmd_evolve(&args[2], &args[3..])
+        }
+        "lineage" => {
+            if args.len() < 3 {
+                eprintln!("Usage: agentis lineage <source_file>");
+                process::exit(1);
+            }
+            cmd_lineage(&args[2])
+        }
         "log" => {
             let branch = args.get(2).map(|s| s.as_str());
             cmd_log(branch)
@@ -163,6 +187,8 @@ fn print_usage() {
     eprintln!("  snapshot list|show   List or inspect snapshots");
     eprintln!("  arena <files|dir>    Rank variants by fitness (--rounds --top --json)");
     eprintln!("  mutate <file> [flags] Generate mutated agent variants");
+    eprintln!("  evolve <file> [flags] Evolutionary loop (-g N -n N --out dir)");
+    eprintln!("  lineage <file>       Trace variant ancestry back to seed");
     eprintln!("  audit [flags]        Show prompt audit log");
     eprintln!("  version              Show version");
 }
@@ -1220,6 +1246,307 @@ fn cmd_mutate(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     }
 
     println!("\nGenerated {} variant(s).", variants.len());
+    Ok(())
+}
+
+/// Parse a flag value checking two names (e.g., "-g" and "--generations").
+fn parse_flag_value2(args: &[String], short: &str, long: &str) -> Option<String> {
+    parse_flag_value(args, short).or_else(|| parse_flag_value(args, long))
+}
+
+fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
+    let generations: usize = parse_flag_value2(args, "-g", "--generations")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
+    let population: usize = parse_flag_value2(args, "-n", "--population")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4);
+    let out_dir = parse_flag_value(args, "--out")
+        .unwrap_or_else(|| "evolved".to_string());
+    let agent_filter = parse_flag_value(args, "--agent");
+    let custom_template = parse_flag_value(args, "--mutate-prompt");
+    let weights_str = parse_flag_value(args, "--weights");
+    let budget_cap: Option<u64> = parse_flag_value(args, "--budget-cap")
+        .and_then(|s| s.parse().ok());
+    let stop_on_stall: Option<usize> = parse_flag_value(args, "--stop-on-stall")
+        .and_then(|s| s.parse().ok());
+    let show_lineage = args.iter().any(|a| a == "--show-lineage");
+    let dry_run = args.iter().any(|a| a == "--dry-run");
+
+    let fitness_weights = match weights_str.as_deref() {
+        Some(s) => fitness::FitnessWeights::parse(s)
+            .map_err(|e| AgentisError::General(format!("--weights: {e}")))?,
+        None => fitness::FitnessWeights::default(),
+    };
+
+    // Read seed source
+    let seed_source = std::fs::read_to_string(source_file)?;
+    let seed_hash = evolve::hash_source(&seed_source);
+
+    // Derive base name
+    let base_name = std::path::Path::new(source_file)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "variant".to_string());
+
+    // Load LLM backend
+    let root = agentis_root();
+    let cfg = config::Config::load(&root);
+    let llm_backend = llm::create_backend(&cfg)
+        .map_err(|e| AgentisError::General(format!("{e}")))?;
+
+    // Dry-run mode
+    if dry_run {
+        let agents = mutation::extract_agents(&seed_source)
+            .map_err(|e| AgentisError::General(e))?;
+        let prompt_count = agents.len().max(1); // rough estimate: at least 1 prompt per agent
+        let avg_instruction_len = if agents.is_empty() { 30 } else {
+            agents.iter().map(|a| a.instruction.len()).sum::<usize>() / agents.len()
+        };
+        let tps = cfg.get("ollama_tokens_per_second")
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(30.0);
+        print!("{}", evolve::format_dry_run(
+            generations, population, prompt_count, llm_backend.name(), avg_instruction_len, tps,
+        ));
+        return Ok(());
+    }
+
+    // Initialize evaluator dependencies
+    let (store, refs) = ensure_initialized()?;
+    let io_ctx = io::IoContext::new(&root, &cfg);
+    let tracer = trace::Tracer::new(trace::TraceLevel::Quiet);
+    let audit_log = audit::AuditLog::open(&root);
+    let max_agents = cfg.get_u64("max_concurrent_agents", 16) as u32;
+    let grant_pii = cfg.get("pii_transmit").is_some_and(|v| v == "allow");
+
+    // Create output directory
+    let out_path = std::path::PathBuf::from(&out_dir);
+    std::fs::create_dir_all(&out_path)?;
+
+    // Fitness storage directory
+    let fitness_dir = root.join("fitness");
+
+    eprintln!("Evolution: {}", source_file);
+    eprintln!("  Population: {}, Generations: {}", population, generations);
+    eprintln!();
+
+    // Generation 0: seed
+    let mut parents: Vec<(String, String)> = vec![(seed_source.clone(), seed_hash.clone())];
+    let mut best_ever_score: f64 = 0.0;
+    let mut best_ever_source = seed_source.clone();
+    let mut best_ever_hash = seed_hash.clone();
+    let mut stall_count: usize = 0;
+    let mut cumulative_cb: u64 = 0;
+    let mut gen_results: Vec<evolve::GenResult> = Vec::new();
+    let mut first_gen_avg_prompts: f64 = 0.0;
+    let mut cb_only_warned = false;
+
+    for g in 1..=generations {
+        // Generate variants from parents
+        let mock_offset = (g - 1) * population;
+        let tracked_variants = evolve::generate_tracked_variants(
+            &parents,
+            population,
+            g,
+            &base_name,
+            agent_filter.as_deref(),
+            llm_backend.as_ref(),
+            custom_template.as_deref(),
+            mock_offset,
+        ).map_err(|e| AgentisError::General(e))?;
+
+        // Write variant files to temp for arena evaluation
+        let gen_dir = out_path.join(format!("g{g:02}"));
+        std::fs::create_dir_all(&gen_dir)?;
+
+        for v in &tracked_variants {
+            let path = gen_dir.join(&v.filename);
+            std::fs::write(&path, &v.source)?;
+        }
+
+        // Arena: evaluate each variant
+        let mut scored: Vec<(evolve::TrackedVariant, arena::ArenaEntry)> = Vec::new();
+        for v in &tracked_variants {
+            let path = gen_dir.join(&v.filename);
+            let entry = run_arena_variant(
+                &path.to_string_lossy(),
+                &store, &refs, &root, &cfg, llm_backend.as_ref(),
+                &io_ctx, &tracer, audit_log.as_ref(), max_agents,
+                grant_pii, &fitness_weights,
+            );
+
+            // Track CB usage
+            if entry.error.is_none() {
+                let cb_spent = ((1.0 - entry.cb_eff) * DEFAULT_BUDGET as f64) as u64;
+                cumulative_cb += cb_spent;
+            }
+
+            scored.push((v.clone(), entry));
+        }
+
+        // Sort by score descending
+        scored.sort_by(|a, b| b.1.score.partial_cmp(&a.1.score).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Compute generation stats
+        let successful: Vec<&arena::ArenaEntry> = scored.iter()
+            .map(|(_, e)| e)
+            .filter(|e| e.error.is_none())
+            .collect();
+        let gen_best = scored.first().map(|(_, e)| e.score).unwrap_or(0.0);
+        let gen_avg = if successful.is_empty() { 0.0 } else {
+            successful.iter().map(|e| e.score).sum::<f64>() / successful.len() as f64
+        };
+        let gen_avg_prompts = if successful.is_empty() { 0.0 } else {
+            successful.iter().map(|e| e.prompt_count as f64).sum::<f64>() / successful.len() as f64
+        };
+
+        if g == 1 {
+            first_gen_avg_prompts = gen_avg_prompts;
+        }
+
+        // CB-only warning (once)
+        if !cb_only_warned {
+            let all_cb_only = scored.iter().all(|(_, e)| e.val_rate >= 1.0 && e.exp_rate >= 1.0 && e.error.is_none());
+            if all_cb_only && !successful.is_empty() {
+                eprintln!("  Warning: No validate/explore blocks — fitness = CB efficiency only.");
+                cb_only_warned = true;
+            }
+        }
+
+        // Print generation summary
+        eprintln!("Gen {:>2}: best={:.3}  avg={:.3}  prompts={:.1}  ({} variants)",
+            g, gen_best, gen_avg, gen_avg_prompts, tracked_variants.len());
+
+        // Save generation best
+        let best_variant = &scored[0].0;
+        let best_filename = format!("g{g:02}-best.ag");
+        std::fs::write(out_path.join(&best_filename), &best_variant.source)?;
+
+        // Record lineage
+        evolve::write_generation_jsonl(&fitness_dir, g, &scored, &fitness_weights)
+            .map_err(|e| AgentisError::General(format!("failed to write lineage: {e}")))?;
+
+        // Track generation result
+        gen_results.push(evolve::GenResult {
+            generation: g,
+            best_score: gen_best,
+            avg_score: gen_avg,
+            avg_prompts: gen_avg_prompts,
+            variant_count: tracked_variants.len(),
+            best_source: best_variant.source.clone(),
+            best_hash: best_variant.source_hash.clone(),
+        });
+
+        // Update best-ever
+        if gen_best > best_ever_score {
+            best_ever_score = gen_best;
+            best_ever_source = best_variant.source.clone();
+            best_ever_hash = best_variant.source_hash.clone();
+            stall_count = 0;
+        } else {
+            stall_count += 1;
+        }
+
+        // Convergence warning
+        if stall_count >= 3 && (stop_on_stall.is_none() || stall_count < stop_on_stall.unwrap()) {
+            eprintln!("  Warning: Evolution stalled at generation {} (score: {:.3})", g, best_ever_score);
+        }
+
+        // Stop-on-stall
+        if let Some(stall_limit) = stop_on_stall {
+            if stall_count >= stall_limit {
+                eprintln!("\nStopped: no improvement for {} generations (score: {:.3})", stall_limit, best_ever_score);
+                break;
+            }
+        }
+
+        // Budget cap
+        if let Some(cap) = budget_cap {
+            if cumulative_cb >= cap {
+                eprintln!("\nBudget cap reached at generation {} ({}/{} CB spent)", g, cumulative_cb, cap);
+                break;
+            }
+        }
+
+        // Select top K = N/2 as parents for next generation
+        let k = (population / 2).max(1);
+        parents = scored.iter()
+            .take(k)
+            .map(|(v, _)| (v.source.clone(), v.source_hash.clone()))
+            .collect();
+    }
+
+    // Write best-of-run
+    let best_filename = format!("{}-best.ag", base_name);
+    let best_path = out_path.join(&best_filename);
+    std::fs::write(&best_path, &best_ever_source)?;
+
+    eprintln!();
+    eprintln!("Best agent: {} (score: {:.3})", best_path.display(), best_ever_score);
+
+    // Show lineage if requested
+    if show_lineage {
+        let lineage = evolve::load_lineage(&fitness_dir);
+        let chain = evolve::trace_lineage(&lineage, &best_ever_hash, source_file);
+        if chain.len() > 1 {
+            eprintln!("  Lineage: {}", evolve::format_lineage(&chain));
+        }
+    }
+
+    // Efficiency summary
+    if !gen_results.is_empty() && first_gen_avg_prompts > 0.0 {
+        let last_avg_prompts = gen_results.last().unwrap().avg_prompts;
+        if last_avg_prompts != first_gen_avg_prompts {
+            let pct = ((last_avg_prompts - first_gen_avg_prompts) / first_gen_avg_prompts) * 100.0;
+            if pct < 0.0 {
+                eprintln!("  Efficiency: prompt calls {:.0}% ({:.1} → {:.1} avg)",
+                    pct, first_gen_avg_prompts, last_avg_prompts);
+            } else {
+                eprintln!("  Efficiency: prompt calls +{:.0}% ({:.1} → {:.1} avg)",
+                    pct, first_gen_avg_prompts, last_avg_prompts);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_lineage(source_file: &str) -> Result<(), AgentisError> {
+    let source = std::fs::read_to_string(source_file)?;
+    let source_hash = evolve::hash_source(&source);
+
+    let root = agentis_root();
+    let fitness_dir = root.join("fitness");
+
+    if !fitness_dir.exists() {
+        return Err(AgentisError::General(
+            "No fitness data found. Run 'agentis evolve' first.".to_string(),
+        ));
+    }
+
+    let lineage = evolve::load_lineage(&fitness_dir);
+
+    if lineage.is_empty() {
+        return Err(AgentisError::General(
+            "No lineage data found in .agentis/fitness/".to_string(),
+        ));
+    }
+
+    // Get seed name from the file
+    let seed_name = std::path::Path::new(source_file)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "seed".to_string());
+
+    let chain = evolve::trace_lineage(&lineage, &source_hash, &seed_name);
+
+    if chain.is_empty() {
+        eprintln!("Source hash {} not found in lineage data.", &source_hash[..12]);
+        return Ok(());
+    }
+
+    println!("{}", evolve::format_lineage(&chain));
     Ok(())
 }
 
