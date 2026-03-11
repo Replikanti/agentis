@@ -111,6 +111,30 @@ impl std::fmt::Display for Value {
     }
 }
 
+// --- Rich Error Context ---
+
+/// Structured error context for DAG-native diagnostics.
+/// Attached to key error sites — not every expression, only high-value points.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ErrorDetail {
+    pub agent_name: Option<String>,
+    pub expression_desc: String,
+    pub hints: Vec<String>,
+}
+
+impl std::fmt::Display for ErrorDetail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(ref agent) = self.agent_name {
+            writeln!(f, "  in agent \"{agent}\"")?;
+        }
+        writeln!(f, "  at: {}", self.expression_desc)?;
+        for hint in &self.hints {
+            writeln!(f, "  Hint: {hint}")?;
+        }
+        Ok(())
+    }
+}
+
 // --- Errors ---
 
 #[derive(Debug, Clone, PartialEq)]
@@ -129,6 +153,8 @@ pub enum EvalError {
     General(String),
     /// Wraps an inner error with DAG context path.
     InContext { context: Vec<String>, inner: Box<EvalError> },
+    /// Rich error with structured context and actionable hints.
+    Detailed { inner: Box<EvalError>, detail: ErrorDetail },
 }
 
 impl EvalError {
@@ -144,6 +170,26 @@ impl EvalError {
                 context: vec![ctx],
                 inner: Box::new(other),
             },
+        }
+    }
+
+    /// Wrap this error with rich structured context.
+    fn with_detail(self, detail: ErrorDetail) -> Self {
+        match self {
+            EvalError::Return(_) => self,
+            other => EvalError::Detailed {
+                inner: Box::new(other),
+                detail,
+            },
+        }
+    }
+
+    /// Unwrap through Detailed/InContext wrappers to get the root error.
+    pub fn root_cause(&self) -> &EvalError {
+        match self {
+            EvalError::Detailed { inner, .. } => inner.root_cause(),
+            EvalError::InContext { inner, .. } => inner.root_cause(),
+            other => other,
         }
     }
 }
@@ -177,8 +223,35 @@ impl std::fmt::Display for EvalError {
                 let path = context.join(" -> ");
                 write!(f, "{path}:\n  {inner}")
             }
+            EvalError::Detailed { inner, detail } => {
+                writeln!(f, "{inner}")?;
+                write!(f, "{detail}")
+            }
         }
     }
+}
+
+/// Simple edit-distance check: returns true if two names are within
+/// 2 edits of each other (for "did you mean?" suggestions).
+fn levenshtein_close(a: &str, b: &str) -> bool {
+    let la = a.len();
+    let lb = b.len();
+    if la.abs_diff(lb) > 2 {
+        return false;
+    }
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=lb).collect();
+    let mut curr = vec![0; lb + 1];
+    for i in 1..=la {
+        curr[0] = i;
+        for j in 1..=lb {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[lb] <= 2
 }
 
 // --- Callable ---
@@ -458,7 +531,14 @@ impl<'a> Evaluator<'a> {
             return Err(EvalError::CognitiveOverload {
                 budget: self.budget,
                 required: cost,
-            });
+            }.with_detail(ErrorDetail {
+                agent_name: self.current_agent_name.clone(),
+                expression_desc: format!("operation costing {} CB", cost),
+                hints: vec![
+                    format!("remaining budget: {}, initial: {}", self.budget, self.initial_budget),
+                    "increase budget with 'cb <amount>;' or reduce operations".to_string(),
+                ],
+            }));
         }
         self.budget -= cost;
         Ok(())
@@ -1049,8 +1129,29 @@ impl<'a> Evaluator<'a> {
         }
 
         // User-defined functions/agents
-        let callable = self.functions.get(&expr.callee).cloned()
-            .ok_or_else(|| EvalError::UndefinedFunction(expr.callee.clone()))?;
+        let callable = match self.functions.get(&expr.callee).cloned() {
+            Some(c) => c,
+            None => {
+                let err = EvalError::UndefinedFunction(expr.callee.clone());
+                let mut hints = Vec::new();
+                // Suggest similar names
+                let similar: Vec<&String> = self.functions.keys()
+                    .filter(|k| {
+                        k.contains(&expr.callee) || expr.callee.contains(k.as_str())
+                            || levenshtein_close(k, &expr.callee)
+                    })
+                    .take(3)
+                    .collect();
+                if !similar.is_empty() {
+                    hints.push(format!("similar: {}", similar.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")));
+                }
+                return Err(err.with_detail(ErrorDetail {
+                    agent_name: self.current_agent_name.clone(),
+                    expression_desc: format!("{}(... {} args)", expr.callee, expr.args.len()),
+                    hints,
+                }));
+            }
+        };
 
         let (params, body, is_agent) = match &callable {
             Callable::Function(f) => (&f.params, &f.body, false),
@@ -1058,10 +1159,24 @@ impl<'a> Evaluator<'a> {
         };
 
         if params.len() != expr.args.len() {
+            let kind = if is_agent { "agent" } else { "fn" };
+            let param_names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
             return Err(EvalError::ArityMismatch {
                 expected: params.len(),
                 got: expr.args.len(),
-            });
+            }.with_detail(ErrorDetail {
+                agent_name: self.current_agent_name.clone(),
+                expression_desc: format!(
+                    "{kind} {}({})",
+                    expr.callee,
+                    param_names.join(", ")
+                ),
+                hints: vec![format!(
+                    "{} \"{}\" expects {} args ({}), got {}",
+                    kind, expr.callee, params.len(),
+                    param_names.join(", "), expr.args.len()
+                )],
+            }));
         }
 
         // Evaluate arguments
@@ -1184,9 +1299,21 @@ impl<'a> Evaluator<'a> {
             if !granted {
                 // Audit the blocked prompt before returning error
                 self.audit_prompt(&expr.instruction, &input_str, &pii_result, false);
-                return Err(EvalError::CapabilityDenied(
+                let err = EvalError::CapabilityDenied(
                     crate::capabilities::CapError::MissingCapability(CapKind::PiiTransmit),
-                ));
+                );
+                return Err(err.with_detail(ErrorDetail {
+                    agent_name: self.current_agent_name.clone(),
+                    expression_desc: format!(
+                        "prompt(\"{}\", <input>) -> {}",
+                        expr.instruction, return_type_str
+                    ),
+                    hints: vec![
+                        format!("PII detected: {}", pii_result.types_str()),
+                        format!("input length: {} chars", input_str.len()),
+                        "grant PiiTransmit via --grant-pii or config pii_transmit = allow".to_string(),
+                    ],
+                }));
             }
             true
         } else {
@@ -1373,7 +1500,17 @@ impl<'a> Evaluator<'a> {
                     return Err(EvalError::ValidationFailed {
                         predicate_index: i,
                         detail: format!("predicate #{i} evaluated to false"),
-                    });
+                    }.with_detail(ErrorDetail {
+                        agent_name: self.current_agent_name.clone(),
+                        expression_desc: format!(
+                            "validate <{}> ({} predicates)",
+                            target.type_name(), count
+                        ),
+                        hints: vec![format!(
+                            "predicate #{i} of {count} failed (target type: {})",
+                            target.type_name()
+                        )],
+                    }));
                 }
                 _ => {
                     return Err(EvalError::TypeError {
@@ -1416,10 +1553,22 @@ impl<'a> Evaluator<'a> {
         };
 
         if params.len() != expr.args.len() {
+            let param_names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
             return Err(EvalError::ArityMismatch {
                 expected: params.len(),
                 got: expr.args.len(),
-            });
+            }.with_detail(ErrorDetail {
+                agent_name: self.current_agent_name.clone(),
+                expression_desc: format!(
+                    "spawn agent {}({})",
+                    expr.agent_name,
+                    param_names.join(", ")
+                ),
+                hints: vec![format!(
+                    "agent \"{}\" expects {} args, got {}",
+                    expr.agent_name, params.len(), expr.args.len()
+                )],
+            }));
         }
 
         // Evaluate arguments in parent scope
@@ -1817,15 +1966,19 @@ mod tests {
 
     #[test]
     fn function_arity_mismatch() {
-        assert!(matches!(eval(r#"
+        let result = eval(r#"
             fn f(x: int) -> int { return x; }
             f(1, 2);
-        "#), Err(EvalError::ArityMismatch { .. })));
+        "#);
+        assert!(matches!(result.as_ref().map_err(|e| e.root_cause()),
+            Err(EvalError::ArityMismatch { .. })));
     }
 
     #[test]
     fn undefined_function() {
-        assert!(matches!(eval("foo();"), Err(EvalError::UndefinedFunction(_))));
+        let result = eval("foo();");
+        assert!(matches!(result.as_ref().map_err(|e| e.root_cause()),
+            Err(EvalError::UndefinedFunction(_))));
     }
 
     // --- Built-ins ---
@@ -1852,7 +2005,8 @@ mod tests {
     #[test]
     fn cb_exhaustion() {
         let result = eval_with_budget("let a = 1; let b = 2; let c = 3; let d = 4; let e = 5;", 3);
-        assert!(matches!(result, Err(EvalError::CognitiveOverload { .. })));
+        assert!(matches!(result.as_ref().map_err(|e| e.root_cause()),
+            Err(EvalError::CognitiveOverload { .. })));
     }
 
     #[test]
@@ -1862,7 +2016,8 @@ mod tests {
             fn f() -> int { return 1; }
             f();
         "#, 4);
-        assert!(matches!(result, Err(EvalError::CognitiveOverload { .. })));
+        assert!(matches!(result.as_ref().map_err(|e| e.root_cause()),
+            Err(EvalError::CognitiveOverload { .. })));
     }
 
     #[test]
@@ -1953,7 +2108,8 @@ mod tests {
             let x = "input";
             prompt("classify", x) -> int;
         "#, 49);
-        assert!(matches!(result, Err(EvalError::CognitiveOverload { .. })));
+        assert!(matches!(result.as_ref().map_err(|e| e.root_cause()),
+            Err(EvalError::CognitiveOverload { .. })));
     }
 
     // --- Validate ---
@@ -1972,7 +2128,8 @@ mod tests {
             let x = 3;
             validate x { x > 5 };
         "#);
-        assert!(matches!(result, Err(EvalError::ValidationFailed { .. })));
+        assert!(matches!(result.as_ref().map_err(|e| e.root_cause()),
+            Err(EvalError::ValidationFailed { .. })));
     }
 
     #[test]
@@ -1989,9 +2146,9 @@ mod tests {
             let x = 10;
             validate x { x > 5, x < 8 };
         "#);
-        match result {
+        match result.as_ref().map_err(|e| e.root_cause()) {
             Err(EvalError::ValidationFailed { predicate_index, .. }) => {
-                assert_eq!(predicate_index, 1);
+                assert_eq!(*predicate_index, 1);
             }
             _ => panic!("expected validation failure on predicate 1"),
         }
@@ -2598,7 +2755,8 @@ mod tests {
         let mut evaluator = Evaluator::new(25).with_io(&io);
         evaluator.grant_all();
         let result = evaluator.eval_program(&program);
-        assert!(matches!(result, Err(EvalError::CognitiveOverload { .. })));
+        assert!(matches!(result.as_ref().map_err(|e| e.root_cause()),
+            Err(EvalError::CognitiveOverload { .. })));
     }
 
     #[test]
