@@ -161,6 +161,7 @@ agentis arena variant1.ag variant2.ag variant3.ag
 agentis arena variants/                    # all .ag files in directory
 agentis arena variants/ --rounds 5         # run each variant 5 times, average fitness
 agentis arena variants/ --top 3            # show only top 3
+agentis arena variants/ --json             # machine-readable JSON output
 ```
 
 **Output:**
@@ -186,6 +187,8 @@ Winner: variant-c.ag (score: 0.915)
   more reliable rankings.
 - Sort by fitness score descending.
 - Report table with rank, file, score, component rates.
+- `--json`: output results as JSON array (one object per variant) for
+  downstream analysis, visualization, or scripting.
 - Exit code 0 if at least one variant succeeds.
 
 **What the arena is NOT:**
@@ -235,8 +238,12 @@ Generated 5 variants:
 4. If `--mutate-prompt <file>` is given, use the file contents as the
    mutation prompt template instead. The template must contain `{instruction}`
    as a placeholder for the original instruction text.
-5. With mock backend: deterministic perturbations (prepend "Carefully ",
-   append " Be precise.", swap word order, add "Step by step:").
+5. With mock backend: cycle through 8 deterministic perturbations to
+   ensure variety across mutations: prepend "Carefully ", append
+   " Be precise.", prepend "Step by step: ", append " Think twice.",
+   prepend "As an expert, ", append " Be thorough.", prepend
+   "Concisely ", append " Double-check your work.". Selection is
+   `perturbations[mutation_index % 8]`.
 6. Reconstruct the source with the mutated instruction.
 7. Write to output file (or print diff if `--dry-run`).
 
@@ -247,13 +254,21 @@ previewing mutations before committing to a batch.
 **Source reconstruction:**
 
 The mutation engine works at the source text level, not the AST level.
-It finds `prompt("instruction", ...)` patterns in the source text and
-replaces the instruction string. This avoids needing an AST-to-source
-printer (which doesn't exist and would be complex).
+This avoids needing an AST-to-source printer (which doesn't exist and
+would be complex).
 
-A simple approach: use the parser to identify agent blocks, then do
-string replacement on the instruction literal within each agent's source
-range. The lexer already tracks token positions.
+The approach uses **lexer token positions** (not regex) for robustness:
+1. Lex the source file, collecting all tokens with byte offsets.
+2. Parse to identify agent blocks and their `prompt()` calls.
+3. For each target prompt, find the string literal token (the first
+   argument to `prompt()`). The lexer already records `(start, end)`
+   byte positions for every token.
+4. Replace `source[start..end]` with the new quoted string literal.
+5. Rebuild the full source by concatenating unchanged slices with
+   replaced slices.
+
+This handles escaped quotes, multiline strings, and unusual formatting
+correctly — the lexer already solved these problems. No regex needed.
 
 **What mutation is NOT:**
 
@@ -278,6 +293,8 @@ agentis evolve examples/classify.ag -g 10 -n 8 --out evolved/
 agentis evolve examples/classify.ag -g 5 -n 4 --show-lineage
 agentis evolve examples/classify.ag -g 10 -n 8 --weights 0.4,0.4,0.2
 agentis evolve examples/classify.ag -g 10 -n 8 --agent classifier
+agentis evolve examples/classify.ag -g 10 -n 8 --budget-cap 500000
+agentis evolve examples/classify.ag --dry-run -g 10 -n 8    # estimate cost, don't run
 agentis lineage evolved/classify-g10-best.ag    # trace ancestry to seed
 ```
 
@@ -311,6 +328,17 @@ Best agent: evolved/classify-g10-best.ag (score: 0.935)
 3. Output best-of-run agent source file.
 ```
 
+**`--budget-cap <N>`:** Total CB budget across the entire evolution run.
+Tracks cumulative CB spent across all arena evaluations. If exceeded,
+evolution stops early with: "Budget cap reached at generation {g}
+({spent}/{cap} CB spent)". Prevents runaway cost with real LLM backends.
+
+**`--dry-run`:** Estimates the evolution run without executing:
+- Number of mutations per generation (N * G total)
+- Number of arena evaluations (N * G * rounds)
+- Estimated prompt calls (based on seed program's prompt count * evaluations)
+- With HttpBackend: estimated token cost (based on seed program's prompt sizes)
+
 **Intermediate bests:** After each generation, the best variant is saved
 to `<out>/g{gen:02}-best.ag` (e.g., `evolved/g03-best.ag`). This allows
 the user to inspect or use intermediate winners without waiting for the
@@ -328,6 +356,11 @@ one JSONL entry per variant scored in that generation:
 ```
 
 `--show-lineage` traces the best agent's ancestry back to the seed.
+
+**Storage cleanup:** Over many evolution runs, `.agentis/fitness/` can
+accumulate many files. `agentis evolve --clean` removes per-generation
+files from previous runs (keeps only the latest run's files). Not
+automatic — user decides when to clean.
 
 **`agentis lineage <file>`:** Standalone command that reads the fitness
 registry and traces the given variant's ancestry. Takes the source hash
@@ -355,12 +388,30 @@ Don't stop — the user controls the generation count.
 ## Implementation Order
 
 1. **M27** — fitness metrics (foundation for everything)
-2. **M28** — arena runner (needs M27 for scoring)
-3. **M29** — mutation engine (independent of M28, but needs M27)
-4. **M30** — evolution loop (needs M27 + M28 + M29)
+2. **M29** — mutation engine (visible "wow" effect — mutated agents immediately)
+3. **M28** — arena runner (now mutated variants can be compared)
+4. **M30** — evolution loop (ties M27 + M28 + M29 together)
 
-M28 and M29 can be developed in parallel — they don't depend on each
-other. M30 ties them together.
+M29 before M28: mutation is the most demonstrable feature. After M27+M29,
+a user can `agentis go file.ag --fitness` then `agentis mutate file.ag`
+and immediately see evolved variants — even without the arena. The arena
+adds ranking, the loop adds automation.
+
+## Future Extensions (post-Phase 7)
+
+These are explicitly **out of scope** for Phase 7 but noted for future
+consideration:
+
+- **Selection strategies:** `--selection {tournament|roulette|elitism}`.
+  Tournament (top K/2) is the Phase 7 default. Roulette and elitism
+  may help with diversity vs convergence tradeoffs.
+- **Diversity bonus:** Small fitness bonus for variants with dissimilar
+  instructions (e.g., cosine distance on token embeddings). Prevents
+  premature convergence in long runs.
+- **Auto-commit to VCS:** Commit best-of-gen to a branch
+  (e.g., `evolve/classify/g03-best`) leveraging the existing VCS.
+- **Parallel arena:** Run arena variants in parallel threads (Phase 8
+  colony territory).
 
 ## Success Criteria
 
