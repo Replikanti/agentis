@@ -51,6 +51,11 @@ effective_w_exp = 0.0
 
 Same logic applies if validates_total = 0 (redistribute to cb + exp).
 
+**Edge case — no validates AND no explores:** If both are absent,
+all weight concentrates on CB_efficiency: `F = CB_efficiency`. The
+report prints a warning: "No validate/explore blocks — fitness = CB
+efficiency only."
+
 Agents that pass all validations with minimal CB usage score highest.
 Agents that burn through budget or fail validates score lowest.
 An agent that dies (error) gets fitness 0.0.
@@ -85,6 +90,7 @@ Fitness Report:
   CB efficiency:   0.95 (9500/10000)
   Validate rate:   1.00 (3/3 passed)
   Explore rate:    0.50 (1/2 passed)
+  Prompt calls:    4
   Fitness score:   0.815
 ```
 
@@ -111,7 +117,7 @@ pub struct FitnessReport {
     pub validates_total: usize,
     pub explores_passed: usize,
     pub explores_total: usize,
-    pub prompt_count: usize,
+    pub prompt_count: usize,  // not in composite score — reported for diagnostics
     pub error: bool,
 }
 
@@ -173,7 +179,7 @@ RANK  FILE                SCORE   CB_EFF  VAL    EXP
   1   variant-c.ag        0.915   0.98    1.00   0.67
   2   variant-a.ag        0.815   0.95    1.00   0.50
   3   variant-d.ag        0.700   0.80    0.75   1.00
-  4   variant-b.ag        0.000   —       —      — (error)
+  4   variant-b.ag        0.000   —       —      — (error: CognitiveOverload)
 
 Winner: variant-c.ag (score: 0.915)
 ```
@@ -212,6 +218,7 @@ agentis mutate examples/classify.ag --out variants/    # save to directory
 agentis mutate examples/classify.ag --agent classifier # mutate only "classifier" agent
 agentis mutate examples/classify.ag --mutate-prompt mutation_prompt.txt  # custom mutation prompt
 agentis mutate examples/classify.ag --dry-run          # show what would be mutated, don't write
+agentis mutate examples/classify.ag --list-agents      # list agent names in file (for --agent)
 ```
 
 **Output:**
@@ -294,6 +301,7 @@ agentis evolve examples/classify.ag -g 5 -n 4 --show-lineage
 agentis evolve examples/classify.ag -g 10 -n 8 --weights 0.4,0.4,0.2
 agentis evolve examples/classify.ag -g 10 -n 8 --agent classifier
 agentis evolve examples/classify.ag -g 10 -n 8 --budget-cap 500000
+agentis evolve examples/classify.ag -g 20 -n 8 --stop-on-stall 5
 agentis evolve examples/classify.ag --dry-run -g 10 -n 8    # estimate cost, don't run
 agentis lineage evolved/classify-g10-best.ag    # trace ancestry to seed
 ```
@@ -337,7 +345,10 @@ evolution stops early with: "Budget cap reached at generation {g}
 - Number of mutations per generation (N * G total)
 - Number of arena evaluations (N * G * rounds)
 - Estimated prompt calls (based on seed program's prompt count * evaluations)
-- With HttpBackend: estimated token cost (based on seed program's prompt sizes)
+- With HttpBackend: estimated token cost. Approximation: count prompt
+  instruction string lengths in the seed program as input token estimate
+  (1 token ≈ 4 chars), multiply by evaluations. Print:
+  "Estimated cost: ~$X.XX (based on seed prompt sizes × evaluations)"
 
 **Intermediate bests:** After each generation, the best variant is saved
 to `<out>/g{gen:02}-best.ag` (e.g., `evolved/g03-best.ag`). This allows
@@ -365,7 +376,14 @@ automatic — user decides when to clean.
 **`agentis lineage <file>`:** Standalone command that reads the fitness
 registry and traces the given variant's ancestry. Takes the source hash
 from the file (by hashing its content) and walks `parent_hash` links
-back to the seed. Output:
+back to the seed.
+
+Implementation: load all per-generation JSONL files into an in-memory
+`HashMap<source_hash, (gen, parent_hash, score)>`, then walk the chain
+from the target hash until `parent_hash` is absent (= seed). This is
+fast — even 100 generations × 20 variants = 2000 entries in memory.
+
+Output:
 
 ```
 classify.ag → g1-m3 (0.72) → g4-m1 (0.81) → g7-m2 (0.87) → g10-best (0.935)
@@ -375,7 +393,11 @@ classify.ag → g1-m3 (0.72) → g4-m1 (0.81) → g7-m2 (0.87) → g10-best (0.9
 
 If the best fitness doesn't improve for 3 consecutive generations,
 print a warning: "Evolution stalled at generation {g} (score: {s})".
-Don't stop — the user controls the generation count.
+By default, evolution continues — the user controls the generation count.
+
+`--stop-on-stall <N>`: Automatically stop evolution if the best fitness
+doesn't improve for N consecutive generations. Default: off (warn only).
+Useful for unattended runs where continuing past convergence wastes budget.
 
 **What evolution is NOT:**
 
