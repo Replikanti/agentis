@@ -10,6 +10,7 @@ mod io;
 mod json;
 mod lexer;
 mod llm;
+mod mutation;
 mod network;
 mod parser;
 mod pii;
@@ -105,6 +106,14 @@ fn main() {
         }
         "snapshot" => cmd_snapshot(&args[2..]),
         "audit" => cmd_audit(&args[2..]),
+        "mutate" => {
+            if args.len() < 3 {
+                eprintln!("Usage: agentis mutate <source_file> [flags]");
+                eprintln!("       agentis mutate <source_file> --list-agents");
+                process::exit(1);
+            }
+            cmd_mutate(&args[2], &args[3..])
+        }
         "log" => {
             let branch = args.get(2).map(|s| s.as_str());
             cmd_log(branch)
@@ -144,6 +153,7 @@ fn print_usage() {
     eprintln!("  serve [addr:port]    Listen for incoming sync connections");
     eprintln!("  log [branch]         Show commit log for a branch");
     eprintln!("  snapshot list|show   List or inspect snapshots");
+    eprintln!("  mutate <file> [flags] Generate mutated agent variants");
     eprintln!("  audit [flags]        Show prompt audit log");
     eprintln!("  version              Show version");
 }
@@ -1085,6 +1095,123 @@ fn resolve_snapshot_hash(agentis_root: &std::path::Path, prefix: &str) -> Result
             matches.len()
         ))),
     }
+}
+
+fn cmd_mutate(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
+    let source = std::fs::read_to_string(source_file)?;
+
+    // --list-agents: just print agent names and instructions, then exit
+    if args.iter().any(|a| a == "--list-agents") {
+        let agents = mutation::extract_agents(&source)
+            .map_err(|e| AgentisError::General(e))?;
+        if agents.is_empty() {
+            println!("No agents with prompt instructions found.");
+        } else {
+            for a in &agents {
+                println!("  {} — \"{}\"", a.name, a.instruction);
+            }
+        }
+        return Ok(());
+    }
+
+    // Parse flags
+    let count: usize = parse_flag_value(args, "--count")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3);
+    let out_dir = parse_flag_value(args, "--out");
+    let agent_filter = parse_flag_value(args, "--agent");
+    let custom_template = parse_flag_value(args, "--mutate-prompt");
+    let dry_run = args.iter().any(|a| a == "--dry-run");
+
+    // Load LLM backend from config
+    let root = agentis_root();
+    let cfg = config::Config::load(&root);
+    let llm_backend = llm::create_backend(&cfg)
+        .map_err(|e| AgentisError::General(format!("{e}")))?;
+
+    if dry_run {
+        // Dry-run: show what would be generated without writing files
+        let agents = mutation::extract_agents(&source)
+            .map_err(|e| AgentisError::General(e))?;
+        if agents.is_empty() {
+            return Err(AgentisError::General(
+                "no agents with prompt instructions found in source".to_string(),
+            ));
+        }
+
+        let eligible: Vec<&mutation::AgentInfo> = match agent_filter.as_deref() {
+            Some(name) => {
+                let filtered: Vec<_> = agents.iter().filter(|a| a.name == name).collect();
+                if filtered.is_empty() {
+                    return Err(AgentisError::General(format!(
+                        "agent '{}' not found. Available: {}",
+                        name,
+                        agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ")
+                    )));
+                }
+                filtered
+            }
+            None => agents.iter().collect(),
+        };
+
+        let is_mock = llm_backend.name() == "mock";
+        for i in 0..count {
+            let agent = eligible[i % eligible.len()];
+            let new_instruction = if is_mock {
+                mutation::mock_mutate(&agent.instruction, i)
+            } else {
+                mutation::llm_mutate(&agent.instruction, llm_backend.as_ref(), custom_template.as_deref())
+                    .map_err(|e| AgentisError::General(e))?
+            };
+            println!("{}", mutation::format_dry_run(i, count, &agent.name, &agent.instruction, &new_instruction));
+            if i + 1 < count {
+                println!();
+            }
+        }
+        return Ok(());
+    }
+
+    // Derive base name from source file (without .ag extension)
+    let base_name = std::path::Path::new(source_file)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "variant".to_string());
+
+    let variants = mutation::generate_variants(
+        &source,
+        &base_name,
+        count,
+        agent_filter.as_deref(),
+        llm_backend.as_ref(),
+        custom_template.as_deref(),
+    ).map_err(|e| AgentisError::General(e))?;
+
+    // Determine output directory
+    let output_dir = match out_dir {
+        Some(ref dir) => std::path::PathBuf::from(dir),
+        None => std::path::Path::new(source_file)
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .to_path_buf(),
+    };
+
+    // Create output directory if needed
+    if !output_dir.exists() {
+        std::fs::create_dir_all(&output_dir)?;
+    }
+
+    for variant in &variants {
+        let path = output_dir.join(&variant.filename);
+        std::fs::write(&path, &variant.source)?;
+        println!(
+            "  {} (mutated: {})",
+            path.display(),
+            variant.mutated_agents.join(", ")
+        );
+    }
+
+    println!("\nGenerated {} variant(s).", variants.len());
+    Ok(())
 }
 
 fn cmd_audit(args: &[String]) -> Result<(), AgentisError> {

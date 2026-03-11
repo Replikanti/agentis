@@ -16,8 +16,9 @@ Agentis is an AI-native programming language fused with a Version Control System
 
 ```
 src/
-  main.rs           # CLI (init, commit, run, branch, switch, compile, sync, serve, log, go --fitness)
+  main.rs           # CLI (init, commit, run, branch, switch, compile, sync, serve, log, go --fitness, mutate)
   fitness.rs        # Fitness scoring (FitnessReport, FitnessWeights, JSONL registry)
+  mutation.rs       # Mutation engine (extract agents, mock/LLM mutations, source reconstruction)
   lexer.rs          # Tokenizer
   ast.rs            # AST types + manual binary serialization
   parser.rs         # Recursive descent parser (Pratt precedence) + error recovery
@@ -53,7 +54,7 @@ Storage: AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (495)
+cargo test                     # Run all tests (508)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
@@ -74,6 +75,12 @@ cargo run -- repl --resume <h> # Resume REPL from snapshot (30% CB penalty)
 cargo run -- test <files|dir>  # Run tests (validate/explore outcomes)
 cargo run -- go file.ag --fitness              # Run + print fitness report
 cargo run -- go file.ag --fitness --weights W  # Custom weights (cb,val,exp)
+cargo run -- mutate file.ag --list-agents     # List agents and their instructions
+cargo run -- mutate file.ag --count 5         # Generate 5 mutated variants
+cargo run -- mutate file.ag --dry-run         # Preview mutations without writing
+cargo run -- mutate file.ag --agent <name>    # Mutate only specific agent
+cargo run -- mutate file.ag --out <dir>       # Write variants to directory
+cargo run -- mutate file.ag --mutate-prompt T # Custom mutation template ({instruction})
 ```
 
 ## Phase 2 Features
@@ -112,3 +119,4 @@ cargo run -- go file.ag --fitness --weights W  # Custom weights (cb,val,exp)
 ## Phase 7 Features (Agent Evolution — in progress)
 
 - **Fitness Metrics (M27):** `agentis go file.ag --fitness` reports composite fitness score. `FitnessReport` with CB efficiency, validate rate, explore rate, prompt count. `FitnessWeights` configurable via `--weights 0.3,0.5,0.2` or config. Dynamic weight redistribution when validates/explores absent. JSONL registry at `.agentis/fitness.jsonl`.
+- **Mutation Engine (M29):** `agentis mutate file.ag` generates agent variants by mutating prompt instruction strings. Source-level string replacement (not AST rewrite). LLM-guided mutations with real backend; 8 deterministic perturbations with mock. Flags: `--count`, `--out`, `--agent`, `--mutate-prompt`, `--dry-run`, `--list-agents`.
