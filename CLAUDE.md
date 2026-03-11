@@ -98,3 +98,10 @@ cargo run -- test <files|dir>  # Run tests (validate/explore outcomes)
 - **Audit Log:** Every `prompt()` call logged to `.agentis/audit/prompts.jsonl` (JSONL). Fields: timestamp, agent name, instruction/input hashes, PII scan result, capability status, backend. Opt-in: enabled when `.agentis/audit/` directory exists.
 - **Audit CLI:** `agentis audit` displays audit log table. Filters: `--last N`, `--pii-only`, `--agent <name>`, `--blocked`.
 - **Secure Init:** `agentis init --secure` creates locked-down config (PiiTransmit denied, audit enabled, mock backend).
+
+## Phase 6 Features (Resurrection & Developer Experience — complete)
+
+- **Snapshot CLI:** `agentis snapshot list/show` — persistent snapshot registry (`.agentis/snapshots`), prefix hash matching, variable/output/budget inspection.
+- **REPL:** `agentis repl` — interactive evaluator with dot-commands (`.exit`, `.budget`, `.snapshot`, `.output`, `.help`). Multi-line via brace balancing. `--resume <hash>` restores from snapshot with 30% CB penalty.
+- **Test Runner:** `agentis test <files|dir>` — reports validate/explore outcomes. `--fail-fast`, `--verbose`. Exit code 0/1.
+- **Rich Errors:** `ErrorDetail` struct with agent name, expression description, actionable hints. Enhanced: prompt PII errors, undefined functions (with "did you mean?"), arity mismatches, CB exhaustion, validate failures.
