@@ -54,7 +54,8 @@ Same logic applies if validates_total = 0 (redistribute to cb + exp).
 **Edge case — no validates AND no explores:** If both are absent,
 all weight concentrates on CB_efficiency: `F = CB_efficiency`. The
 report prints a warning: "No validate/explore blocks — fitness = CB
-efficiency only."
+efficiency only." In `evolve` runs, this warning is printed once per
+evolution (not per variant) to avoid spam.
 
 Agents that pass all validations with minimal CB usage score highest.
 Agents that burn through budget or fail validates score lowest.
@@ -198,6 +199,8 @@ Winner: variant-c.ag (score: 0.915)
   [{"rank":1,"file":"variant-c.ag","score":0.915,"cb_eff":0.98,"val_rate":1.0,"exp_rate":0.67,"prompt_count":3,"error":null},
    {"rank":4,"file":"variant-b.ag","score":0.0,"cb_eff":null,"val_rate":null,"exp_rate":null,"prompt_count":0,"error":"CognitiveOverload"}]
   ```
+  When called from `evolve`, entries include `"gen": 3, "round": 2`
+  for post-processing across generations.
 - Exit code 0 if at least one variant succeeds.
 
 **What the arena is NOT:**
@@ -273,6 +276,9 @@ Variant 2/5:
   New:  "Remove all PII from the input. Be precise."
 ```
 
+If `--mutate-prompt` is used, the header shows: "Using custom prompt
+from mutation_prompt.txt" (or first 80 chars if inline).
+
 Useful for previewing mutations before committing to a batch.
 
 **Source reconstruction:**
@@ -329,11 +335,11 @@ agentis lineage evolved/classify-g10-best.ag    # trace ancestry to seed
 Evolution: classify.ag
   Population: 8, Generations: 10
 
-Gen  1: best=0.815  avg=0.542  (8 variants)
-Gen  2: best=0.870  avg=0.621  (8 variants)
-Gen  3: best=0.870  avg=0.690  (8 variants)
+Gen  1: best=0.815  avg=0.542  prompts=3.5  (8 variants)
+Gen  2: best=0.870  avg=0.621  prompts=3.1  (8 variants)
+Gen  3: best=0.870  avg=0.690  prompts=2.8  (8 variants)
 ...
-Gen 10: best=0.935  avg=0.812  (8 variants)
+Gen 10: best=0.935  avg=0.812  prompts=2.4  (8 variants)
 
 Best agent: evolved/classify-g10-best.ag (score: 0.935)
   Lineage: classify.ag → g1-m3 → g4-m1 → g7-m2 → g10-best
