@@ -1,3 +1,4 @@
+mod arena;
 mod ast;
 mod audit;
 mod capabilities;
@@ -106,6 +107,13 @@ fn main() {
         }
         "snapshot" => cmd_snapshot(&args[2..]),
         "audit" => cmd_audit(&args[2..]),
+        "arena" => {
+            if args.len() < 3 {
+                eprintln!("Usage: agentis arena <files|dir> [--rounds N] [--top N] [--json] [--weights W]");
+                process::exit(1);
+            }
+            cmd_arena(&args[2..])
+        }
         "mutate" => {
             if args.len() < 3 {
                 eprintln!("Usage: agentis mutate <source_file> [flags]");
@@ -153,6 +161,7 @@ fn print_usage() {
     eprintln!("  serve [addr:port]    Listen for incoming sync connections");
     eprintln!("  log [branch]         Show commit log for a branch");
     eprintln!("  snapshot list|show   List or inspect snapshots");
+    eprintln!("  arena <files|dir>    Rank variants by fitness (--rounds --top --json)");
     eprintln!("  mutate <file> [flags] Generate mutated agent variants");
     eprintln!("  audit [flags]        Show prompt audit log");
     eprintln!("  version              Show version");
@@ -1212,6 +1221,171 @@ fn cmd_mutate(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
 
     println!("\nGenerated {} variant(s).", variants.len());
     Ok(())
+}
+
+fn cmd_arena(args: &[String]) -> Result<(), AgentisError> {
+    // Parse flags
+    let rounds: usize = parse_flag_value(args, "--rounds")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    let top_n: Option<usize> = parse_flag_value(args, "--top")
+        .and_then(|s| s.parse().ok());
+    let json_output = args.iter().any(|a| a == "--json");
+    let weights_str = parse_flag_value(args, "--weights");
+
+    let fitness_weights = match weights_str.as_deref() {
+        Some(s) => fitness::FitnessWeights::parse(s)
+            .map_err(|e| AgentisError::General(format!("--weights: {e}")))?,
+        None => fitness::FitnessWeights::default(),
+    };
+
+    // Collect .ag files from args (expand directories)
+    let mut files = Vec::new();
+    for arg in args {
+        if arg.starts_with('-') {
+            // Skip flags and their values
+            continue;
+        }
+        // Skip values that follow flags
+        if let Some(pos) = args.iter().position(|a| a == arg) {
+            if pos > 0 {
+                let prev = &args[pos - 1];
+                if prev == "--rounds" || prev == "--top" || prev == "--weights" {
+                    continue;
+                }
+            }
+        }
+        let path = std::path::Path::new(arg);
+        if path.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(path) {
+                let mut dir_files: Vec<_> = entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().is_some_and(|ext| ext == "ag"))
+                    .map(|e| e.path().to_string_lossy().to_string())
+                    .collect();
+                dir_files.sort();
+                files.extend(dir_files);
+            }
+        } else if path.extension().is_some_and(|ext| ext == "ag") || path.exists() {
+            files.push(arg.clone());
+        }
+    }
+
+    if files.is_empty() {
+        return Err(AgentisError::General("no .ag files found".to_string()));
+    }
+
+    // Initialize evaluator dependencies
+    let (store, refs) = ensure_initialized()?;
+    let root = agentis_root();
+    let cfg = config::Config::load(&root);
+    let llm_backend = llm::create_backend(&cfg)
+        .map_err(|e| AgentisError::General(format!("{e}")))?;
+    let io_ctx = io::IoContext::new(&root, &cfg);
+    let tracer = trace::Tracer::new(trace::TraceLevel::Quiet);
+    let audit_log = audit::AuditLog::open(&root);
+    let max_agents = cfg.get_u64("max_concurrent_agents", 16) as u32;
+    let grant_pii = cfg.get("pii_transmit").is_some_and(|v| v == "allow");
+
+    // Run each variant
+    let mut all_entries: Vec<arena::ArenaEntry> = Vec::new();
+
+    for file in &files {
+        let mut round_entries = Vec::new();
+
+        for _ in 0..rounds {
+            let entry = run_arena_variant(
+                file, &store, &refs, &root, &cfg, llm_backend.as_ref(),
+                &io_ctx, &tracer, audit_log.as_ref(), max_agents,
+                grant_pii, &fitness_weights,
+            );
+            round_entries.push(entry);
+        }
+
+        let entry = if rounds == 1 {
+            round_entries.into_iter().next().unwrap()
+        } else {
+            arena::ArenaEntry::average(&round_entries)
+        };
+        all_entries.push(entry);
+    }
+
+    // Sort by score descending
+    all_entries.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Apply --top filter
+    if let Some(n) = top_n {
+        all_entries.truncate(n);
+    }
+
+    // Output
+    if json_output {
+        println!("{}", arena::format_json(&all_entries, rounds));
+    } else {
+        print!("{}", arena::format_table(&all_entries, rounds));
+    }
+
+    Ok(())
+}
+
+/// Run a single variant and return its arena entry.
+fn run_arena_variant(
+    file: &str,
+    store: &ObjectStore,
+    refs: &Refs,
+    root: &std::path::Path,
+    _cfg: &config::Config,
+    llm_backend: &dyn llm::LlmBackend,
+    io_ctx: &io::IoContext,
+    tracer: &trace::Tracer,
+    audit_log: Option<&audit::AuditLog>,
+    max_agents: u32,
+    grant_pii: bool,
+    weights: &fitness::FitnessWeights,
+) -> arena::ArenaEntry {
+    // Read source
+    let source = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => return arena::ArenaEntry::from_error(file, &format!("{e}")),
+    };
+
+    // Parse
+    let program = match Parser::parse_source(&source) {
+        Ok(p) => p,
+        Err(e) => return arena::ArenaEntry::from_error(file, &format!("{e}")),
+    };
+
+    // Commit (so VCS-dependent features work)
+    let _ = store.save(&program).ok();
+
+    // Create evaluator
+    let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
+        .with_vcs(store, refs)
+        .with_persistence(store)
+        .with_snapshot_registry(root)
+        .with_llm(llm_backend)
+        .with_io(io_ctx)
+        .with_max_agents(max_agents)
+        .with_tracer(tracer);
+    if let Some(audit) = audit_log {
+        evaluator = evaluator.with_audit(audit);
+    }
+    evaluator.grant_all();
+    if grant_pii {
+        evaluator.grant(capabilities::CapKind::PiiTransmit);
+    }
+
+    // Run
+    match evaluator.eval_program(&program) {
+        Ok(_) => arena::ArenaEntry::from_report(file, &evaluator.fitness_report(), weights),
+        Err(e) => {
+            let mut report = evaluator.fitness_report();
+            report.error = true;
+            let mut entry = arena::ArenaEntry::from_report(file, &report, weights);
+            entry.error = Some(arena::ArenaEntry::from_error(file, &format!("{e}")).error.unwrap());
+            entry
+        }
+    }
 }
 
 fn cmd_audit(args: &[String]) -> Result<(), AgentisError> {
