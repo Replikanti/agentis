@@ -130,10 +130,12 @@ fn main() {
                 eprintln!("  -n/--population N   Population size (default: 4)");
                 eprintln!("  --out <dir>         Output directory (default: evolved/)");
                 eprintln!("  --agent <name>      Mutate only specific agent");
+                eprintln!("  --mutate-prompt <s> Custom mutation prompt (string or file path)");
                 eprintln!("  --weights W         Fitness weights (cb,val,exp)");
                 eprintln!("  --budget-cap N      Max total CB across all evaluations");
                 eprintln!("  --stop-on-stall N   Stop if no improvement for N generations");
                 eprintln!("  --show-lineage      Show best agent's lineage");
+                eprintln!("  --clean             Remove old fitness data before running");
                 eprintln!("  --dry-run           Estimate cost without running");
                 process::exit(1);
             }
