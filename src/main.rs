@@ -5,6 +5,7 @@ mod compiler;
 mod config;
 mod error;
 mod evaluator;
+mod fitness;
 mod io;
 mod json;
 mod lexer;
@@ -57,12 +58,14 @@ fn main() {
         }
         "go" => {
             if args.len() < 3 {
-                eprintln!("Usage: agentis go <source_file> [--trace] [--grant-pii]");
+                eprintln!("Usage: agentis go <source_file> [--trace] [--grant-pii] [--fitness] [--weights W]");
                 process::exit(1);
             }
             let force_verbose = args.iter().any(|a| a == "--trace");
             let grant_pii = args.iter().any(|a| a == "--grant-pii");
-            cmd_go(&args[2], force_verbose, grant_pii)
+            let show_fitness = args.iter().any(|a| a == "--fitness");
+            let weights = parse_flag_value(&args, "--weights");
+            cmd_go(&args[2], force_verbose, grant_pii, show_fitness, weights.as_deref())
         }
         "repl" => cmd_repl(&args[2..]),
         "test" => cmd_test(&args[2..]),
@@ -128,7 +131,7 @@ fn print_usage() {
     eprintln!();
     eprintln!("Commands:");
     eprintln!("  init [--secure]       Initialize a new Agentis repository");
-    eprintln!("  go <file> [--trace]  Commit and run in one step (the demo command)");
+    eprintln!("  go <file> [flags]    Commit and run (--trace --grant-pii --fitness --weights W)");
     eprintln!("  repl [--resume <h>]  Interactive evaluator (REPL)");
     eprintln!("  test <files|dir>     Run tests (validate/explore outcomes)");
     eprintln!("  commit <file>        Parse source file, store AST, update current branch");
@@ -147,6 +150,11 @@ fn print_usage() {
 
 fn agentis_root() -> std::path::PathBuf {
     Path::new(".agentis").to_path_buf()
+}
+
+/// Parse a flag like `--weights 0.3,0.5,0.2` from args, returning the value after the flag.
+fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
+    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).cloned())
 }
 
 fn ensure_initialized() -> Result<(ObjectStore, Refs), AgentisError> {
@@ -298,8 +306,15 @@ audit = on
 trace.level = normal
 ";
 
-fn cmd_go(source_file: &str, force_verbose: bool, grant_pii: bool) -> Result<(), AgentisError> {
+fn cmd_go(source_file: &str, force_verbose: bool, grant_pii: bool, show_fitness: bool, weights_str: Option<&str>) -> Result<(), AgentisError> {
     let (store, refs) = ensure_initialized()?;
+
+    // Parse fitness weights if provided
+    let fitness_weights = match weights_str {
+        Some(s) => fitness::FitnessWeights::parse(s)
+            .map_err(|e| AgentisError::General(format!("--weights: {e}")))?,
+        None => fitness::FitnessWeights::default(),
+    };
 
     // Commit
     let source = std::fs::read_to_string(source_file)?;
@@ -354,9 +369,29 @@ fn cmd_go(source_file: &str, force_verbose: bool, grant_pii: bool) -> Result<(),
             for b in evaluator.explore_branches() {
                 println!("  explore: created branch '{b}'");
             }
+            if show_fitness {
+                let report = evaluator.fitness_report();
+                eprintln!();
+                eprint!("{}", report.display(&fitness_weights));
+                // Append to fitness registry
+                let entry = report.to_jsonl(&commit_hash, &fitness_weights);
+                if let Err(e) = fitness::append_to_registry(&agentis_root(), &entry) {
+                    eprintln!("warning: could not write fitness registry: {e}");
+                }
+            }
             Ok(())
         }
-        Err(e) => Err(AgentisError::Eval(e)),
+        Err(e) => {
+            if show_fitness {
+                let mut report = evaluator.fitness_report();
+                report.error = true;
+                eprintln!();
+                eprint!("{}", report.display(&fitness_weights));
+                let entry = report.to_jsonl(&commit_hash, &fitness_weights);
+                let _ = fitness::append_to_registry(&agentis_root(), &entry);
+            }
+            Err(AgentisError::Eval(e))
+        }
     }
 }
 

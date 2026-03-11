@@ -16,7 +16,8 @@ Agentis is an AI-native programming language fused with a Version Control System
 
 ```
 src/
-  main.rs           # CLI (init, commit, run, branch, switch, compile, sync, serve, log)
+  main.rs           # CLI (init, commit, run, branch, switch, compile, sync, serve, log, go --fitness)
+  fitness.rs        # Fitness scoring (FitnessReport, FitnessWeights, JSONL registry)
   lexer.rs          # Tokenizer
   ast.rs            # AST types + manual binary serialization
   parser.rs         # Recursive descent parser (Pratt precedence) + error recovery
@@ -52,7 +53,7 @@ Storage: AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (473)
+cargo test                     # Run all tests (495)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
@@ -71,6 +72,8 @@ cargo run -- snapshot show <h> # Show snapshot details (variables, budget, outpu
 cargo run -- repl              # Interactive evaluator (REPL)
 cargo run -- repl --resume <h> # Resume REPL from snapshot (30% CB penalty)
 cargo run -- test <files|dir>  # Run tests (validate/explore outcomes)
+cargo run -- go file.ag --fitness              # Run + print fitness report
+cargo run -- go file.ag --fitness --weights W  # Custom weights (cb,val,exp)
 ```
 
 ## Phase 2 Features
@@ -105,3 +108,7 @@ cargo run -- test <files|dir>  # Run tests (validate/explore outcomes)
 - **REPL:** `agentis repl` — interactive evaluator with dot-commands (`.exit`, `.budget`, `.snapshot`, `.output`, `.help`). Multi-line via brace balancing. `--resume <hash>` restores from snapshot with 30% CB penalty.
 - **Test Runner:** `agentis test <files|dir>` — reports validate/explore outcomes. `--fail-fast`, `--verbose`. Exit code 0/1.
 - **Rich Errors:** `ErrorDetail` struct with agent name, expression description, actionable hints. Enhanced: prompt PII errors, undefined functions (with "did you mean?"), arity mismatches, CB exhaustion, validate failures.
+
+## Phase 7 Features (Agent Evolution — in progress)
+
+- **Fitness Metrics (M27):** `agentis go file.ag --fitness` reports composite fitness score. `FitnessReport` with CB efficiency, validate rate, explore rate, prompt count. `FitnessWeights` configurable via `--weights 0.3,0.5,0.2` or config. Dynamic weight redistribution when validates/explores absent. JSONL registry at `.agentis/fitness.jsonl`.

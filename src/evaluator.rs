@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::ast::*;
 use crate::audit::AuditLog;
 use crate::capabilities::{CapError, CapKind, CapabilityRegistry};
+use crate::fitness::FitnessReport;
 use crate::io::IoContext;
 use crate::llm::LlmBackend;
 use crate::refs::Refs;
@@ -349,6 +350,12 @@ pub struct Evaluator<'a> {
     /// When Some, test mode is enabled: explore/validate outcomes are
     /// collected instead of aborting on failure.
     test_outcomes: Option<Vec<TestOutcome>>,
+    // Fitness counters (always tracked, regardless of test mode)
+    prompt_count: usize,
+    validates_passed: usize,
+    validates_total: usize,
+    explores_passed: usize,
+    explores_total: usize,
 }
 
 impl<'a> Evaluator<'a> {
@@ -375,6 +382,11 @@ impl<'a> Evaluator<'a> {
             active_agents: Arc::new(AtomicU32::new(0)),
             spawn_counter: 0,
             test_outcomes: None,
+            prompt_count: 0,
+            validates_passed: 0,
+            validates_total: 0,
+            explores_passed: 0,
+            explores_total: 0,
         }
     }
 
@@ -519,6 +531,20 @@ impl<'a> Evaluator<'a> {
 
     pub fn output(&self) -> &[String] {
         &self.output
+    }
+
+    /// Snapshot current execution metrics as a fitness report.
+    pub fn fitness_report(&self) -> FitnessReport {
+        FitnessReport {
+            cb_initial: self.initial_budget,
+            cb_remaining: self.budget,
+            validates_passed: self.validates_passed,
+            validates_total: self.validates_total,
+            explores_passed: self.explores_passed,
+            explores_total: self.explores_total,
+            prompt_count: self.prompt_count,
+            error: false,
+        }
     }
 
     /// Look up a variable by name (for REPL display, no CB cost).
@@ -1367,6 +1393,11 @@ impl<'a> Evaluator<'a> {
             t.cb_remaining(self.budget, self.initial_budget);
         }
 
+        // Fitness counter: track successful prompt calls
+        if result.is_ok() {
+            self.prompt_count += 1;
+        }
+
         result
     }
 
@@ -1482,6 +1513,7 @@ impl<'a> Evaluator<'a> {
     fn eval_validate(&mut self, expr: &ValidateExpr) -> Result<Value, EvalError> {
         let target = self.eval_expr(&expr.target)?;
         let count = expr.predicates.len();
+        self.validates_total += 1;
 
         for (i, predicate) in expr.predicates.iter().enumerate() {
             self.spend(1)?;
@@ -1524,6 +1556,7 @@ impl<'a> Evaluator<'a> {
         if let Some(t) = &self.tracer {
             t.validate_result(count, true);
         }
+        self.validates_passed += 1;
         Ok(target)
     }
 
@@ -1707,6 +1740,7 @@ impl<'a> Evaluator<'a> {
     fn eval_explore(&mut self, expr: &ExploreBlock) -> Result<Value, EvalError> {
         self.require_cap(CapKind::VcsWrite)?;
         self.spend(1)?;
+        self.explores_total += 1;
 
         if let Some(t) = &self.tracer {
             t.explore_entered(&expr.name, self.budget);
@@ -1721,6 +1755,7 @@ impl<'a> Evaluator<'a> {
 
         match result {
             Ok(value) => {
+                self.explores_passed += 1;
                 // Success: create a VCS branch if store/refs are available
                 if let Some((store, refs)) = &self.vcs {
                     let _ = refs.create_branch(&expr.name, None);
@@ -3334,5 +3369,108 @@ mod tests {
         let content = std::fs::read_to_string(root.join("audit/prompts.jsonl")).unwrap();
         let parsed = crate::json::parse(content.trim()).unwrap();
         assert_eq!(parsed.get("agent").unwrap().as_str(), Some("worker"));
+    }
+
+    // --- Fitness counter tests ---
+
+    #[test]
+    fn fitness_prompt_count() {
+        let source = r#"
+            let x = prompt("say hi", "hello") -> string;
+            let y = prompt("say bye", "goodbye") -> string;
+        "#;
+        let program = Parser::parse_source(source).unwrap();
+        let mut ev = Evaluator::new(10000);
+        ev.grant_all();
+        ev.eval_program(&program).unwrap();
+        let report = ev.fitness_report();
+        assert_eq!(report.prompt_count, 2);
+        assert_eq!(report.cb_initial, 10000);
+        assert!(!report.error);
+    }
+
+    #[test]
+    fn fitness_validate_counters() {
+        let source = r#"
+            let x = 5;
+            validate x { x > 0, x < 10 };
+            validate x { x == 5 };
+        "#;
+        let program = Parser::parse_source(source).unwrap();
+        let mut ev = Evaluator::new(10000);
+        ev.grant_all();
+        ev.eval_program(&program).unwrap();
+        let report = ev.fitness_report();
+        assert_eq!(report.validates_passed, 2);
+        assert_eq!(report.validates_total, 2);
+    }
+
+    #[test]
+    fn fitness_validate_failure_counts() {
+        let source = r#"
+            let x = 5;
+            validate x { x > 100 };
+        "#;
+        let program = Parser::parse_source(source).unwrap();
+        let mut ev = Evaluator::new(10000);
+        ev.grant_all();
+        let result = ev.eval_program(&program);
+        assert!(result.is_err());
+        let report = ev.fitness_report();
+        assert_eq!(report.validates_passed, 0);
+        assert_eq!(report.validates_total, 1);
+    }
+
+    #[test]
+    fn fitness_explore_counters() {
+        let source = r#"
+            explore "good" {
+                let x = 42;
+            }
+        "#;
+        let program = Parser::parse_source(source).unwrap();
+        let mut ev = Evaluator::new(10000);
+        ev.grant_all();
+        ev.eval_program(&program).unwrap();
+        let report = ev.fitness_report();
+        assert_eq!(report.explores_passed, 1);
+        assert_eq!(report.explores_total, 1);
+    }
+
+    #[test]
+    fn fitness_explore_failure_counts() {
+        let source = r#"
+            explore "bad" {
+                let x = 1 / 0;
+            }
+        "#;
+        let program = Parser::parse_source(source).unwrap();
+        let mut ev = Evaluator::new(10000);
+        ev.grant_all();
+        let result = ev.eval_program(&program);
+        assert!(result.is_err());
+        let report = ev.fitness_report();
+        assert_eq!(report.explores_passed, 0);
+        assert_eq!(report.explores_total, 1);
+    }
+
+    #[test]
+    fn fitness_report_score_with_redistribution() {
+        let source = r#"
+            let x = prompt("test", "input") -> string;
+            validate x { true };
+        "#;
+        let program = Parser::parse_source(source).unwrap();
+        let mut ev = Evaluator::new(10000);
+        ev.grant_all();
+        ev.eval_program(&program).unwrap();
+        let report = ev.fitness_report();
+        // No explores, so w_exp redistributed to w_cb + w_val
+        assert_eq!(report.explores_total, 0);
+        assert_eq!(report.validates_passed, 1);
+        assert_eq!(report.prompt_count, 1);
+        let score = report.score();
+        assert!(score > 0.0);
+        assert!(score <= 1.0);
     }
 }
