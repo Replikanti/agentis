@@ -200,7 +200,9 @@ Winner: variant-c.ag (score: 0.915)
    {"rank":4,"file":"variant-b.ag","score":0.0,"cb_eff":null,"val_rate":null,"exp_rate":null,"prompt_count":0,"error":"CognitiveOverload"}]
   ```
   When called from `evolve`, entries include `"gen": 3, "round": 2`
-  for post-processing across generations.
+  for post-processing across generations. Error strings are truncated
+  to 80 chars (`"error": "CognitiveOverload: budget exh..."`) to keep
+  JSON compact.
 - Exit code 0 if at least one variant succeeds.
 
 **What the arena is NOT:**
@@ -343,6 +345,7 @@ Gen 10: best=0.935  avg=0.812  prompts=2.4  (8 variants)
 
 Best agent: evolved/classify-g10-best.ag (score: 0.935)
   Lineage: classify.ag → g1-m3 → g4-m1 → g7-m2 → g10-best
+  Efficiency: prompt calls reduced by ~31% (3.5 → 2.4 avg)
 ```
 
 **Algorithm:**
@@ -371,7 +374,8 @@ evolution stops early with: "Budget cap reached at generation {g}
 - Cost estimate per backend:
   - **MockBackend:** "Estimated cost: $0 (mock mode)"
   - **CliBackend/Ollama:** "Local inference — cost $0, estimated time:
-    ~X min" (based on avg prompt length × evaluations, assuming ~30 tok/s)
+    ~X min" (based on avg prompt length × evaluations, assuming ~30 tok/s;
+    override via config `ollama_tokens_per_second = 50.0`)
   - **HttpBackend:** "Estimated cost: ~$X.XX" — approximation: count
     prompt instruction string lengths in seed (1 token ≈ 4 chars),
     multiply by evaluations
@@ -406,8 +410,10 @@ back to the seed.
 
 Implementation: load all per-generation JSONL files into an in-memory
 `HashMap<source_hash, (gen, parent_hash, score)>`, then walk the chain
-from the target hash until `parent_hash` is absent (= seed). This is
-fast — even 100 generations × 20 variants = 2000 entries in memory.
+from the target hash until `parent_hash` is absent (= seed). If a
+parent's score is missing (e.g., old/cleaned run), show "score unknown"
+in the chain. This is fast — even 100 generations × 20 variants = 2000
+entries in memory.
 
 Output:
 
