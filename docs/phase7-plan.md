@@ -147,7 +147,7 @@ using the existing `json.rs` serialization. A fitness registry
 (`.agentis/fitness.jsonl`) appends one entry per scored run:
 
 ```json
-{"ts": 1710000000, "source_hash": "abc123...", "score": 0.815, "cb_eff": 0.95, "val_rate": 1.0, "exp_rate": 0.5, "weights": "0.3,0.5,0.2"}
+{"ts": 1710000000, "source_hash": "abc123...", "score": 0.815, "cb_eff": 0.95, "val_rate": 1.0, "exp_rate": 0.5, "prompt_count": 4, "weights": "0.3,0.5,0.2"}
 ```
 
 The `weights` field records which weights were used, ensuring
@@ -193,8 +193,11 @@ Winner: variant-c.ag (score: 0.915)
   more reliable rankings.
 - Sort by fitness score descending.
 - Report table with rank, file, score, component rates.
-- `--json`: output results as JSON array (one object per variant) for
-  downstream analysis, visualization, or scripting.
+- `--json`: output results as JSON array for downstream analysis:
+  ```json
+  [{"rank":1,"file":"variant-c.ag","score":0.915,"cb_eff":0.98,"val_rate":1.0,"exp_rate":0.67,"prompt_count":3,"error":null},
+   {"rank":4,"file":"variant-b.ag","score":0.0,"cb_eff":null,"val_rate":null,"exp_rate":null,"prompt_count":0,"error":"CognitiveOverload"}]
+  ```
 - Exit code 0 if at least one variant succeeds.
 
 **What the arena is NOT:**
@@ -255,8 +258,22 @@ Generated 5 variants:
 7. Write to output file (or print diff if `--dry-run`).
 
 **`--dry-run`:** Shows which agents would be mutated and what the new
-instructions would look like, without writing any files. Useful for
-previewing mutations before committing to a batch.
+instructions would look like, without writing any files. Output uses
+diff-style format for easy comparison:
+
+```
+Variant 1/5:
+  Agent: classifier
+  Old:  "Classify the text as positive or negative."
+  New:  "Step by step: Classify the text as positive or negative."
+
+Variant 2/5:
+  Agent: sanitize
+  Old:  "Remove all PII from the input."
+  New:  "Remove all PII from the input. Be precise."
+```
+
+Useful for previewing mutations before committing to a batch.
 
 **Source reconstruction:**
 
@@ -345,10 +362,13 @@ evolution stops early with: "Budget cap reached at generation {g}
 - Number of mutations per generation (N * G total)
 - Number of arena evaluations (N * G * rounds)
 - Estimated prompt calls (based on seed program's prompt count * evaluations)
-- With HttpBackend: estimated token cost. Approximation: count prompt
-  instruction string lengths in the seed program as input token estimate
-  (1 token ≈ 4 chars), multiply by evaluations. Print:
-  "Estimated cost: ~$X.XX (based on seed prompt sizes × evaluations)"
+- Cost estimate per backend:
+  - **MockBackend:** "Estimated cost: $0 (mock mode)"
+  - **CliBackend/Ollama:** "Local inference — cost $0, estimated time:
+    ~X min" (based on avg prompt length × evaluations, assuming ~30 tok/s)
+  - **HttpBackend:** "Estimated cost: ~$X.XX" — approximation: count
+    prompt instruction string lengths in seed (1 token ≈ 4 chars),
+    multiply by evaluations
 
 **Intermediate bests:** After each generation, the best variant is saved
 to `<out>/g{gen:02}-best.ag` (e.g., `evolved/g03-best.ag`). This allows
@@ -363,7 +383,7 @@ Per-generation fitness files are stored in `.agentis/fitness/g{gen:02}.jsonl`,
 one JSONL entry per variant scored in that generation:
 
 ```json
-{"ts": 1710000005, "gen": 3, "source_hash": "def789...", "parent_hash": "abc123...", "score": 0.870, "mutations": ["classifier"], "weights": "0.3,0.5,0.2"}
+{"ts": 1710000005, "gen": 3, "source_hash": "def789...", "parent_hash": "abc123...", "score": 0.870, "prompt_count": 3, "mutations": ["classifier"], "weights": "0.3,0.5,0.2"}
 ```
 
 `--show-lineage` traces the best agent's ancestry back to the seed.
