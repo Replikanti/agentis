@@ -202,6 +202,16 @@ fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
     args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).cloned())
 }
 
+/// If the value is a path to an existing file, read its contents; otherwise return as-is.
+fn resolve_template(value: &str) -> Result<String, AgentisError> {
+    let path = Path::new(value);
+    if path.is_file() {
+        std::fs::read_to_string(path).map_err(|e| e.into())
+    } else {
+        Ok(value.to_string())
+    }
+}
+
 fn ensure_initialized() -> Result<(ObjectStore, Refs), AgentisError> {
     let root = agentis_root();
     if !root.exists() {
@@ -354,13 +364,6 @@ trace.level = normal
 fn cmd_go(source_file: &str, force_verbose: bool, grant_pii: bool, show_fitness: bool, weights_str: Option<&str>) -> Result<(), AgentisError> {
     let (store, refs) = ensure_initialized()?;
 
-    // Parse fitness weights if provided
-    let fitness_weights = match weights_str {
-        Some(s) => fitness::FitnessWeights::parse(s)
-            .map_err(|e| AgentisError::General(format!("--weights: {e}")))?,
-        None => fitness::FitnessWeights::default(),
-    };
-
     // Commit
     let source = std::fs::read_to_string(source_file)?;
     let program = Parser::parse_source(&source)?;
@@ -374,8 +377,17 @@ fn cmd_go(source_file: &str, force_verbose: bool, grant_pii: bool, show_fitness:
         eprintln!("warning: {err}");
     }
 
-    // Run
+    // Parse fitness weights: CLI flag > config > default
+    let effective_weights_str = weights_str.map(|s| s.to_string());
     let cfg = config::Config::load(&agentis_root());
+    let effective_weights_str = effective_weights_str.or_else(|| cfg.get("fitness.weights").map(|s| s.to_string()));
+    let fitness_weights = match effective_weights_str.as_deref() {
+        Some(s) => fitness::FitnessWeights::parse(s)
+            .map_err(|e| AgentisError::General(format!("weights: {e}")))?,
+        None => fitness::FitnessWeights::default(),
+    };
+
+    // Run
     let llm_backend = llm::create_backend(&cfg)
         .map_err(|e| AgentisError::General(format!("{e}")))?;
     let io_ctx = io::IoContext::new(&agentis_root(), &cfg);
@@ -1155,7 +1167,9 @@ fn cmd_mutate(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         .unwrap_or(3);
     let out_dir = parse_flag_value(args, "--out");
     let agent_filter = parse_flag_value(args, "--agent");
-    let custom_template = parse_flag_value(args, "--mutate-prompt");
+    let custom_template = parse_flag_value(args, "--mutate-prompt")
+        .map(|s| resolve_template(&s))
+        .transpose()?;
     let dry_run = args.iter().any(|a| a == "--dry-run");
 
     // Load LLM backend from config
@@ -1264,7 +1278,9 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     let out_dir = parse_flag_value(args, "--out")
         .unwrap_or_else(|| "evolved".to_string());
     let agent_filter = parse_flag_value(args, "--agent");
-    let custom_template = parse_flag_value(args, "--mutate-prompt");
+    let custom_template = parse_flag_value(args, "--mutate-prompt")
+        .map(|s| resolve_template(&s))
+        .transpose()?;
     let weights_str = parse_flag_value(args, "--weights");
     let budget_cap: Option<u64> = parse_flag_value(args, "--budget-cap")
         .and_then(|s| s.parse().ok());
@@ -1272,12 +1288,7 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         .and_then(|s| s.parse().ok());
     let show_lineage = args.iter().any(|a| a == "--show-lineage");
     let dry_run = args.iter().any(|a| a == "--dry-run");
-
-    let fitness_weights = match weights_str.as_deref() {
-        Some(s) => fitness::FitnessWeights::parse(s)
-            .map_err(|e| AgentisError::General(format!("--weights: {e}")))?,
-        None => fitness::FitnessWeights::default(),
-    };
+    let clean = args.iter().any(|a| a == "--clean");
 
     // Read seed source
     let seed_source = std::fs::read_to_string(source_file)?;
@@ -1292,6 +1303,14 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     // Load LLM backend
     let root = agentis_root();
     let cfg = config::Config::load(&root);
+
+    // Parse fitness weights: CLI flag > config > default
+    let weights_str = weights_str.or_else(|| cfg.get("fitness.weights").map(|s| s.to_string()));
+    let fitness_weights = match weights_str.as_deref() {
+        Some(s) => fitness::FitnessWeights::parse(s)
+            .map_err(|e| AgentisError::General(format!("weights: {e}")))?,
+        None => fitness::FitnessWeights::default(),
+    };
     let llm_backend = llm::create_backend(&cfg)
         .map_err(|e| AgentisError::General(format!("{e}")))?;
 
@@ -1326,6 +1345,19 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
 
     // Fitness storage directory
     let fitness_dir = root.join("fitness");
+
+    // Clean old per-generation JSONL files if --clean
+    if clean && fitness_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&fitness_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|ext| ext == "jsonl") {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+        eprintln!("Cleaned old fitness data from {}", fitness_dir.display());
+    }
 
     eprintln!("Evolution: {}", source_file);
     eprintln!("  Population: {}, Generations: {}", population, generations);
@@ -1560,12 +1592,6 @@ fn cmd_arena(args: &[String]) -> Result<(), AgentisError> {
     let json_output = args.iter().any(|a| a == "--json");
     let weights_str = parse_flag_value(args, "--weights");
 
-    let fitness_weights = match weights_str.as_deref() {
-        Some(s) => fitness::FitnessWeights::parse(s)
-            .map_err(|e| AgentisError::General(format!("--weights: {e}")))?,
-        None => fitness::FitnessWeights::default(),
-    };
-
     // Collect .ag files from args (expand directories)
     let mut files = Vec::new();
     for arg in args {
@@ -1606,6 +1632,15 @@ fn cmd_arena(args: &[String]) -> Result<(), AgentisError> {
     let (store, refs) = ensure_initialized()?;
     let root = agentis_root();
     let cfg = config::Config::load(&root);
+
+    // Parse fitness weights: CLI flag > config > default
+    let weights_str = weights_str.or_else(|| cfg.get("fitness.weights").map(|s| s.to_string()));
+    let fitness_weights = match weights_str.as_deref() {
+        Some(s) => fitness::FitnessWeights::parse(s)
+            .map_err(|e| AgentisError::General(format!("weights: {e}")))?,
+        None => fitness::FitnessWeights::default(),
+    };
+
     let llm_backend = llm::create_backend(&cfg)
         .map_err(|e| AgentisError::General(format!("{e}")))?;
     let io_ctx = io::IoContext::new(&root, &cfg);
