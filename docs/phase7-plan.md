@@ -64,7 +64,7 @@ An agent that dies (error) gets fitness 0.0.
 ## Milestones
 
 - [x] M27: Fitness Metrics
-- [ ] M28: Arena Runner
+- [x] M28: Arena Runner
 - [x] M29: Mutation Engine
 - [ ] M30: Evolution Loop
 
