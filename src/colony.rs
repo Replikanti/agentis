@@ -969,6 +969,238 @@ fn categorize_protocol_error(e: NetworkError) -> String {
     }
 }
 
+// --- Colony Observability (M34) ---
+
+/// Result of pinging a single worker.
+#[derive(Debug)]
+pub struct WorkerStatus {
+    pub addr: String,
+    pub status: String,
+    pub pong: Option<PongData>,
+    pub latency_ms: Option<u64>,
+}
+
+/// Ping a single worker: connect, auth, send PING, read PONG.
+/// Returns WorkerStatus with latency measured as PING/PONG roundtrip.
+pub fn ping_worker(
+    addr: &str,
+    secret: Option<&str>,
+    connect_timeout_ms: u64,
+) -> WorkerStatus {
+    let parsed: std::net::SocketAddr = match addr.parse() {
+        Ok(a) => a,
+        Err(_) => return WorkerStatus {
+            addr: addr.to_string(),
+            status: "invalid-address".to_string(),
+            pong: None,
+            latency_ms: None,
+        },
+    };
+
+    let timeout = std::time::Duration::from_millis(connect_timeout_ms);
+    let mut stream = match TcpStream::connect_timeout(&parsed, timeout) {
+        Ok(s) => s,
+        Err(e) => {
+            let reason = categorize_connect_error(e);
+            return WorkerStatus {
+                addr: addr.to_string(),
+                status: format!("offline ({reason})"),
+                pong: None,
+                latency_ms: None,
+            };
+        }
+    };
+
+    // Set read/write timeout for the PING/PONG exchange
+    let rw_timeout = std::time::Duration::from_secs(10);
+    let _ = stream.set_read_timeout(Some(rw_timeout));
+    let _ = stream.set_write_timeout(Some(rw_timeout));
+
+    // Auth
+    if let Err(e) = client_auth(&mut stream, secret) {
+        let reason = categorize_auth_error(e);
+        return WorkerStatus {
+            addr: addr.to_string(),
+            status: format!("auth-fail ({reason})"),
+            pong: None,
+            latency_ms: None,
+        };
+    }
+
+    // PING/PONG
+    let ping_payload = encode_ping();
+    if let Err(_) = network::write_msg(&mut stream, MSG_PING, &ping_payload) {
+        return WorkerStatus {
+            addr: addr.to_string(),
+            status: "offline (write error)".to_string(),
+            pong: None,
+            latency_ms: None,
+        };
+    }
+
+    let rtt_start = Instant::now();
+    let (msg_type, pong_payload) = match network::read_msg(&mut stream) {
+        Ok(r) => r,
+        Err(_) => return WorkerStatus {
+            addr: addr.to_string(),
+            status: "offline (read error)".to_string(),
+            pong: None,
+            latency_ms: None,
+        },
+    };
+    let latency = rtt_start.elapsed().as_millis() as u64;
+
+    if msg_type != MSG_PONG {
+        return WorkerStatus {
+            addr: addr.to_string(),
+            status: format!("protocol-error (expected PONG, got 0x{msg_type:02x})"),
+            pong: None,
+            latency_ms: None,
+        };
+    }
+
+    match decode_pong(&pong_payload) {
+        Ok(pong) => WorkerStatus {
+            addr: addr.to_string(),
+            status: "online".to_string(),
+            pong: Some(pong),
+            latency_ms: Some(latency),
+        },
+        Err(_) => WorkerStatus {
+            addr: addr.to_string(),
+            status: "protocol-error (invalid PONG)".to_string(),
+            pong: None,
+            latency_ms: None,
+        },
+    }
+}
+
+/// Ping all workers and return their statuses.
+pub fn colony_status(
+    workers: &[String],
+    secret: Option<&str>,
+    connect_timeout_ms: u64,
+) -> Vec<WorkerStatus> {
+    workers.iter()
+        .map(|addr| ping_worker(addr, secret, connect_timeout_ms))
+        .collect()
+}
+
+/// Format colony status as a table.
+pub fn format_status_table(statuses: &[WorkerStatus]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Colony Status: {} worker{}\n\n",
+        statuses.len(),
+        if statuses.len() == 1 { "" } else { "s" },
+    ));
+
+    // Find max address length for column alignment
+    let max_addr = statuses.iter()
+        .map(|s| s.addr.len())
+        .max()
+        .unwrap_or(6)
+        .max(6);
+
+    out.push_str(&format!("{:<width$}  {:<12}{:>7}{:>8}{:>8}  {:<5}{}\n",
+        "WORKER", "STATUS", "EVALS", "FAILED", "AVG_MS", "BUSY", "BACKEND",
+        width = max_addr,
+    ));
+
+    for s in statuses {
+        if let Some(ref pong) = s.pong {
+            out.push_str(&format!("{:<width$}  {:<12}{:>7}{:>8}{:>7}ms  {:<5}{}\n",
+                s.addr,
+                s.status,
+                pong.evals_completed,
+                pong.evals_failed,
+                pong.avg_eval_ms,
+                if pong.busy { "yes" } else { "no" },
+                pong.backend,
+                width = max_addr,
+            ));
+        } else {
+            out.push_str(&format!("{:<width$}  {:<12}{:>7}{:>8}{:>8}  {:<5}{}\n",
+                s.addr,
+                s.status,
+                "--", "--", "--", "--", "--",
+                width = max_addr,
+            ));
+        }
+    }
+
+    // Summary
+    let online = statuses.iter().filter(|s| s.status == "online").count();
+    let total_evals: u32 = statuses.iter()
+        .filter_map(|s| s.pong.as_ref().map(|p| p.evals_completed))
+        .sum();
+    let total_failed: u32 = statuses.iter()
+        .filter_map(|s| s.pong.as_ref().map(|p| p.evals_failed))
+        .sum();
+    let latencies: Vec<u64> = statuses.iter()
+        .filter_map(|s| s.latency_ms)
+        .collect();
+    let avg_latency = if latencies.is_empty() { 0 } else {
+        latencies.iter().sum::<u64>() / latencies.len() as u64
+    };
+
+    out.push_str(&format!("\nSummary: {}/{} online, {} evals completed, {} failed, avg latency {}ms\n",
+        online, statuses.len(), total_evals, total_failed, avg_latency));
+
+    out
+}
+
+/// Format colony status as JSON.
+pub fn format_status_json(statuses: &[WorkerStatus]) -> String {
+    let items: Vec<String> = statuses.iter().map(|s| {
+        let mut fields: Vec<(&str, crate::json::JsonValue)> = vec![
+            ("worker", crate::json::JsonValue::String(s.addr.clone())),
+            ("status", crate::json::JsonValue::String(s.status.clone())),
+        ];
+        if let Some(ref pong) = s.pong {
+            fields.push(("evals_completed", crate::json::JsonValue::Int(pong.evals_completed as i64)));
+            fields.push(("evals_failed", crate::json::JsonValue::Int(pong.evals_failed as i64)));
+            fields.push(("avg_eval_ms", crate::json::JsonValue::Int(pong.avg_eval_ms as i64)));
+            fields.push(("busy", crate::json::JsonValue::Bool(pong.busy)));
+            fields.push(("backend", crate::json::JsonValue::String(pong.backend.clone())));
+        } else {
+            fields.push(("evals_completed", crate::json::JsonValue::Null));
+            fields.push(("evals_failed", crate::json::JsonValue::Null));
+            fields.push(("avg_eval_ms", crate::json::JsonValue::Null));
+            fields.push(("busy", crate::json::JsonValue::Null));
+            fields.push(("backend", crate::json::JsonValue::Null));
+        }
+        if let Some(lat) = s.latency_ms {
+            fields.push(("latency_ms", crate::json::JsonValue::Int(lat as i64)));
+        } else {
+            fields.push(("latency_ms", crate::json::JsonValue::Null));
+        }
+        format!("{}", crate::json::object(fields))
+    }).collect();
+
+    format!("[{}]", items.join(","))
+}
+
+/// Format a single worker ping result.
+pub fn format_ping(status: &WorkerStatus) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Pinging {}...\n", status.addr));
+    out.push_str(&format!("  Status:     {}\n", status.status));
+
+    if let Some(ref pong) = status.pong {
+        out.push_str(&format!("  Evals:      {} completed, {} failed\n",
+            pong.evals_completed, pong.evals_failed));
+        out.push_str(&format!("  Avg eval:   {}ms\n", pong.avg_eval_ms));
+        out.push_str(&format!("  Busy:       {}\n", if pong.busy { "yes" } else { "no" }));
+        out.push_str(&format!("  Backend:    {}\n", pong.backend));
+    }
+
+    if let Some(lat) = status.latency_ms {
+        out.push_str(&format!("  Latency:    {}ms\n", lat));
+    }
+
+    out
+}
+
 // --- Binary helpers ---
 
 fn read_u8(buf: &[u8], pos: &mut usize) -> Result<u8, NetworkError> {
@@ -1765,5 +1997,246 @@ mod tests {
         assert!(stats.contains("2 workers"), "got: {stats}");
         assert!(stats.contains("1 local fallback"), "got: {stats}");
         assert!(stats.contains("avg eval 150ms"), "got: {stats}");
+    }
+
+    // --- M34: Colony observability tests ---
+
+    #[test]
+    fn ping_worker_offline() {
+        // Port 1 should be unreachable
+        let status = ping_worker("127.0.0.1:1", None, 1_000);
+        assert!(status.status.starts_with("offline"), "got: {}", status.status);
+        assert!(status.pong.is_none());
+        assert!(status.latency_ms.is_none());
+    }
+
+    #[test]
+    fn ping_worker_invalid_address() {
+        let status = ping_worker("not-a-valid-addr", None, 1_000);
+        assert_eq!(status.status, "invalid-address");
+    }
+
+    #[test]
+    fn ping_worker_online() {
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            // Read PING, send PONG
+            let (msg_type, payload) = crate::network::read_msg(&mut stream).unwrap();
+            assert_eq!(msg_type, crate::network::MSG_PING);
+            let echo_ts = decode_ping(&payload).unwrap();
+            let stats = WorkerStats::new();
+            stats.evals_completed.store(42, Ordering::Relaxed);
+            stats.evals_failed.store(3, Ordering::Relaxed);
+            stats.total_eval_ms.store(4200, Ordering::Relaxed);
+            let pong = encode_pong(echo_ts, &stats, "mock");
+            crate::network::write_msg(&mut stream, crate::network::MSG_PONG, &pong).unwrap();
+        });
+
+        let status = ping_worker(&addr, None, 5_000);
+        assert_eq!(status.status, "online");
+        assert!(status.latency_ms.is_some());
+
+        let pong = status.pong.unwrap();
+        assert_eq!(pong.evals_completed, 42);
+        assert_eq!(pong.evals_failed, 3);
+        assert_eq!(pong.avg_eval_ms, 100); // 4200 / 42
+        assert_eq!(pong.backend, "mock");
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn ping_worker_with_auth() {
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let secret = "ping-secret";
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            server_auth(&mut stream, Some(secret)).unwrap();
+            let (_, payload) = crate::network::read_msg(&mut stream).unwrap();
+            let echo_ts = decode_ping(&payload).unwrap();
+            let stats = WorkerStats::new();
+            let pong = encode_pong(echo_ts, &stats, "test");
+            crate::network::write_msg(&mut stream, crate::network::MSG_PONG, &pong).unwrap();
+        });
+
+        let status = ping_worker(&addr, Some(secret), 5_000);
+        assert_eq!(status.status, "online");
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn ping_worker_auth_failure() {
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = server_auth(&mut stream, Some("right-secret"));
+        });
+
+        let status = ping_worker(&addr, Some("wrong-secret"), 5_000);
+        assert!(status.status.starts_with("auth-fail"), "got: {}", status.status);
+        assert!(status.pong.is_none());
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn colony_status_mixed() {
+        use std::net::TcpListener;
+
+        // One online worker
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let online_addr = listener.local_addr().unwrap().to_string();
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let (_, payload) = crate::network::read_msg(&mut stream).unwrap();
+            let echo_ts = decode_ping(&payload).unwrap();
+            let stats = WorkerStats::new();
+            stats.evals_completed.store(10, Ordering::Relaxed);
+            let pong = encode_pong(echo_ts, &stats, "mock");
+            crate::network::write_msg(&mut stream, crate::network::MSG_PONG, &pong).unwrap();
+        });
+
+        let workers = vec![online_addr.clone(), "127.0.0.1:1".to_string()];
+        let statuses = colony_status(&workers, None, 2_000);
+
+        assert_eq!(statuses.len(), 2);
+        assert_eq!(statuses[0].status, "online");
+        assert!(statuses[1].status.starts_with("offline"));
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn format_status_table_output() {
+        let statuses = vec![
+            WorkerStatus {
+                addr: "10.0.0.1:9462".to_string(),
+                status: "online".to_string(),
+                pong: Some(PongData {
+                    echo_ts: 0,
+                    evals_completed: 50,
+                    evals_failed: 2,
+                    avg_eval_ms: 150,
+                    busy: false,
+                    backend: "http".to_string(),
+                }),
+                latency_ms: Some(12),
+            },
+            WorkerStatus {
+                addr: "10.0.0.2:9462".to_string(),
+                status: "offline (connection refused)".to_string(),
+                pong: None,
+                latency_ms: None,
+            },
+        ];
+
+        let table = format_status_table(&statuses);
+        assert!(table.contains("Colony Status: 2 workers"), "got: {table}");
+        assert!(table.contains("10.0.0.1:9462"), "got: {table}");
+        assert!(table.contains("online"), "got: {table}");
+        assert!(table.contains("50"), "got: {table}");
+        assert!(table.contains("http"), "got: {table}");
+        assert!(table.contains("10.0.0.2:9462"), "got: {table}");
+        assert!(table.contains("offline"), "got: {table}");
+        assert!(table.contains("1/2 online"), "got: {table}");
+    }
+
+    #[test]
+    fn format_status_json_output() {
+        let statuses = vec![
+            WorkerStatus {
+                addr: "10.0.0.1:9462".to_string(),
+                status: "online".to_string(),
+                pong: Some(PongData {
+                    echo_ts: 0,
+                    evals_completed: 10,
+                    evals_failed: 1,
+                    avg_eval_ms: 100,
+                    busy: true,
+                    backend: "cli".to_string(),
+                }),
+                latency_ms: Some(5),
+            },
+        ];
+
+        let json = format_status_json(&statuses);
+        assert!(json.contains("\"worker\":\"10.0.0.1:9462\""), "got: {json}");
+        assert!(json.contains("\"status\":\"online\""), "got: {json}");
+        assert!(json.contains("\"evals_completed\":10"), "got: {json}");
+        assert!(json.contains("\"busy\":true"), "got: {json}");
+        assert!(json.contains("\"backend\":\"cli\""), "got: {json}");
+        assert!(json.contains("\"latency_ms\":5"), "got: {json}");
+    }
+
+    #[test]
+    fn format_status_json_offline() {
+        let statuses = vec![
+            WorkerStatus {
+                addr: "10.0.0.1:9462".to_string(),
+                status: "offline".to_string(),
+                pong: None,
+                latency_ms: None,
+            },
+        ];
+
+        let json = format_status_json(&statuses);
+        assert!(json.contains("\"evals_completed\":null"), "got: {json}");
+        assert!(json.contains("\"latency_ms\":null"), "got: {json}");
+    }
+
+    #[test]
+    fn format_ping_output() {
+        let status = WorkerStatus {
+            addr: "10.0.0.1:9462".to_string(),
+            status: "online".to_string(),
+            pong: Some(PongData {
+                echo_ts: 0,
+                evals_completed: 100,
+                evals_failed: 5,
+                avg_eval_ms: 200,
+                busy: false,
+                backend: "http".to_string(),
+            }),
+            latency_ms: Some(8),
+        };
+
+        let output = format_ping(&status);
+        assert!(output.contains("Pinging 10.0.0.1:9462"), "got: {output}");
+        assert!(output.contains("Status:     online"), "got: {output}");
+        assert!(output.contains("100 completed, 5 failed"), "got: {output}");
+        assert!(output.contains("Avg eval:   200ms"), "got: {output}");
+        assert!(output.contains("Busy:       no"), "got: {output}");
+        assert!(output.contains("Backend:    http"), "got: {output}");
+        assert!(output.contains("Latency:    8ms"), "got: {output}");
+    }
+
+    #[test]
+    fn format_ping_offline() {
+        let status = WorkerStatus {
+            addr: "10.0.0.1:9462".to_string(),
+            status: "offline (connection refused)".to_string(),
+            pong: None,
+            latency_ms: None,
+        };
+
+        let output = format_ping(&status);
+        assert!(output.contains("offline"), "got: {output}");
+        assert!(!output.contains("Evals:"), "got: {output}");
+        assert!(!output.contains("Latency:"), "got: {output}");
     }
 }
