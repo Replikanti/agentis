@@ -501,6 +501,144 @@ impl CheckpointStore {
     }
 }
 
+// --- Formatting ---
+
+/// Format a Unix-millis timestamp as "YYYY-MM-DD HH:MM".
+pub fn format_timestamp(ts_ms: u64) -> String {
+    let secs = ts_ms / 1000;
+    // Manual UTC calendar from Unix seconds (no chrono dependency).
+    let days = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+
+    // Days since 1970-01-01 → (year, month, day)
+    // Civil calendar algorithm (Euclidean affine).
+    let z = days as i64 + 719468; // shift epoch to 0000-03-01
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097) as u64; // day of era [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!("{y:04}-{m:02}-{d:02} {hours:02}:{minutes:02}")
+}
+
+/// Format a history table from a checkpoint chain (newest first).
+pub fn format_history(chain: &[(String, GenerationCheckpoint)]) -> String {
+    if chain.is_empty() {
+        return "No checkpoints found.\n".to_string();
+    }
+
+    let mut out = String::new();
+    out.push_str("Evolution History (from HEAD)\n\n");
+    out.push_str("GEN   HASH          BEST    AVG     CB_SPENT  TAG                   DATE\n");
+
+    for (hash, ckpt) in chain {
+        let tag_str = ckpt.tag.as_deref().unwrap_or("");
+        out.push_str(&format!(
+            "{:>3}   {}   {:.3}   {:.3}   {:>8}  {:<22}{}\n",
+            ckpt.generation,
+            &hash[..12],
+            ckpt.gen_best_score,
+            ckpt.gen_avg_score,
+            ckpt.cumulative_cb,
+            tag_str,
+            format_timestamp(ckpt.timestamp),
+        ));
+    }
+
+    // Summary line
+    let best = chain
+        .iter()
+        .max_by(|a, b| {
+            a.1.best_ever_score
+                .partial_cmp(&b.1.best_ever_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap();
+    let seed = &chain.last().unwrap().1.seed_hash;
+    out.push_str(&format!(
+        "\n{} checkpoints, best: gen {} ({:.3}), seed: {}...\n",
+        chain.len(),
+        best.1.generation,
+        best.1.best_ever_score,
+        &seed[..8.min(seed.len())]
+    ));
+
+    out
+}
+
+/// Format detailed trace of a single checkpoint.
+pub fn format_trace(hash: &str, ckpt: &GenerationCheckpoint) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Checkpoint: {hash}\n"));
+    out.push_str(&format!("  Generation:     {}\n", ckpt.generation));
+    if let Some(ref tag) = ckpt.tag {
+        out.push_str(&format!("  Tag:            {tag}\n"));
+    }
+    out.push_str(&format!(
+        "  Date:           {}\n",
+        format_timestamp(ckpt.timestamp)
+    ));
+    out.push_str(&format!(
+        "  Seed:           {}...\n",
+        &ckpt.seed_hash[..8.min(ckpt.seed_hash.len())]
+    ));
+    out.push_str(&format!(
+        "  Best score:     {:.3} (ever: {:.3})\n",
+        ckpt.gen_best_score, ckpt.best_ever_score
+    ));
+    out.push_str(&format!("  Avg score:      {:.3}\n", ckpt.gen_avg_score));
+    out.push_str(&format!("  Avg prompts:    {:.1}\n", ckpt.gen_avg_prompts));
+    out.push_str(&format!("  Stall count:    {}\n", ckpt.stall_count));
+    out.push_str(&format!("  Cumulative CB:  {}\n", ckpt.cumulative_cb));
+    out.push_str(&format!(
+        "  Parents:        {} survivors\n",
+        ckpt.parents.len()
+    ));
+    match &ckpt.parent {
+        Some(p) => out.push_str(&format!("  Previous:       {}...\n", &p[..12.min(p.len())])),
+        None => out.push_str("  Previous:       (none — first generation)\n"),
+    }
+    out
+}
+
+/// Format the best checkpoint result.
+pub fn format_best(hash: &str, ckpt: &GenerationCheckpoint) -> String {
+    let tag_str = match &ckpt.tag {
+        Some(t) => format!(", tag: {t}"),
+        None => String::new(),
+    };
+    format!(
+        "Best checkpoint: {}... (gen {}, score: {:.3}{})\n",
+        &hash[..12.min(hash.len())],
+        ckpt.generation,
+        ckpt.best_ever_score,
+        tag_str
+    )
+}
+
+/// Find the checkpoint with the highest best_ever_score from a list.
+/// Returns (hash, checkpoint) or None if the list is empty.
+pub fn find_best(
+    checkpoints: &[(String, GenerationCheckpoint)],
+    min_score: Option<f64>,
+) -> Option<&(String, GenerationCheckpoint)> {
+    checkpoints
+        .iter()
+        .filter(|(_, ckpt)| min_score.is_none_or(|min| ckpt.best_ever_score >= min))
+        .max_by(|a, b| {
+            a.1.best_ever_score
+                .partial_cmp(&b.1.best_ever_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
 // --- Helpers ---
 
 fn hash_bytes(data: &[u8]) -> String {
@@ -1086,5 +1224,203 @@ mod tests {
         let ckpt = store.load(&resolved).unwrap();
         assert_eq!(ckpt.generation, 2);
         // Next gen would be 3
+    }
+
+    // --- M37: Formatting tests ---
+
+    #[test]
+    fn format_timestamp_epoch() {
+        assert_eq!(format_timestamp(0), "1970-01-01 00:00");
+    }
+
+    #[test]
+    fn format_timestamp_known_date() {
+        // 2026-03-12 23:14:02 UTC = 1773357242 seconds
+        let ts = 1773357242000;
+        assert_eq!(format_timestamp(ts), "2026-03-12 23:14");
+    }
+
+    #[test]
+    fn format_timestamp_2000() {
+        // 2000-01-01 00:00:00 UTC = 946684800 seconds
+        assert_eq!(format_timestamp(946684800000), "2000-01-01 00:00");
+    }
+
+    #[test]
+    fn format_history_empty() {
+        let out = format_history(&[]);
+        assert!(out.contains("No checkpoints"));
+    }
+
+    #[test]
+    fn format_history_table() {
+        let chain = vec![
+            (
+                "abcd1234567890abcdef".to_string(),
+                GenerationCheckpoint {
+                    generation: 2,
+                    parent: Some("prev".to_string()),
+                    seed_hash: "seedhash".to_string(),
+                    parents: vec![],
+                    best_ever_score: 0.850,
+                    best_ever_source: String::new(),
+                    best_ever_hash: String::new(),
+                    stall_count: 0,
+                    cumulative_cb: 8000,
+                    first_gen_avg_prompts: 2.0,
+                    gen_best_score: 0.850,
+                    gen_avg_score: 0.720,
+                    gen_avg_prompts: 2.0,
+                    variant_count: 4,
+                    timestamp: 1773540842000,
+                    tag: Some("my-tag".to_string()),
+                },
+            ),
+            (
+                "1234567890abcdef0000".to_string(),
+                GenerationCheckpoint {
+                    generation: 1,
+                    parent: None,
+                    seed_hash: "seedhash".to_string(),
+                    parents: vec![],
+                    best_ever_score: 0.720,
+                    best_ever_source: String::new(),
+                    best_ever_hash: String::new(),
+                    stall_count: 0,
+                    cumulative_cb: 4000,
+                    first_gen_avg_prompts: 2.0,
+                    gen_best_score: 0.720,
+                    gen_avg_score: 0.500,
+                    gen_avg_prompts: 3.0,
+                    variant_count: 4,
+                    timestamp: 1773540800000,
+                    tag: None,
+                },
+            ),
+        ];
+
+        let out = format_history(&chain);
+        assert!(out.contains("Evolution History"));
+        assert!(out.contains("GEN"));
+        assert!(out.contains("abcd12345678"));
+        assert!(out.contains("my-tag"));
+        assert!(out.contains("2 checkpoints"));
+        assert!(out.contains("best: gen 2"));
+        assert!(out.contains("seedhash"));
+    }
+
+    #[test]
+    fn format_trace_output() {
+        let ckpt = GenerationCheckpoint {
+            generation: 5,
+            parent: Some("aabbccdd11223344".to_string()),
+            seed_hash: "seedabcd1234".to_string(),
+            parents: vec![
+                ParentEntry {
+                    source: "a".to_string(),
+                    source_hash: "h1".to_string(),
+                },
+                ParentEntry {
+                    source: "b".to_string(),
+                    source_hash: "h2".to_string(),
+                },
+            ],
+            best_ever_score: 0.935,
+            best_ever_source: String::new(),
+            best_ever_hash: String::new(),
+            stall_count: 1,
+            cumulative_cb: 25000,
+            first_gen_avg_prompts: 3.0,
+            gen_best_score: 0.890,
+            gen_avg_score: 0.720,
+            gen_avg_prompts: 2.5,
+            variant_count: 8,
+            timestamp: 1773540842000,
+            tag: Some("exp-a".to_string()),
+        };
+
+        let out = format_trace("fullhash1234567890", &ckpt);
+        assert!(out.contains("Checkpoint: fullhash1234567890"));
+        assert!(out.contains("Generation:     5"));
+        assert!(out.contains("Tag:            exp-a"));
+        assert!(out.contains("Best score:     0.890 (ever: 0.935)"));
+        assert!(out.contains("Avg score:      0.720"));
+        assert!(out.contains("Stall count:    1"));
+        assert!(out.contains("Cumulative CB:  25000"));
+        assert!(out.contains("Parents:        2 survivors"));
+        assert!(out.contains("Previous:       aabbccdd1122"));
+    }
+
+    #[test]
+    fn format_trace_no_parent() {
+        let ckpt = make_checkpoint(1, None, None);
+        let out = format_trace("somehash", &ckpt);
+        assert!(out.contains("Previous:       (none"));
+    }
+
+    #[test]
+    fn format_best_output() {
+        let ckpt = make_checkpoint(10, None, Some("winner"));
+        let out = format_best("abcdef123456789000", &ckpt);
+        assert!(out.contains("abcdef123456"));
+        assert!(out.contains("gen 10"));
+        assert!(out.contains("0.915"));
+        assert!(out.contains("tag: winner"));
+    }
+
+    #[test]
+    fn format_best_no_tag() {
+        let ckpt = make_checkpoint(3, None, None);
+        let out = format_best("abcdef123456789000", &ckpt);
+        assert!(!out.contains("tag:"));
+    }
+
+    #[test]
+    fn find_best_basic() {
+        let chain = vec![
+            ("h1".to_string(), make_checkpoint(1, None, None)),
+            ("h2".to_string(), {
+                let mut c = make_checkpoint(2, Some("h1"), None);
+                c.best_ever_score = 0.990;
+                c
+            }),
+            ("h3".to_string(), {
+                let mut c = make_checkpoint(3, Some("h2"), None);
+                c.best_ever_score = 0.950;
+                c
+            }),
+        ];
+
+        let best = find_best(&chain, None).unwrap();
+        assert_eq!(best.0, "h2");
+        assert_eq!(best.1.best_ever_score, 0.990);
+    }
+
+    #[test]
+    fn find_best_with_min_score() {
+        let chain = vec![
+            ("h1".to_string(), {
+                let mut c = make_checkpoint(1, None, None);
+                c.best_ever_score = 0.5;
+                c
+            }),
+            ("h2".to_string(), {
+                let mut c = make_checkpoint(2, Some("h1"), None);
+                c.best_ever_score = 0.8;
+                c
+            }),
+        ];
+
+        // Both below 0.9
+        assert!(find_best(&chain, Some(0.9)).is_none());
+        // h2 at 0.8 matches >= 0.7
+        let best = find_best(&chain, Some(0.7)).unwrap();
+        assert_eq!(best.0, "h2");
+    }
+
+    #[test]
+    fn find_best_empty() {
+        let chain: Vec<(String, GenerationCheckpoint)> = vec![];
+        assert!(find_best(&chain, None).is_none());
     }
 }

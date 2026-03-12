@@ -753,6 +753,9 @@ fn cmd_colony(args: &[String]) -> Result<(), AgentisError> {
         eprintln!("Usage: agentis colony <subcommand>");
         eprintln!("  status [--workers W] [--secret S] [--json]  Show worker health");
         eprintln!("  ping <addr:port> [--secret S]               Ping a single worker");
+        eprintln!("  history [--limit N]                          Show checkpoint chain");
+        eprintln!("  trace <hash-or-tag>                         Show checkpoint details");
+        eprintln!("  best [--min-score N]                        Find best checkpoint");
         eprintln!("  tags                                        List checkpoint tags");
         eprintln!("  tag <hash> <name>                           Tag a checkpoint");
         process::exit(1);
@@ -809,6 +812,103 @@ fn cmd_colony(args: &[String]) -> Result<(), AgentisError> {
             }
             Ok(())
         }
+        "history" => {
+            let store = checkpoint::CheckpointStore::new(&root);
+            let limit: Option<usize> =
+                parse_flag_value(args, "--limit").and_then(|s| s.parse().ok());
+
+            let head = store
+                .head()
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+            match head {
+                Some(h) => {
+                    let chain = store
+                        .walk_chain(&h, limit)
+                        .map_err(|e| AgentisError::General(format!("{e}")))?;
+                    // Attach tags to checkpoints for display
+                    let tags = store
+                        .list_tags()
+                        .map_err(|e| AgentisError::General(format!("{e}")))?;
+                    let tagged: Vec<(String, checkpoint::GenerationCheckpoint)> = chain
+                        .into_iter()
+                        .map(|(hash, mut ckpt)| {
+                            if ckpt.tag.is_none() {
+                                for (name, th) in &tags {
+                                    if *th == hash {
+                                        ckpt.tag = Some(name.clone());
+                                        break;
+                                    }
+                                }
+                            }
+                            (hash, ckpt)
+                        })
+                        .collect();
+                    print!("{}", checkpoint::format_history(&tagged));
+                }
+                None => {
+                    println!("No checkpoints found. Run 'agentis evolve' first.");
+                }
+            }
+            Ok(())
+        }
+        "trace" => {
+            if args.len() < 2 || args[1].starts_with('-') {
+                eprintln!("Usage: agentis colony trace <hash-or-tag>");
+                process::exit(1);
+            }
+            let store = checkpoint::CheckpointStore::new(&root);
+            let hash = store
+                .resolve(&args[1])
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+            let mut ckpt = store
+                .load(&hash)
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+            // Attach tag if not stored in checkpoint
+            if ckpt.tag.is_none()
+                && let Ok(tags) = store.list_tags()
+            {
+                for (name, th) in &tags {
+                    if *th == hash {
+                        ckpt.tag = Some(name.clone());
+                        break;
+                    }
+                }
+            }
+            print!("{}", checkpoint::format_trace(&hash, &ckpt));
+            Ok(())
+        }
+        "best" => {
+            let store = checkpoint::CheckpointStore::new(&root);
+            let min_score: Option<f64> =
+                parse_flag_value(args, "--min-score").and_then(|s| s.parse().ok());
+
+            let head = store
+                .head()
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+            match head {
+                Some(h) => {
+                    let chain = store
+                        .walk_chain(&h, None)
+                        .map_err(|e| AgentisError::General(format!("{e}")))?;
+                    match checkpoint::find_best(&chain, min_score) {
+                        Some((hash, ckpt)) => {
+                            print!("{}", checkpoint::format_best(hash, ckpt));
+                        }
+                        None => {
+                            if let Some(min) = min_score {
+                                println!("No checkpoint with score >= {:.3} found.", min);
+                            } else {
+                                println!("No checkpoints found.");
+                            }
+                        }
+                    }
+                }
+                None => {
+                    println!("No checkpoints found. Run 'agentis evolve' first.");
+                }
+            }
+            Ok(())
+        }
         "tags" => {
             let store = checkpoint::CheckpointStore::new(&root);
             let tags = store
@@ -841,7 +941,7 @@ fn cmd_colony(args: &[String]) -> Result<(), AgentisError> {
         }
         other => {
             eprintln!("Unknown colony subcommand: {other}");
-            eprintln!("  Available: status, ping, tags, tag");
+            eprintln!("  Available: status, ping, history, trace, best, tags, tag");
             process::exit(1);
         }
     }
