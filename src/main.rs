@@ -2,7 +2,7 @@ mod arena;
 mod ast;
 mod audit;
 mod capabilities;
-#[allow(dead_code)]
+#[allow(dead_code)] // M37/M38 will use remaining methods
 mod checkpoint;
 mod colony;
 mod compiler;
@@ -153,6 +153,11 @@ fn main() {
                 eprintln!("  --stop-on-stall N   Stop if no improvement for N generations");
                 eprintln!("  --show-lineage      Show best agent's lineage");
                 eprintln!("  --clean             Remove old fitness data before running");
+                eprintln!("  --resume <ref>      Resume from checkpoint (hash prefix or tag)");
+                eprintln!(
+                    "  --checkpoint-interval N  Checkpoint every N generations (0=disable, default: 1)"
+                );
+                eprintln!("  --tag <name>        Tag the final checkpoint");
                 eprintln!("  --dry-run           Estimate cost without running");
                 eprintln!("  --threads N         Parallel arena evaluation (default: auto-detect)");
                 eprintln!("  --workers W         Colony workers (addr:port,... or file path)");
@@ -1489,6 +1494,11 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     let threads: Option<usize> = parse_flag_value(args, "--threads").and_then(|s| s.parse().ok());
     let workers_flag = parse_flag_value(args, "--workers");
     let secret_flag = parse_flag_value(args, "--secret");
+    let resume_ref = parse_flag_value(args, "--resume");
+    let checkpoint_interval: usize = parse_flag_value(args, "--checkpoint-interval")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    let tag_name = parse_flag_value(args, "--tag");
 
     // Read seed source
     let seed_source = std::fs::read_to_string(source_file)?;
@@ -1588,22 +1598,90 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         eprintln!("Cleaned old fitness data from {}", fitness_dir.display());
     }
 
+    // Checkpoint store
+    let ckpt_store = checkpoint::CheckpointStore::new(&root);
+
+    // Resume from checkpoint or start fresh
+    let (
+        start_gen,
+        mut parents,
+        mut best_ever_score,
+        mut best_ever_source,
+        mut best_ever_hash,
+        mut stall_count,
+        mut cumulative_cb,
+        mut first_gen_avg_prompts,
+        mut prev_ckpt_hash,
+    ) = if let Some(ref resume) = resume_ref {
+        let hash = ckpt_store
+            .resolve(resume)
+            .map_err(|e| AgentisError::General(format!("resume: {e}")))?;
+        let ckpt = ckpt_store
+            .load(&hash)
+            .map_err(|e| AgentisError::General(format!("resume: {e}")))?;
+
+        // Warn if seed hash differs
+        if ckpt.seed_hash != seed_hash {
+            eprintln!(
+                "Warning: seed hash differs from checkpoint (checkpoint: {}..., current: {}...)",
+                &ckpt.seed_hash[..8.min(ckpt.seed_hash.len())],
+                &seed_hash[..8.min(seed_hash.len())]
+            );
+        }
+
+        let parents_vec: Vec<(String, String)> = ckpt
+            .parents
+            .iter()
+            .map(|p| (p.source.clone(), p.source_hash.clone()))
+            .collect();
+
+        eprintln!(
+            "Resuming from checkpoint {} (gen {})",
+            &hash[..12],
+            ckpt.generation
+        );
+        (
+            ckpt.generation as usize + 1,
+            parents_vec,
+            ckpt.best_ever_score,
+            ckpt.best_ever_source.clone(),
+            ckpt.best_ever_hash.clone(),
+            ckpt.stall_count as usize,
+            ckpt.cumulative_cb,
+            ckpt.first_gen_avg_prompts,
+            Some(hash),
+        )
+    } else {
+        (
+            1,
+            vec![(seed_source.clone(), seed_hash.clone())],
+            0.0,
+            seed_source.clone(),
+            seed_hash.clone(),
+            0,
+            0u64,
+            0.0,
+            None,
+        )
+    };
+
+    let end_gen = start_gen + generations - 1;
+
     eprintln!("Evolution: {}", source_file);
-    eprintln!("  Population: {}, Generations: {}", population, generations);
+    if resume_ref.is_some() {
+        eprintln!(
+            "  Population: {}, Generations: {} (gen {}..{})",
+            population, generations, start_gen, end_gen
+        );
+    } else {
+        eprintln!("  Population: {}, Generations: {}", population, generations);
+    }
     eprintln!();
 
-    // Generation 0: seed
-    let mut parents: Vec<(String, String)> = vec![(seed_source.clone(), seed_hash.clone())];
-    let mut best_ever_score: f64 = 0.0;
-    let mut best_ever_source = seed_source.clone();
-    let mut best_ever_hash = seed_hash.clone();
-    let mut stall_count: usize = 0;
-    let mut cumulative_cb: u64 = 0;
     let mut gen_results: Vec<evolve::GenResult> = Vec::new();
-    let mut first_gen_avg_prompts: f64 = 0.0;
     let mut cb_only_warned = false;
 
-    for g in 1..=generations {
+    for g in start_gen..=end_gen {
         // Generate variants from parents
         let mock_offset = (g - 1) * population;
         let tracked_variants = evolve::generate_tracked_variants(
@@ -1707,7 +1785,7 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
                 / successful.len() as f64
         };
 
-        if g == 1 {
+        if g == start_gen && first_gen_avg_prompts == 0.0 {
             first_gen_avg_prompts = gen_avg_prompts;
         }
 
@@ -1721,16 +1799,6 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
                 cb_only_warned = true;
             }
         }
-
-        // Print generation summary
-        eprintln!(
-            "Gen {:>2}: best={:.3}  avg={:.3}  prompts={:.1}  ({} variants)",
-            g,
-            gen_best,
-            gen_avg,
-            gen_avg_prompts,
-            tracked_variants.len()
-        );
 
         // Save generation best
         let best_variant = &scored[0].0;
@@ -1770,27 +1838,9 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             );
         }
 
-        // Stop-on-stall
-        if let Some(stall_limit) = stop_on_stall
-            && stall_count >= stall_limit
-        {
-            eprintln!(
-                "\nStopped: no improvement for {} generations (score: {:.3})",
-                stall_limit, best_ever_score
-            );
-            break;
-        }
-
-        // Budget cap
-        if let Some(cap) = budget_cap
-            && cumulative_cb >= cap
-        {
-            eprintln!(
-                "\nBudget cap reached at generation {} ({}/{} CB spent)",
-                g, cumulative_cb, cap
-            );
-            break;
-        }
+        // Detect early stop conditions (checked after checkpoint below)
+        let stop_stall = stop_on_stall.is_some_and(|limit| stall_count >= limit);
+        let stop_budget = budget_cap.is_some_and(|cap| cumulative_cb >= cap);
 
         // Select top K = N/2 as parents for next generation
         let k = (population / 2).max(1);
@@ -1799,6 +1849,102 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             .take(k)
             .map(|(v, _)| (v.source.clone(), v.source_hash.clone()))
             .collect();
+
+        // Auto-checkpoint (always checkpoint on last gen or early stop)
+        let is_last = g == end_gen || stop_stall || stop_budget;
+        let should_checkpoint =
+            checkpoint_interval > 0 && (g % checkpoint_interval == 0 || is_last);
+        let ckpt_hash_str = if should_checkpoint {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let gen_ckpt = checkpoint::GenerationCheckpoint {
+                generation: g as u32,
+                parent: prev_ckpt_hash.clone(),
+                seed_hash: seed_hash.clone(),
+                parents: parents
+                    .iter()
+                    .map(|(s, h)| checkpoint::ParentEntry {
+                        source: s.clone(),
+                        source_hash: h.clone(),
+                    })
+                    .collect(),
+                best_ever_score,
+                best_ever_source: best_ever_source.clone(),
+                best_ever_hash: best_ever_hash.clone(),
+                stall_count: stall_count as u32,
+                cumulative_cb,
+                first_gen_avg_prompts,
+                gen_best_score: gen_best,
+                gen_avg_score: gen_avg,
+                gen_avg_prompts,
+                variant_count: tracked_variants.len() as u32,
+                timestamp: ts,
+                tag: None,
+            };
+            let hash = ckpt_store
+                .store(&gen_ckpt)
+                .map_err(|e| AgentisError::General(format!("checkpoint: {e}")))?;
+            ckpt_store
+                .set_head(&hash)
+                .map_err(|e| AgentisError::General(format!("checkpoint HEAD: {e}")))?;
+            prev_ckpt_hash = Some(hash.clone());
+            Some(hash)
+        } else {
+            None
+        };
+
+        // Print generation summary
+        if let Some(ref h) = ckpt_hash_str {
+            eprintln!(
+                "Gen {:>2}: best={:.3}  avg={:.3}  prompts={:.1}  ckpt={}  ({} variants)",
+                g,
+                gen_best,
+                gen_avg,
+                gen_avg_prompts,
+                &h[..8],
+                tracked_variants.len()
+            );
+        } else {
+            eprintln!(
+                "Gen {:>2}: best={:.3}  avg={:.3}  prompts={:.1}  ({} variants)",
+                g,
+                gen_best,
+                gen_avg,
+                gen_avg_prompts,
+                tracked_variants.len()
+            );
+        }
+
+        // Early stop (after checkpoint so last gen is always saved)
+        if stop_stall {
+            eprintln!(
+                "\nStopped: no improvement for {} generations (score: {:.3})",
+                stop_on_stall.unwrap(),
+                best_ever_score
+            );
+            break;
+        }
+        if stop_budget {
+            eprintln!(
+                "\nBudget cap reached at generation {} ({}/{} CB spent)",
+                g,
+                cumulative_cb,
+                budget_cap.unwrap()
+            );
+            break;
+        }
+    }
+
+    // Tag the final checkpoint if --tag specified
+    if let Some(ref tag) = tag_name
+        && let Some(ref hash) = prev_ckpt_hash
+    {
+        ckpt_store
+            .set_tag(tag, hash)
+            .map_err(|e| AgentisError::General(format!("tag: {e}")))?;
+        eprintln!("Tagged checkpoint {} as '{tag}'", &hash[..12]);
     }
 
     // Write best-of-run

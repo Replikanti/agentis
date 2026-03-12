@@ -58,7 +58,7 @@ Storage: AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (608)
+cargo test                     # Run all tests (614)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
@@ -102,6 +102,9 @@ cargo run -- evolve file.ag -g 10 -n 8      # Evolution: 10 gens, pop 8
 cargo run -- evolve file.ag --dry-run -g 10 -n 8  # Estimate cost
 cargo run -- evolve file.ag -g 5 -n 4 --show-lineage --out evolved/
 cargo run -- evolve file.ag -g 20 -n 8 --stop-on-stall 5
+cargo run -- evolve file.ag --resume ab3f -g 10 -n 8  # Resume from checkpoint
+cargo run -- evolve file.ag -g 10 -n 8 --tag "exp-a"  # Tag final checkpoint
+cargo run -- evolve file.ag -g 100 --checkpoint-interval 5  # Checkpoint every 5 gens
 cargo run -- lineage evolved/variant.ag     # Trace ancestry to seed
 ```
 
@@ -152,3 +155,8 @@ cargo run -- lineage evolved/variant.ag     # Trace ancestry to seed
 - **Colony Arena (M33):** `agentis arena dir/ --workers host1:port,host2:port [--secret S]` distributes evaluation across workers. Round-robin distribution. Graceful fallback to local on worker failure with reason (connection refused/auth failed/timeout/protocol error). `--workers workers.txt` reads from file. `colony.workers` and `colony.secret` in config.
 - **Colony Observability (M34):** `agentis colony status [--workers W] [--json]` shows worker health table. `agentis colony ping addr:port` for single-worker diagnostics. Reports backend name, eval stats, busy status, roundtrip time.
 - **Protocol Extension:** Same binary framing as sync. EVAL(0x05)/RESULT(0x06) for evaluation, PING(0x07)/PONG(0x08) for health, AUTH(0x09)/AUTH_OK(0x0A)/AUTH_FAIL(0x0B) for auth handshake.
+
+## Phase 9 Features (Evolution Checkpoints — in progress)
+
+- **Checkpoint Store (M35):** Content-addressed checkpoint storage in `.agentis/colony/`. `GenerationCheckpoint` with binary serialization (magic `AGCK`, version 1). `CheckpointStore` with store/load, HEAD pointer, named tags, prefix matching, chain walking. Same SHA-256 fan-out layout as ObjectStore.
+- **Auto-Checkpoint + Resume (M36):** `agentis evolve` auto-checkpoints after each generation (configurable via `--checkpoint-interval N`, 0 disables). `--resume <hash-or-tag>` restores evolution state (parents, best_ever_*, stall_count, cumulative_cb) and continues from checkpoint.generation + 1. `--tag <name>` tags the final checkpoint. Always checkpoints on last generation (including early stops). Generation summary shows `ckpt=<hash_prefix>`.

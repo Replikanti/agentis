@@ -177,7 +177,7 @@ more workers).
 ## Milestones
 
 - [x] M35: Checkpoint Store
-- [ ] M36: Auto-Checkpoint + Resume
+- [x] M36: Auto-Checkpoint + Resume
 - [ ] M37: Colony History CLI
 - [ ] M38: Garbage Collection
 
