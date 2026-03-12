@@ -1136,15 +1136,15 @@ pub fn format_status_table(statuses: &[WorkerStatus]) -> String {
     let total_failed: u32 = statuses.iter()
         .filter_map(|s| s.pong.as_ref().map(|p| p.evals_failed))
         .sum();
-    let latencies: Vec<u64> = statuses.iter()
-        .filter_map(|s| s.latency_ms)
+    let eval_times: Vec<u64> = statuses.iter()
+        .filter_map(|s| s.pong.as_ref().map(|p| p.avg_eval_ms))
         .collect();
-    let avg_latency = if latencies.is_empty() { 0 } else {
-        latencies.iter().sum::<u64>() / latencies.len() as u64
+    let avg_eval = if eval_times.is_empty() { 0 } else {
+        eval_times.iter().sum::<u64>() / eval_times.len() as u64
     };
 
-    out.push_str(&format!("\nSummary: {}/{} online, {} evals completed, {} failed, avg latency {}ms\n",
-        online, statuses.len(), total_evals, total_failed, avg_latency));
+    out.push_str(&format!("\nSummary: {}/{} online, {} evals completed, {} failed, avg {}ms\n",
+        online, statuses.len(), total_evals, total_failed, avg_eval));
 
     out
 }
@@ -2154,6 +2154,8 @@ mod tests {
         assert!(table.contains("10.0.0.2:9462"), "got: {table}");
         assert!(table.contains("offline"), "got: {table}");
         assert!(table.contains("1/2 online"), "got: {table}");
+        // Summary averages worker eval times (avg_eval_ms), not PING latencies
+        assert!(table.contains("avg 150ms"), "got: {table}");
     }
 
     #[test]
