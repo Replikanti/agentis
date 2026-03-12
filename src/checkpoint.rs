@@ -499,6 +499,231 @@ impl CheckpointStore {
 
         Ok(chain)
     }
+    /// Delete a checkpoint object by hash. Returns freed bytes.
+    pub fn delete(&self, hash: &str) -> Result<u64, CheckpointError> {
+        let path = self.object_path(hash);
+        if !path.exists() {
+            return Ok(0);
+        }
+        let size = fs::metadata(&path)?.len();
+        fs::remove_file(&path)?;
+        // Remove empty prefix directory
+        if let Some(parent) = path.parent() {
+            let _ = fs::remove_dir(parent); // ignore error if not empty
+        }
+        Ok(size)
+    }
+
+    /// Garbage collect unreachable checkpoint objects.
+    ///
+    /// Mark phase: walk HEAD chain + all tagged checkpoints → mark reachable.
+    /// Age filter: if `older_than_ms` set, unmark old checkpoints (respect `except_tagged`).
+    /// Sweep: delete all unmarked objects.
+    pub fn gc(&self, opts: &GcOptions) -> Result<GcResult, CheckpointError> {
+        let all_hashes = self.list_all()?;
+        let total_scanned = all_hashes.len();
+
+        if total_scanned == 0 {
+            return Ok(GcResult {
+                scanned: 0,
+                kept_chain: 0,
+                kept_tagged: 0,
+                removed: 0,
+                freed_bytes: 0,
+                would_remove: Vec::new(),
+            });
+        }
+
+        // Collect all checkpoint data (needed for timestamp checks)
+        let mut all_checkpoints: std::collections::HashMap<String, GenerationCheckpoint> =
+            std::collections::HashMap::new();
+        for hash in &all_hashes {
+            if let Ok(ckpt) = self.load(hash) {
+                all_checkpoints.insert(hash.clone(), ckpt);
+            }
+        }
+
+        // Mark phase: HEAD chain
+        let mut chain_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if let Ok(Some(head)) = self.head() {
+            let mut current = Some(head);
+            while let Some(hash) = current {
+                chain_set.insert(hash.clone());
+                current = all_checkpoints.get(&hash).and_then(|c| c.parent.clone());
+            }
+        }
+
+        // Mark phase: tagged checkpoints
+        let tags = self.list_tags().unwrap_or_default();
+        let mut tagged_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (_, hash) in &tags {
+            tagged_set.insert(hash.clone());
+        }
+
+        // Determine the current timestamp for age filtering
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        // Build keep/remove sets
+        let mut kept_chain = 0usize;
+        let mut kept_tagged = 0usize;
+        let mut to_remove: Vec<String> = Vec::new();
+
+        for hash in &all_hashes {
+            let is_head = self.head().ok().flatten().as_deref() == Some(hash.as_str());
+            let in_chain = chain_set.contains(hash);
+            let is_tagged = tagged_set.contains(hash);
+
+            // HEAD is never deleted
+            if is_head {
+                kept_chain += 1;
+                continue;
+            }
+
+            // Age filter: if --older-than specified, check timestamp
+            if let Some(age_ms) = opts.older_than_ms {
+                if let Some(ckpt) = all_checkpoints.get(hash) {
+                    let age = now_ms.saturating_sub(ckpt.timestamp);
+                    if age >= age_ms {
+                        // Old enough to consider removal
+                        if is_tagged && opts.except_tagged {
+                            kept_tagged += 1;
+                            continue;
+                        }
+                        if is_tagged && !opts.force {
+                            kept_tagged += 1;
+                            continue;
+                        }
+                        to_remove.push(hash.clone());
+                        continue;
+                    }
+                }
+                // Not old enough — keep if in chain or tagged
+                if in_chain {
+                    kept_chain += 1;
+                } else if is_tagged {
+                    kept_tagged += 1;
+                } else {
+                    // Orphaned but not old enough? Still remove orphans.
+                    to_remove.push(hash.clone());
+                }
+                continue;
+            }
+
+            // No age filter: keep chain + tagged, remove orphans
+            if in_chain {
+                kept_chain += 1;
+            } else if is_tagged && !opts.force {
+                kept_tagged += 1;
+            } else {
+                to_remove.push(hash.clone());
+            }
+        }
+
+        if opts.dry_run {
+            return Ok(GcResult {
+                scanned: total_scanned,
+                kept_chain,
+                kept_tagged,
+                removed: to_remove.len(),
+                freed_bytes: 0,
+                would_remove: to_remove,
+            });
+        }
+
+        // Sweep phase
+        let mut freed_bytes = 0u64;
+        for hash in &to_remove {
+            freed_bytes += self.delete(hash)?;
+        }
+
+        Ok(GcResult {
+            scanned: total_scanned,
+            kept_chain,
+            kept_tagged,
+            removed: to_remove.len(),
+            freed_bytes,
+            would_remove: Vec::new(),
+        })
+    }
+}
+
+/// Options for garbage collection.
+pub struct GcOptions {
+    pub older_than_ms: Option<u64>,
+    pub except_tagged: bool,
+    pub force: bool,
+    pub dry_run: bool,
+}
+
+/// Result of garbage collection.
+pub struct GcResult {
+    pub scanned: usize,
+    pub kept_chain: usize,
+    pub kept_tagged: usize,
+    pub removed: usize,
+    pub freed_bytes: u64,
+    pub would_remove: Vec<String>,
+}
+
+/// Format GC result for display.
+pub fn format_gc(result: &GcResult, dry_run: bool) -> String {
+    let mut out = String::new();
+    if dry_run {
+        out.push_str(&format!(
+            "Colony GC (dry run): {} checkpoints scanned\n",
+            result.scanned
+        ));
+    } else {
+        out.push_str(&format!(
+            "Colony GC: {} checkpoints scanned\n",
+            result.scanned
+        ));
+    }
+    out.push_str(&format!(
+        "  Kept:    {} (HEAD chain) + {} (tagged)\n",
+        result.kept_chain, result.kept_tagged
+    ));
+
+    if dry_run {
+        out.push_str(&format!("  Would remove: {} checkpoints\n", result.removed));
+        for hash in &result.would_remove {
+            out.push_str(&format!("    {}\n", &hash[..12.min(hash.len())]));
+        }
+    } else {
+        let freed = format_bytes(result.freed_bytes);
+        out.push_str(&format!(
+            "  Removed: {} checkpoints ({freed} freed)\n",
+            result.removed
+        ));
+    }
+    out
+}
+
+/// Format byte count as human-readable (B, KB, MB).
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1_048_576 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// Parse a duration string like "7d", "30d", "24h" to milliseconds.
+pub fn parse_duration_ms(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if let Some(num) = s.strip_suffix('d') {
+        num.parse::<u64>().ok().map(|d| d * 86_400_000)
+    } else if let Some(num) = s.strip_suffix('h') {
+        num.parse::<u64>().ok().map(|h| h * 3_600_000)
+    } else {
+        // Try as days by default
+        s.parse::<u64>().ok().map(|d| d * 86_400_000)
+    }
 }
 
 // --- Formatting ---
@@ -1422,5 +1647,323 @@ mod tests {
     fn find_best_empty() {
         let chain: Vec<(String, GenerationCheckpoint)> = vec![];
         assert!(find_best(&chain, None).is_none());
+    }
+
+    // --- M38: GC tests ---
+
+    fn make_checkpoint_with_ts(
+        generation: u32,
+        parent: Option<&str>,
+        timestamp: u64,
+    ) -> GenerationCheckpoint {
+        let mut ckpt = make_checkpoint(generation, parent, None);
+        ckpt.timestamp = timestamp;
+        ckpt
+    }
+
+    #[test]
+    fn gc_empty_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CheckpointStore::new(dir.path());
+        store.init().unwrap();
+
+        let opts = GcOptions {
+            older_than_ms: None,
+            except_tagged: false,
+            force: false,
+            dry_run: false,
+        };
+        let result = store.gc(&opts).unwrap();
+        assert_eq!(result.scanned, 0);
+        assert_eq!(result.removed, 0);
+    }
+
+    #[test]
+    fn gc_keeps_head_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CheckpointStore::new(dir.path());
+
+        let h1 = store.store(&make_checkpoint(1, None, None)).unwrap();
+        let h2 = store.store(&make_checkpoint(2, Some(&h1), None)).unwrap();
+        let h3 = store.store(&make_checkpoint(3, Some(&h2), None)).unwrap();
+        store.set_head(&h3).unwrap();
+
+        let opts = GcOptions {
+            older_than_ms: None,
+            except_tagged: false,
+            force: false,
+            dry_run: false,
+        };
+        let result = store.gc(&opts).unwrap();
+        assert_eq!(result.scanned, 3);
+        assert_eq!(result.kept_chain, 3);
+        assert_eq!(result.removed, 0);
+
+        // All still exist
+        assert!(store.exists(&h1));
+        assert!(store.exists(&h2));
+        assert!(store.exists(&h3));
+    }
+
+    #[test]
+    fn gc_removes_orphans() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CheckpointStore::new(dir.path());
+
+        // Chain A: gen 1 → gen 2 (HEAD)
+        let a1 = store.store(&make_checkpoint(1, None, None)).unwrap();
+        let a2 = store.store(&make_checkpoint(2, Some(&a1), None)).unwrap();
+        store.set_head(&a2).unwrap();
+
+        // Orphan: gen 10 with different parent (not in chain A)
+        let mut orphan = make_checkpoint(10, Some("nonexistent"), None);
+        orphan.best_ever_score = 0.5; // different content so different hash
+        let o_hash = store.store(&orphan).unwrap();
+
+        let opts = GcOptions {
+            older_than_ms: None,
+            except_tagged: false,
+            force: false,
+            dry_run: false,
+        };
+        let result = store.gc(&opts).unwrap();
+        assert_eq!(result.scanned, 3);
+        assert_eq!(result.kept_chain, 2);
+        assert_eq!(result.removed, 1);
+
+        assert!(store.exists(&a1));
+        assert!(store.exists(&a2));
+        assert!(!store.exists(&o_hash));
+    }
+
+    #[test]
+    fn gc_keeps_tagged() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CheckpointStore::new(dir.path());
+
+        let h1 = store.store(&make_checkpoint(1, None, None)).unwrap();
+        store.set_head(&h1).unwrap();
+
+        // Orphan but tagged
+        let mut orphan = make_checkpoint(5, None, None);
+        orphan.best_ever_score = 0.123;
+        let o_hash = store.store(&orphan).unwrap();
+        store.set_tag("keep-me", &o_hash).unwrap();
+
+        let opts = GcOptions {
+            older_than_ms: None,
+            except_tagged: false,
+            force: false,
+            dry_run: false,
+        };
+        let result = store.gc(&opts).unwrap();
+        assert_eq!(result.kept_tagged, 1);
+        assert_eq!(result.removed, 0);
+        assert!(store.exists(&o_hash));
+    }
+
+    #[test]
+    fn gc_force_removes_tagged() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CheckpointStore::new(dir.path());
+
+        let h1 = store.store(&make_checkpoint(1, None, None)).unwrap();
+        store.set_head(&h1).unwrap();
+
+        let mut orphan = make_checkpoint(5, None, None);
+        orphan.best_ever_score = 0.123;
+        let o_hash = store.store(&orphan).unwrap();
+        store.set_tag("removable", &o_hash).unwrap();
+
+        let opts = GcOptions {
+            older_than_ms: None,
+            except_tagged: false,
+            force: true,
+            dry_run: false,
+        };
+        let result = store.gc(&opts).unwrap();
+        assert_eq!(result.removed, 1);
+        assert!(!store.exists(&o_hash));
+    }
+
+    #[test]
+    fn gc_dry_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CheckpointStore::new(dir.path());
+
+        let h1 = store.store(&make_checkpoint(1, None, None)).unwrap();
+        store.set_head(&h1).unwrap();
+
+        let mut orphan = make_checkpoint(5, None, None);
+        orphan.best_ever_score = 0.123;
+        let o_hash = store.store(&orphan).unwrap();
+
+        let opts = GcOptions {
+            older_than_ms: None,
+            except_tagged: false,
+            force: false,
+            dry_run: true,
+        };
+        let result = store.gc(&opts).unwrap();
+        assert_eq!(result.removed, 1);
+        assert_eq!(result.would_remove.len(), 1);
+        assert_eq!(result.would_remove[0], o_hash);
+        // Still exists (dry run)
+        assert!(store.exists(&o_hash));
+    }
+
+    #[test]
+    fn gc_older_than() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CheckpointStore::new(dir.path());
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        // Old checkpoint (30 days ago)
+        let old = make_checkpoint_with_ts(1, None, now_ms - 30 * 86_400_000);
+        let h_old = store.store(&old).unwrap();
+
+        // Recent checkpoint (1 hour ago) pointing to old
+        let recent = make_checkpoint_with_ts(2, Some(&h_old), now_ms - 3_600_000);
+        let h_recent = store.store(&recent).unwrap();
+        store.set_head(&h_recent).unwrap();
+
+        // GC with --older-than 7d: should remove old, keep recent
+        let opts = GcOptions {
+            older_than_ms: Some(7 * 86_400_000),
+            except_tagged: false,
+            force: false,
+            dry_run: false,
+        };
+        let result = store.gc(&opts).unwrap();
+        assert_eq!(result.removed, 1);
+        assert!(!store.exists(&h_old));
+        assert!(store.exists(&h_recent));
+    }
+
+    #[test]
+    fn gc_older_than_except_tagged() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CheckpointStore::new(dir.path());
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        // Old checkpoint (30 days ago), tagged
+        let old = make_checkpoint_with_ts(1, None, now_ms - 30 * 86_400_000);
+        let h_old = store.store(&old).unwrap();
+        store.set_tag("important", &h_old).unwrap();
+
+        // Recent HEAD
+        let recent = make_checkpoint_with_ts(2, None, now_ms - 3_600_000);
+        let h_recent = store.store(&recent).unwrap();
+        store.set_head(&h_recent).unwrap();
+
+        // GC with --older-than 7d --except-tagged: old is kept because tagged
+        let opts = GcOptions {
+            older_than_ms: Some(7 * 86_400_000),
+            except_tagged: true,
+            force: false,
+            dry_run: false,
+        };
+        let result = store.gc(&opts).unwrap();
+        assert_eq!(result.removed, 0);
+        assert_eq!(result.kept_tagged, 1);
+        assert!(store.exists(&h_old));
+    }
+
+    #[test]
+    fn gc_head_never_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CheckpointStore::new(dir.path());
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        // Old HEAD (100 days ago)
+        let old_head = make_checkpoint_with_ts(1, None, now_ms - 100 * 86_400_000);
+        let h = store.store(&old_head).unwrap();
+        store.set_head(&h).unwrap();
+
+        // Even with aggressive age filter, HEAD survives
+        let opts = GcOptions {
+            older_than_ms: Some(1), // 1ms — everything is older
+            except_tagged: false,
+            force: true,
+            dry_run: false,
+        };
+        let result = store.gc(&opts).unwrap();
+        assert_eq!(result.removed, 0);
+        assert!(store.exists(&h));
+    }
+
+    #[test]
+    fn parse_duration_days() {
+        assert_eq!(parse_duration_ms("7d"), Some(7 * 86_400_000));
+        assert_eq!(parse_duration_ms("30d"), Some(30 * 86_400_000));
+    }
+
+    #[test]
+    fn parse_duration_hours() {
+        assert_eq!(parse_duration_ms("24h"), Some(24 * 3_600_000));
+    }
+
+    #[test]
+    fn parse_duration_bare_number() {
+        assert_eq!(parse_duration_ms("7"), Some(7 * 86_400_000));
+    }
+
+    #[test]
+    fn parse_duration_invalid() {
+        assert_eq!(parse_duration_ms("abc"), None);
+        assert_eq!(parse_duration_ms(""), None);
+    }
+
+    #[test]
+    fn format_gc_report() {
+        let result = GcResult {
+            scanned: 45,
+            kept_chain: 12,
+            kept_tagged: 3,
+            removed: 30,
+            freed_bytes: 1_258_291,
+            would_remove: Vec::new(),
+        };
+        let out = format_gc(&result, false);
+        assert!(out.contains("45 checkpoints scanned"));
+        assert!(out.contains("12 (HEAD chain)"));
+        assert!(out.contains("3 (tagged)"));
+        assert!(out.contains("30 checkpoints"));
+        assert!(out.contains("1.2 MB"));
+    }
+
+    #[test]
+    fn format_gc_dry_run_report() {
+        let result = GcResult {
+            scanned: 5,
+            kept_chain: 3,
+            kept_tagged: 0,
+            removed: 2,
+            freed_bytes: 0,
+            would_remove: vec!["abcd1234567890".to_string(), "ef5678901234".to_string()],
+        };
+        let out = format_gc(&result, true);
+        assert!(out.contains("dry run"));
+        assert!(out.contains("Would remove: 2"));
+        assert!(out.contains("abcd12345678"));
+    }
+
+    #[test]
+    fn format_bytes_ranges() {
+        assert_eq!(format_bytes(500), "500 B");
+        assert_eq!(format_bytes(2048), "2.0 KB");
+        assert_eq!(format_bytes(1_572_864), "1.5 MB");
     }
 }

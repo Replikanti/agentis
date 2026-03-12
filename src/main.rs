@@ -758,6 +758,7 @@ fn cmd_colony(args: &[String]) -> Result<(), AgentisError> {
         eprintln!("  best [--min-score N]                        Find best checkpoint");
         eprintln!("  tags                                        List checkpoint tags");
         eprintln!("  tag <hash> <name>                           Tag a checkpoint");
+        eprintln!("  gc [--older-than D] [--except-tagged] [--dry-run]  Garbage collect");
         process::exit(1);
     }
 
@@ -939,9 +940,40 @@ fn cmd_colony(args: &[String]) -> Result<(), AgentisError> {
             println!("Tagged {} as '{name}'", &hash[..12]);
             Ok(())
         }
+        "gc" => {
+            let store = checkpoint::CheckpointStore::new(&root);
+            let older_than_str = parse_flag_value(args, "--older-than");
+            let except_tagged = args.iter().any(|a| a == "--except-tagged");
+            let dry_run = args.iter().any(|a| a == "--dry-run");
+            let force = args.iter().any(|a| a == "--force");
+
+            let older_than_ms = match older_than_str {
+                Some(s) => match checkpoint::parse_duration_ms(&s) {
+                    Some(ms) => Some(ms),
+                    None => {
+                        eprintln!("Invalid duration: '{s}'. Use e.g. '7d', '30d', '24h'.");
+                        process::exit(1);
+                    }
+                },
+                None => None,
+            };
+
+            let opts = checkpoint::GcOptions {
+                older_than_ms,
+                except_tagged,
+                force,
+                dry_run,
+            };
+
+            let result = store
+                .gc(&opts)
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+            print!("{}", checkpoint::format_gc(&result, dry_run));
+            Ok(())
+        }
         other => {
             eprintln!("Unknown colony subcommand: {other}");
-            eprintln!("  Available: status, ping, history, trace, best, tags, tag");
+            eprintln!("  Available: status, ping, history, trace, best, tags, tag, gc");
             process::exit(1);
         }
     }
