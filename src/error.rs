@@ -37,37 +37,55 @@ impl std::fmt::Display for AgentisError {
 }
 
 impl From<LexerError> for AgentisError {
-    fn from(e: LexerError) -> Self { AgentisError::Lexer(e) }
+    fn from(e: LexerError) -> Self {
+        AgentisError::Lexer(e)
+    }
 }
 
 impl From<ParseError> for AgentisError {
-    fn from(e: ParseError) -> Self { AgentisError::Parse(e) }
+    fn from(e: ParseError) -> Self {
+        AgentisError::Parse(e)
+    }
 }
 
 impl From<EvalError> for AgentisError {
-    fn from(e: EvalError) -> Self { AgentisError::Eval(e) }
+    fn from(e: EvalError) -> Self {
+        AgentisError::Eval(e)
+    }
 }
 
 impl From<CompileError> for AgentisError {
-    fn from(e: CompileError) -> Self { AgentisError::Compile(e) }
+    fn from(e: CompileError) -> Self {
+        AgentisError::Compile(e)
+    }
 }
 
 impl From<SnapshotError> for AgentisError {
-    fn from(e: SnapshotError) -> Self { AgentisError::Snapshot(e) }
+    fn from(e: SnapshotError) -> Self {
+        AgentisError::Snapshot(e)
+    }
 }
 
 impl From<StorageError> for AgentisError {
-    fn from(e: StorageError) -> Self { AgentisError::Storage(e) }
+    fn from(e: StorageError) -> Self {
+        AgentisError::Storage(e)
+    }
 }
 
 impl From<RefsError> for AgentisError {
-    fn from(e: RefsError) -> Self { AgentisError::Refs(e) }
+    fn from(e: RefsError) -> Self {
+        AgentisError::Refs(e)
+    }
 }
 
 impl From<std::io::Error> for AgentisError {
-    fn from(e: std::io::Error) -> Self { AgentisError::Io(e) }
+    fn from(e: std::io::Error) -> Self {
+        AgentisError::Io(e)
+    }
 }
 
 impl From<String> for AgentisError {
-    fn from(msg: String) -> Self { AgentisError::General(msg) }
+    fn from(msg: String) -> Self {
+        AgentisError::General(msg)
+    }
 }

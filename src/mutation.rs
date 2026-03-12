@@ -19,8 +19,7 @@ pub struct AgentInfo {
 
 /// Extract all agent declarations and their prompt instructions from source.
 pub fn extract_agents(source: &str) -> Result<Vec<AgentInfo>, String> {
-    let program = Parser::parse_source(source)
-        .map_err(|e| format!("parse error: {e}"))?;
+    let program = Parser::parse_source(source).map_err(|e| format!("parse error: {e}"))?;
     let mut agents = Vec::new();
     for decl in &program.declarations {
         if let Declaration::Agent(agent) = decl {
@@ -58,10 +57,20 @@ fn find_prompt_in_expr(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Prompt(p) => Some(p.instruction.clone()),
         Expr::If(if_expr) => {
-            if let Some(i) = find_prompt_in_expr(&if_expr.condition) { return Some(i); }
-            for s in &if_expr.then_block.statements { if let Some(i) = find_prompt_in_statement(s) { return Some(i); } }
+            if let Some(i) = find_prompt_in_expr(&if_expr.condition) {
+                return Some(i);
+            }
+            for s in &if_expr.then_block.statements {
+                if let Some(i) = find_prompt_in_statement(s) {
+                    return Some(i);
+                }
+            }
             if let Some(ref eb) = if_expr.else_block {
-                for s in &eb.statements { if let Some(i) = find_prompt_in_statement(s) { return Some(i); } }
+                for s in &eb.statements {
+                    if let Some(i) = find_prompt_in_statement(s) {
+                        return Some(i);
+                    }
+                }
             }
             None
         }
@@ -72,13 +81,13 @@ fn find_prompt_in_expr(expr: &Expr) -> Option<String> {
 // --- Mock perturbations ---
 
 const MOCK_PERTURBATIONS: &[(&str, &str)] = &[
-    ("Carefully ", ""),            // prepend
-    ("", " Be precise."),         // append
-    ("Step by step: ", ""),       // prepend
-    ("", " Think twice."),        // append
-    ("As an expert, ", ""),       // prepend
-    ("", " Be thorough."),        // append
-    ("Concisely ", ""),           // prepend
+    ("Carefully ", ""),               // prepend
+    ("", " Be precise."),             // append
+    ("Step by step: ", ""),           // prepend
+    ("", " Think twice."),            // append
+    ("As an expert, ", ""),           // prepend
+    ("", " Be thorough."),            // append
+    ("Concisely ", ""),               // prepend
     ("", " Double-check your work."), // append
 ];
 
@@ -121,7 +130,11 @@ pub fn llm_mutate(
 /// Replace the first occurrence of a prompt instruction string literal in source.
 /// Searches for `"<old_instruction>"` and replaces with `"<new_instruction>"`.
 /// Returns the modified source, or None if the instruction was not found.
-pub fn replace_instruction(source: &str, old_instruction: &str, new_instruction: &str) -> Option<String> {
+pub fn replace_instruction(
+    source: &str,
+    old_instruction: &str,
+    new_instruction: &str,
+) -> Option<String> {
     // Build the quoted string to search for.
     // We need to match the escaped form as it appears in source.
     let old_quoted = format!("\"{}\"", escape_for_source(old_instruction));
@@ -179,8 +192,15 @@ pub fn generate_variants(
         Some(name) => {
             let filtered: Vec<&AgentInfo> = agents.iter().filter(|a| a.name == name).collect();
             if filtered.is_empty() {
-                return Err(format!("agent '{}' not found. Available: {}", name,
-                    agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ")));
+                return Err(format!(
+                    "agent '{}' not found. Available: {}",
+                    name,
+                    agents
+                        .iter()
+                        .map(|a| a.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
             }
             filtered
         }
@@ -203,7 +223,12 @@ pub fn generate_variants(
 
         // Replace in source
         let new_source = replace_instruction(source, &agent.instruction, &new_instruction)
-            .ok_or_else(|| format!("could not find instruction literal for agent '{}'", agent.name))?;
+            .ok_or_else(|| {
+                format!(
+                    "could not find instruction literal for agent '{}'",
+                    agent.name
+                )
+            })?;
 
         let filename = format!("{}-m{}.ag", base_name, i + 1);
         variants.push(MutationResult {
@@ -226,10 +251,13 @@ pub fn format_dry_run(
 ) -> String {
     format!(
         "Variant {}/{}:\n  Agent: {}\n  Old:  \"{}\"\n  New:  \"{}\"",
-        index + 1, total, agent_name, old_instruction, new_instruction
+        index + 1,
+        total,
+        agent_name,
+        old_instruction,
+        new_instruction
     )
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -289,7 +317,10 @@ mod tests {
     fn replace_instruction_basic() {
         let source = r#"let r = prompt("Hello world", x) -> string;"#;
         let result = replace_instruction(source, "Hello world", "Greetings planet").unwrap();
-        assert_eq!(result, r#"let r = prompt("Greetings planet", x) -> string;"#);
+        assert_eq!(
+            result,
+            r#"let r = prompt("Greetings planet", x) -> string;"#
+        );
     }
 
     #[test]
@@ -358,7 +389,8 @@ mod tests {
             }
         "#;
         let backend = crate::llm::MockBackend;
-        let err = generate_variants(source, "test", 1, Some("nonexistent"), &backend, None).unwrap_err();
+        let err =
+            generate_variants(source, "test", 1, Some("nonexistent"), &backend, None).unwrap_err();
         assert!(err.contains("not found"));
         assert!(err.contains("Available: a"));
     }
@@ -373,7 +405,13 @@ mod tests {
 
     #[test]
     fn dry_run_format() {
-        let text = format_dry_run(0, 5, "classifier", "Classify text", "Step by step: Classify text");
+        let text = format_dry_run(
+            0,
+            5,
+            "classifier",
+            "Classify text",
+            "Step by step: Classify text",
+        );
         assert!(text.contains("Variant 1/5:"));
         assert!(text.contains("Agent: classifier"));
         assert!(text.contains("Old:  \"Classify text\""));

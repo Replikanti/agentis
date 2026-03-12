@@ -99,7 +99,10 @@ pub fn generate_tracked_variants(
             None => agents.iter().collect(),
         };
         if eligible.is_empty() {
-            return Err(format!("agent filter '{}' matched no agents", agent_filter.unwrap_or("")));
+            return Err(format!(
+                "agent filter '{}' matched no agents",
+                agent_filter.unwrap_or("")
+            ));
         }
 
         let agent = eligible[i % eligible.len()];
@@ -109,8 +112,14 @@ pub fn generate_tracked_variants(
             mutation::llm_mutate(&agent.instruction, backend, custom_template)?
         };
 
-        let new_source = mutation::replace_instruction(parent_source, &agent.instruction, &new_instruction)
-            .ok_or_else(|| format!("could not find instruction literal for agent '{}'", agent.name))?;
+        let new_source =
+            mutation::replace_instruction(parent_source, &agent.instruction, &new_instruction)
+                .ok_or_else(|| {
+                    format!(
+                        "could not find instruction literal for agent '{}'",
+                        agent.name
+                    )
+                })?;
 
         let new_hash = hash_source(&new_source);
         let filename = format!("{}-g{:02}-m{}.ag", base_name, generation, i + 1);
@@ -148,17 +157,28 @@ pub fn write_generation_jsonl(
         .as_secs();
 
     for (variant, arena_entry) in entries {
-        let mutations_json: Vec<json::JsonValue> = variant.mutated_agents.iter()
+        let mutations_json: Vec<json::JsonValue> = variant
+            .mutated_agents
+            .iter()
             .map(|s| json::JsonValue::String(s.clone()))
             .collect();
 
         let mut fields: Vec<(&str, json::JsonValue)> = vec![
             ("ts", json::JsonValue::Int(ts as i64)),
             ("gen", json::JsonValue::Int(generation as i64)),
-            ("source_hash", json::JsonValue::String(variant.source_hash.clone())),
-            ("parent_hash", json::JsonValue::String(variant.parent_hash.clone())),
+            (
+                "source_hash",
+                json::JsonValue::String(variant.source_hash.clone()),
+            ),
+            (
+                "parent_hash",
+                json::JsonValue::String(variant.parent_hash.clone()),
+            ),
             ("score", json::JsonValue::Float(arena_entry.score)),
-            ("prompt_count", json::JsonValue::Int(arena_entry.prompt_count as i64)),
+            (
+                "prompt_count",
+                json::JsonValue::Int(arena_entry.prompt_count as i64),
+            ),
             ("mutations", json::JsonValue::Array(mutations_json)),
             ("weights", json::JsonValue::String(weights.to_string())),
         ];
@@ -200,27 +220,48 @@ pub fn load_lineage(fitness_dir: &Path) -> HashMap<String, LineageEntry> {
             Err(_) => continue,
         };
         for line in content.lines() {
-            if line.trim().is_empty() { continue; }
+            if line.trim().is_empty() {
+                continue;
+            }
             if let Ok(val) = crate::json::parse(line) {
-                let source_hash = val.get("source_hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let parent_hash = val.get("parent_hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let source_hash = val
+                    .get("source_hash")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let parent_hash = val
+                    .get("parent_hash")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let generation = val.get("gen").and_then(|v| v.as_i64()).unwrap_or(0) as usize;
                 let score = val.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                let prompt_count = val.get("prompt_count").and_then(|v| v.as_i64()).unwrap_or(0) as usize;
-                let mutations = val.get("mutations")
+                let prompt_count = val
+                    .get("prompt_count")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0) as usize;
+                let mutations = val
+                    .get("mutations")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
                     .unwrap_or_default();
 
                 if !source_hash.is_empty() {
-                    map.insert(source_hash.clone(), LineageEntry {
-                        source_hash,
-                        parent_hash,
-                        generation,
-                        score,
-                        prompt_count,
-                        mutations,
-                    });
+                    map.insert(
+                        source_hash.clone(),
+                        LineageEntry {
+                            source_hash,
+                            parent_hash,
+                            generation,
+                            score,
+                            prompt_count,
+                            mutations,
+                        },
+                    );
                 }
             }
         }
@@ -245,7 +286,9 @@ pub fn trace_lineage(
             let label = if entry.generation == 0 {
                 seed_name.to_string()
             } else {
-                let mutation_suffix = entry.mutations.first()
+                let mutation_suffix = entry
+                    .mutations
+                    .first()
                     .map(|m| format!(" [{}]", m))
                     .unwrap_or_default();
                 format!("g{}{}", entry.generation, mutation_suffix)
@@ -268,12 +311,14 @@ pub fn trace_lineage(
 
 /// Format lineage chain as a human-readable string.
 pub fn format_lineage(chain: &[(String, Option<f64>)]) -> String {
-    chain.iter().map(|(label, score)| {
-        match score {
+    chain
+        .iter()
+        .map(|(label, score)| match score {
             Some(s) => format!("{} ({:.3})", label, s),
             None => label.clone(),
-        }
-    }).collect::<Vec<_>>().join(" → ")
+        })
+        .collect::<Vec<_>>()
+        .join(" → ")
 }
 
 /// Format dry-run cost estimation.
@@ -295,8 +340,10 @@ pub fn format_dry_run(
     out.push_str(&format!("  Population:        {}\n", population));
     out.push_str(&format!("  Total mutations:   {}\n", total_mutations));
     out.push_str(&format!("  Total evaluations: {}\n", total_evaluations));
-    out.push_str(&format!("  Est. prompt calls: {} ({} per eval × {} evals)\n",
-        est_prompts, prompt_count, total_evaluations));
+    out.push_str(&format!(
+        "  Est. prompt calls: {} ({} per eval × {} evals)\n",
+        est_prompts, prompt_count, total_evaluations
+    ));
 
     match backend_name {
         "mock" => {
@@ -309,16 +356,25 @@ pub fn format_dry_run(
             let est_seconds = est_tokens as f64 / tokens_per_second;
             let est_minutes = est_seconds / 60.0;
             if est_minutes < 1.0 {
-                out.push_str(&format!("  Estimated time:    ~{:.0}s (local inference, $0)\n", est_seconds));
+                out.push_str(&format!(
+                    "  Estimated time:    ~{:.0}s (local inference, $0)\n",
+                    est_seconds
+                ));
             } else {
-                out.push_str(&format!("  Estimated time:    ~{:.1} min (local inference, $0)\n", est_minutes));
+                out.push_str(&format!(
+                    "  Estimated time:    ~{:.1} min (local inference, $0)\n",
+                    est_minutes
+                ));
             }
         }
         "http" => {
             // Very rough: 1 token ≈ 4 chars, $0.003 per 1K input tokens (cheap model)
             let est_tokens = (avg_instruction_len / 2) * est_prompts;
             let est_cost = (est_tokens as f64 / 1000.0) * 0.003;
-            out.push_str(&format!("  Estimated cost:    ~${:.2} (approx {} tokens)\n", est_cost, est_tokens));
+            out.push_str(&format!(
+                "  Estimated cost:    ~${:.2} (approx {} tokens)\n",
+                est_cost, est_tokens
+            ));
         }
         _ => {
             out.push_str("  Estimated cost:    unknown backend\n");
@@ -327,7 +383,6 @@ pub fn format_dry_run(
 
     out
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -360,9 +415,8 @@ mod tests {
         let hash = hash_source(source);
         let parents = vec![(source.to_string(), hash)];
         let backend = crate::llm::MockBackend;
-        let variants = generate_tracked_variants(
-            &parents, 3, 1, "test", None, &backend, None, 0,
-        ).unwrap();
+        let variants =
+            generate_tracked_variants(&parents, 3, 1, "test", None, &backend, None, 0).unwrap();
         assert_eq!(variants.len(), 3);
         assert!(variants[0].source.contains("Carefully Process this"));
         assert!(!variants[0].parent_hash.is_empty());
@@ -390,9 +444,8 @@ mod tests {
             (source_b.to_string(), hash_source(source_b)),
         ];
         let backend = crate::llm::MockBackend;
-        let variants = generate_tracked_variants(
-            &parents, 4, 2, "test", None, &backend, None, 0,
-        ).unwrap();
+        let variants =
+            generate_tracked_variants(&parents, 4, 2, "test", None, &backend, None, 0).unwrap();
         assert_eq!(variants.len(), 4);
         // Variants 0,2 from parent A, variants 1,3 from parent B
         assert_eq!(variants[0].parent_hash, hash_source(source_a));
@@ -402,22 +455,28 @@ mod tests {
     #[test]
     fn trace_lineage_simple() {
         let mut lineage = HashMap::new();
-        lineage.insert("hash_g1".to_string(), LineageEntry {
-            source_hash: "hash_g1".to_string(),
-            parent_hash: "hash_seed".to_string(),
-            generation: 1,
-            score: 0.72,
-            prompt_count: 3,
-            mutations: vec!["classifier".to_string()],
-        });
-        lineage.insert("hash_g2".to_string(), LineageEntry {
-            source_hash: "hash_g2".to_string(),
-            parent_hash: "hash_g1".to_string(),
-            generation: 2,
-            score: 0.85,
-            prompt_count: 2,
-            mutations: vec!["classifier".to_string()],
-        });
+        lineage.insert(
+            "hash_g1".to_string(),
+            LineageEntry {
+                source_hash: "hash_g1".to_string(),
+                parent_hash: "hash_seed".to_string(),
+                generation: 1,
+                score: 0.72,
+                prompt_count: 3,
+                mutations: vec!["classifier".to_string()],
+            },
+        );
+        lineage.insert(
+            "hash_g2".to_string(),
+            LineageEntry {
+                source_hash: "hash_g2".to_string(),
+                parent_hash: "hash_g1".to_string(),
+                generation: 2,
+                score: 0.85,
+                prompt_count: 2,
+                mutations: vec!["classifier".to_string()],
+            },
+        );
 
         let chain = trace_lineage(&lineage, "hash_g2", "classify.ag");
         assert_eq!(chain.len(), 3); // seed + g1 + g2
@@ -487,7 +546,13 @@ mod tests {
             eval_time_ms: None,
         };
 
-        write_generation_jsonl(&dir, 1, &[(variant, arena_entry)], &FitnessWeights::default()).unwrap();
+        write_generation_jsonl(
+            &dir,
+            1,
+            &[(variant, arena_entry)],
+            &FitnessWeights::default(),
+        )
+        .unwrap();
 
         let lineage = load_lineage(&dir);
         assert!(lineage.contains_key("abc123"));

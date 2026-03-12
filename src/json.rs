@@ -150,7 +150,11 @@ pub struct JsonError {
 
 impl std::fmt::Display for JsonError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "JSON error at position {}: {}", self.position, self.message)
+        write!(
+            f,
+            "JSON error at position {}: {}",
+            self.position, self.message
+        )
     }
 }
 
@@ -458,21 +462,29 @@ mod tests {
 
     #[test]
     fn build_array() {
-        let val = array(vec![JsonValue::Int(1), JsonValue::Int(2), JsonValue::Int(3)]);
+        let val = array(vec![
+            JsonValue::Int(1),
+            JsonValue::Int(2),
+            JsonValue::Int(3),
+        ]);
         assert_eq!(val.to_string(), "[1,2,3]");
     }
 
     #[test]
     fn build_object() {
-        let val = object(vec![("name", JsonValue::String("agentis".into())), ("ver", JsonValue::Int(1))]);
+        let val = object(vec![
+            ("name", JsonValue::String("agentis".into())),
+            ("ver", JsonValue::Int(1)),
+        ]);
         assert_eq!(val.to_string(), "{\"name\":\"agentis\",\"ver\":1}");
     }
 
     #[test]
     fn build_nested() {
-        let val = object(vec![
-            ("items", array(vec![JsonValue::Bool(true), JsonValue::Null])),
-        ]);
+        let val = object(vec![(
+            "items",
+            array(vec![JsonValue::Bool(true), JsonValue::Null]),
+        )]);
         assert_eq!(val.to_string(), "{\"items\":[true,null]}");
     }
 
@@ -506,7 +518,10 @@ mod tests {
 
     #[test]
     fn parse_string_simple() {
-        assert_eq!(parse("\"hello\"").unwrap(), JsonValue::String("hello".into()));
+        assert_eq!(
+            parse("\"hello\"").unwrap(),
+            JsonValue::String("hello".into())
+        );
     }
 
     #[test]
@@ -519,10 +534,7 @@ mod tests {
 
     #[test]
     fn parse_string_unicode() {
-        assert_eq!(
-            parse("\"\\u0041\"").unwrap(),
-            JsonValue::String("A".into())
-        );
+        assert_eq!(parse("\"\\u0041\"").unwrap(), JsonValue::String("A".into()));
     }
 
     #[test]
@@ -534,7 +546,11 @@ mod tests {
     fn parse_array_items() {
         assert_eq!(
             parse("[1, 2, 3]").unwrap(),
-            JsonValue::Array(vec![JsonValue::Int(1), JsonValue::Int(2), JsonValue::Int(3)])
+            JsonValue::Array(vec![
+                JsonValue::Int(1),
+                JsonValue::Int(2),
+                JsonValue::Int(3)
+            ])
         );
     }
 
@@ -574,7 +590,10 @@ mod tests {
     fn round_trip() {
         let val = object(vec![
             ("msg", JsonValue::String("hello \"world\"".into())),
-            ("nums", array(vec![JsonValue::Int(1), JsonValue::Float(2.5)])),
+            (
+                "nums",
+                array(vec![JsonValue::Int(1), JsonValue::Float(2.5)]),
+            ),
             ("ok", JsonValue::Bool(true)),
             ("nil", JsonValue::Null),
         ]);

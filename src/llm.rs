@@ -74,7 +74,9 @@ impl LlmBackend for MockBackend {
         mock_value_for_type(return_type, type_fields)
     }
 
-    fn name(&self) -> &str { "mock" }
+    fn name(&self) -> &str {
+        "mock"
+    }
 }
 
 fn mock_value_for_type(
@@ -152,10 +154,7 @@ impl HttpBackend {
 
         let body = json::object(vec![
             ("model", JsonValue::String(self.model.clone())),
-            (
-                "max_tokens",
-                JsonValue::Int(1024),
-            ),
+            ("max_tokens", JsonValue::Int(1024)),
             (
                 "messages",
                 json::array(vec![json::object(vec![
@@ -186,24 +185,23 @@ impl HttpBackend {
         Ok(content.to_string())
     }
 
-    fn json_to_value(
-        json: &JsonValue,
-        return_type: &TypeAnnotation,
-    ) -> Result<Value, LlmError> {
+    fn json_to_value(json: &JsonValue, return_type: &TypeAnnotation) -> Result<Value, LlmError> {
         match return_type {
             TypeAnnotation::Named(name) => match name.as_str() {
-                "int" => json.as_i64().map(Value::Int).ok_or_else(|| {
-                    LlmError::TypeMismatch {
+                "int" => json
+                    .as_i64()
+                    .map(Value::Int)
+                    .ok_or_else(|| LlmError::TypeMismatch {
                         expected: "int".into(),
                         got: describe_json(json),
-                    }
-                }),
-                "float" => json.as_f64().map(Value::Float).ok_or_else(|| {
-                    LlmError::TypeMismatch {
+                    }),
+                "float" => json
+                    .as_f64()
+                    .map(Value::Float)
+                    .ok_or_else(|| LlmError::TypeMismatch {
                         expected: "float".into(),
                         got: describe_json(json),
-                    }
-                }),
+                    }),
                 "string" => json
                     .as_str()
                     .map(|s| Value::String(s.to_string()))
@@ -211,12 +209,13 @@ impl HttpBackend {
                         expected: "string".into(),
                         got: describe_json(json),
                     }),
-                "bool" => json.as_bool().map(Value::Bool).ok_or_else(|| {
-                    LlmError::TypeMismatch {
+                "bool" => json
+                    .as_bool()
+                    .map(Value::Bool)
+                    .ok_or_else(|| LlmError::TypeMismatch {
                         expected: "bool".into(),
                         got: describe_json(json),
-                    }
-                }),
+                    }),
                 type_name => {
                     // User-defined struct: expect JSON object
                     let obj = json.as_object().ok_or_else(|| LlmError::TypeMismatch {
@@ -232,22 +231,20 @@ impl HttpBackend {
                     Ok(Value::Struct(type_name.to_string(), fields))
                 }
             },
-            TypeAnnotation::Generic(name, args) => {
-                match name.as_str() {
-                    "List" if args.len() == 1 => {
-                        let arr = json.as_array().ok_or_else(|| LlmError::TypeMismatch {
-                            expected: "List".into(),
-                            got: describe_json(json),
-                        })?;
-                        let mut items = Vec::new();
-                        for item in arr {
-                            items.push(Self::json_to_value(item, &args[0])?);
-                        }
-                        Ok(Value::List(items))
+            TypeAnnotation::Generic(name, args) => match name.as_str() {
+                "List" if args.len() == 1 => {
+                    let arr = json.as_array().ok_or_else(|| LlmError::TypeMismatch {
+                        expected: "List".into(),
+                        got: describe_json(json),
+                    })?;
+                    let mut items = Vec::new();
+                    for item in arr {
+                        items.push(Self::json_to_value(item, &args[0])?);
                     }
-                    _ => Ok(Value::String(json.to_string())),
+                    Ok(Value::List(items))
                 }
-            }
+                _ => Ok(Value::String(json.to_string())),
+            },
         }
     }
 }
@@ -271,7 +268,10 @@ impl LlmBackend for HttpBackend {
                     "[LLM retry {}/{}: {}]",
                     attempt,
                     self.max_retries,
-                    last_error.as_ref().map(|e: &LlmError| e.to_string()).unwrap_or_default()
+                    last_error
+                        .as_ref()
+                        .map(|e: &LlmError| e.to_string())
+                        .unwrap_or_default()
                 );
             }
 
@@ -281,12 +281,10 @@ impl LlmBackend for HttpBackend {
                         Ok(content) => {
                             // Try to parse the LLM's text as JSON
                             match json::parse(content.trim()) {
-                                Ok(json_val) => {
-                                    match Self::json_to_value(&json_val, return_type) {
-                                        Ok(value) => return Ok(value),
-                                        Err(e) => last_error = Some(e),
-                                    }
-                                }
+                                Ok(json_val) => match Self::json_to_value(&json_val, return_type) {
+                                    Ok(value) => return Ok(value),
+                                    Err(e) => last_error = Some(e),
+                                },
                                 Err(e) => {
                                     last_error = Some(LlmError::InvalidResponse(format!(
                                         "LLM returned invalid JSON: {e}"
@@ -304,7 +302,9 @@ impl LlmBackend for HttpBackend {
         Err(last_error.unwrap_or_else(|| LlmError::Transport("no attempts made".into())))
     }
 
-    fn name(&self) -> &str { "http" }
+    fn name(&self) -> &str {
+        "http"
+    }
 }
 
 impl HttpBackend {
@@ -343,10 +343,7 @@ impl CliBackend {
     pub fn from_config(config: &Config) -> Result<Self, LlmError> {
         let command = config.get_or("llm.command", "claude");
         let args_str = config.get_or("llm.args", "-p --output-format text");
-        let args: Vec<String> = args_str
-            .split_whitespace()
-            .map(|s| s.to_string())
-            .collect();
+        let args: Vec<String> = args_str.split_whitespace().map(|s| s.to_string()).collect();
         let model = config.get("llm.model").map(|s| s.to_string());
         let max_retries = config.get_u64("llm.max_retries", 2) as u32;
         Ok(Self {
@@ -357,11 +354,7 @@ impl CliBackend {
         })
     }
 
-    fn build_prompt(
-        instruction: &str,
-        input: &str,
-        return_type: &TypeAnnotation,
-    ) -> String {
+    fn build_prompt(instruction: &str, input: &str, return_type: &TypeAnnotation) -> String {
         let type_str = format_type_annotation(return_type);
         format!(
             "{instruction}\n\nInput: {input}\n\nRespond with ONLY valid JSON matching type: {type_str}. No markdown, no explanation, just the JSON value."
@@ -396,9 +389,9 @@ impl CliBackend {
             })?;
         }
 
-        let output = child.wait_with_output().map_err(|e| {
-            LlmError::Transport(format!("failed to read claude output: {e}"))
-        })?;
+        let output = child
+            .wait_with_output()
+            .map_err(|e| LlmError::Transport(format!("failed to read claude output: {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -431,7 +424,10 @@ impl LlmBackend for CliBackend {
                     "[LLM retry {}/{}: {}]",
                     attempt,
                     self.max_retries,
-                    last_error.as_ref().map(|e: &LlmError| e.to_string()).unwrap_or_default()
+                    last_error
+                        .as_ref()
+                        .map(|e: &LlmError| e.to_string())
+                        .unwrap_or_default()
                 );
             }
 
@@ -440,12 +436,10 @@ impl LlmBackend for CliBackend {
                     // Extract JSON from the response (skip any non-JSON preamble)
                     let trimmed = extract_json_from_text(&raw_output);
                     match json::parse(trimmed) {
-                        Ok(json_val) => {
-                            match HttpBackend::json_to_value(&json_val, return_type) {
-                                Ok(value) => return Ok(value),
-                                Err(e) => last_error = Some(e),
-                            }
-                        }
+                        Ok(json_val) => match HttpBackend::json_to_value(&json_val, return_type) {
+                            Ok(value) => return Ok(value),
+                            Err(e) => last_error = Some(e),
+                        },
                         Err(e) => {
                             last_error = Some(LlmError::InvalidResponse(format!(
                                 "CLI returned invalid JSON: {e}"
@@ -460,7 +454,9 @@ impl LlmBackend for CliBackend {
         Err(last_error.unwrap_or_else(|| LlmError::Transport("no attempts made".into())))
     }
 
-    fn name(&self) -> &str { "cli" }
+    fn name(&self) -> &str {
+        "cli"
+    }
 }
 
 /// Try to extract a JSON value from text that may contain non-JSON preamble.
@@ -473,7 +469,10 @@ fn extract_json_from_text(text: &str) -> &str {
         || trimmed.starts_with("true")
         || trimmed.starts_with("false")
         || trimmed.starts_with("null")
-        || trimmed.bytes().next().map_or(false, |b| b.is_ascii_digit() || b == b'-')
+        || trimmed
+            .bytes()
+            .next()
+            .map_or(false, |b| b.is_ascii_digit() || b == b'-')
     {
         return trimmed;
     }
@@ -505,9 +504,7 @@ fn json_to_value_inferred(json: &JsonValue) -> Value {
         JsonValue::Int(n) => Value::Int(*n),
         JsonValue::Float(n) => Value::Float(*n),
         JsonValue::String(s) => Value::String(s.clone()),
-        JsonValue::Array(items) => {
-            Value::List(items.iter().map(json_to_value_inferred).collect())
-        }
+        JsonValue::Array(items) => Value::List(items.iter().map(json_to_value_inferred).collect()),
         JsonValue::Object(map) => {
             let mut fields = HashMap::new();
             for (k, v) in map {
@@ -560,7 +557,12 @@ mod tests {
     fn mock_backend_string() {
         let backend = MockBackend::new();
         let result = backend
-            .complete("test", "input", &TypeAnnotation::Named("string".into()), None)
+            .complete(
+                "test",
+                "input",
+                &TypeAnnotation::Named("string".into()),
+                None,
+            )
             .unwrap();
         assert_eq!(result, Value::String("mock".into()));
     }
@@ -610,19 +612,13 @@ mod tests {
     #[test]
     fn factory_http_missing_endpoint() {
         let config = Config::parse("llm.backend = http");
-        assert!(matches!(
-            create_backend(&config),
-            Err(LlmError::Config(_))
-        ));
+        assert!(matches!(create_backend(&config), Err(LlmError::Config(_))));
     }
 
     #[test]
     fn factory_unknown_backend() {
         let config = Config::parse("llm.backend = gpt-magic");
-        assert!(matches!(
-            create_backend(&config),
-            Err(LlmError::Config(_))
-        ));
+        assert!(matches!(create_backend(&config), Err(LlmError::Config(_))));
     }
 
     #[test]
@@ -641,8 +637,7 @@ mod tests {
     #[test]
     fn json_to_value_int() {
         let json = JsonValue::Int(42);
-        let val =
-            HttpBackend::json_to_value(&json, &TypeAnnotation::Named("int".into())).unwrap();
+        let val = HttpBackend::json_to_value(&json, &TypeAnnotation::Named("int".into())).unwrap();
         assert_eq!(val, Value::Int(42));
     }
 
@@ -674,10 +669,8 @@ mod tests {
     #[test]
     fn json_to_value_list() {
         let json = json::array(vec![JsonValue::Int(1), JsonValue::Int(2)]);
-        let return_type = TypeAnnotation::Generic(
-            "List".into(),
-            vec![TypeAnnotation::Named("int".into())],
-        );
+        let return_type =
+            TypeAnnotation::Generic("List".into(), vec![TypeAnnotation::Named("int".into())]);
         let val = HttpBackend::json_to_value(&json, &return_type).unwrap();
         assert_eq!(val, Value::List(vec![Value::Int(1), Value::Int(2)]));
     }

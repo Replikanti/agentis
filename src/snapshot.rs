@@ -340,9 +340,7 @@ fn read_u32(data: &[u8], pos: &mut usize) -> Result<u32, SnapshotError> {
 fn read_string(data: &[u8], pos: &mut usize) -> Result<String, SnapshotError> {
     let len = read_u32(data, pos)? as usize;
     if *pos + len > data.len() {
-        return Err(SnapshotError::InvalidFormat(
-            "truncated string".to_string(),
-        ));
+        return Err(SnapshotError::InvalidFormat("truncated string".to_string()));
     }
     let s = String::from_utf8(data[*pos..*pos + len].to_vec())
         .map_err(|e| SnapshotError::DeserializeError(format!("invalid UTF-8: {e}")))?;
@@ -474,7 +472,10 @@ mod tests {
         fields.insert("label".to_string(), Value::String("good".to_string()));
 
         let mut scope = HashMap::new();
-        scope.insert("result".to_string(), Value::Struct("Report".to_string(), fields));
+        scope.insert(
+            "result".to_string(),
+            Value::Struct("Report".to_string(), fields),
+        );
 
         let snap = MemorySnapshot {
             scopes: vec![scope],

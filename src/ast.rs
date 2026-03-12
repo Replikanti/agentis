@@ -439,7 +439,9 @@ impl TypeAnnotation {
                 }
                 Ok(TypeAnnotation::Generic(name, params))
             }
-            _ => Err(SerError(format!("unknown type annotation tag: 0x{tag:02X}"))),
+            _ => Err(SerError(format!(
+                "unknown type annotation tag: 0x{tag:02X}"
+            ))),
         }
     }
 }
@@ -468,7 +470,10 @@ impl Param {
     fn read(r: &mut Reader) -> Result<Self, SerError> {
         let name = r.read_str()?;
         let type_annotation = TypeAnnotation::read(r)?;
-        Ok(Param { name, type_annotation })
+        Ok(Param {
+            name,
+            type_annotation,
+        })
     }
 }
 
@@ -483,7 +488,10 @@ impl TypeField {
     fn read(r: &mut Reader) -> Result<Self, SerError> {
         let name = r.read_str()?;
         let type_annotation = TypeAnnotation::read(r)?;
-        Ok(TypeField { name, type_annotation })
+        Ok(TypeField {
+            name,
+            type_annotation,
+        })
     }
 }
 
@@ -696,13 +704,21 @@ impl Expr {
                 let condition = Expr::read(r)?;
                 let then_block = read_block(r)?;
                 let else_block = r.read_option(read_block)?;
-                Ok(Expr::If(Box::new(IfExpr { condition, then_block, else_block })))
+                Ok(Expr::If(Box::new(IfExpr {
+                    condition,
+                    then_block,
+                    else_block,
+                })))
             }
             TAG_EXPR_PROMPT => {
                 let instruction = r.read_str()?;
                 let input = Expr::read(r)?;
                 let return_type = TypeAnnotation::read(r)?;
-                Ok(Expr::Prompt(Box::new(PromptExpr { instruction, input, return_type })))
+                Ok(Expr::Prompt(Box::new(PromptExpr {
+                    instruction,
+                    input,
+                    return_type,
+                })))
             }
             TAG_EXPR_VALIDATE => {
                 let target = Expr::read(r)?;
@@ -711,7 +727,10 @@ impl Expr {
                 for _ in 0..count {
                     predicates.push(Expr::read(r)?);
                 }
-                Ok(Expr::Validate(Box::new(ValidateExpr { target, predicates })))
+                Ok(Expr::Validate(Box::new(ValidateExpr {
+                    target,
+                    predicates,
+                })))
             }
             TAG_EXPR_EXPLORE => {
                 let name = r.read_str()?;
@@ -721,7 +740,10 @@ impl Expr {
             TAG_EXPR_FIELD_ACCESS => {
                 let object = Expr::read(r)?;
                 let field = r.read_str()?;
-                Ok(Expr::FieldAccess(Box::new(FieldAccessExpr { object, field })))
+                Ok(Expr::FieldAccess(Box::new(FieldAccessExpr {
+                    object,
+                    field,
+                })))
             }
             TAG_EXPR_LIST => {
                 let count = r.read_u16()? as usize;
@@ -810,7 +832,11 @@ impl Statement {
                 let name = r.read_str()?;
                 let type_annotation = r.read_option(TypeAnnotation::read)?;
                 let value = Expr::read(r)?;
-                Ok(Statement::Let(LetStmt { name, type_annotation, value }))
+                Ok(Statement::Let(LetStmt {
+                    name,
+                    type_annotation,
+                    value,
+                }))
             }
             TAG_STMT_RETURN => {
                 let value = r.read_option(Expr::read)?;
@@ -855,7 +881,9 @@ fn write_block(block: &Block, w: &mut Writer) {
 fn read_block(r: &mut Reader) -> Result<Block, SerError> {
     let tag = r.read_u8()?;
     if tag != TAG_BLOCK {
-        return Err(SerError(format!("expected block tag 0x{TAG_BLOCK:02X}, got 0x{tag:02X}")));
+        return Err(SerError(format!(
+            "expected block tag 0x{TAG_BLOCK:02X}, got 0x{tag:02X}"
+        )));
     }
     let count = r.read_u16()? as usize;
     let mut statements = Vec::with_capacity(count);
@@ -954,7 +982,12 @@ impl Declaration {
                 }
                 let return_type = r.read_option(TypeAnnotation::read)?;
                 let body = read_block(r)?;
-                Ok(Declaration::Function(FnDecl { name, params, return_type, body }))
+                Ok(Declaration::Function(FnDecl {
+                    name,
+                    params,
+                    return_type,
+                    body,
+                }))
             }
             TAG_DECL_AGENT => {
                 let name = r.read_str()?;
@@ -965,7 +998,12 @@ impl Declaration {
                 }
                 let return_type = r.read_option(TypeAnnotation::read)?;
                 let body = read_block(r)?;
-                Ok(Declaration::Agent(AgentDecl { name, params, return_type, body }))
+                Ok(Declaration::Agent(AgentDecl {
+                    name,
+                    params,
+                    return_type,
+                    body,
+                }))
             }
             TAG_DECL_TYPE => {
                 let name = r.read_str()?;
@@ -1028,7 +1066,9 @@ impl Serialize for Program {
         let mut r = Reader::new(data);
         let tag = r.read_u8()?;
         if tag != TAG_PROGRAM {
-            return Err(SerError(format!("expected program tag 0x{TAG_PROGRAM:02X}, got 0x{tag:02X}")));
+            return Err(SerError(format!(
+                "expected program tag 0x{TAG_PROGRAM:02X}, got 0x{tag:02X}"
+            )));
         }
         let count = r.read_u16()? as usize;
         let mut declarations = Vec::with_capacity(count);
@@ -1124,9 +1164,16 @@ mod tests {
     #[test]
     fn expr_all_binary_ops() {
         let ops = [
-            BinaryOp::Add, BinaryOp::Sub, BinaryOp::Mul, BinaryOp::Div,
-            BinaryOp::Eq, BinaryOp::NotEq, BinaryOp::Lt, BinaryOp::Gt,
-            BinaryOp::LtEq, BinaryOp::GtEq,
+            BinaryOp::Add,
+            BinaryOp::Sub,
+            BinaryOp::Mul,
+            BinaryOp::Div,
+            BinaryOp::Eq,
+            BinaryOp::NotEq,
+            BinaryOp::Lt,
+            BinaryOp::Gt,
+            BinaryOp::LtEq,
+            BinaryOp::GtEq,
         ];
         for op in ops {
             round_trip(&Expr::Binary(Box::new(BinaryExpr {
@@ -1212,16 +1259,14 @@ mod tests {
     fn expr_validate() {
         round_trip(&Expr::Validate(Box::new(ValidateExpr {
             target: Expr::Identifier("result".into()),
-            predicates: vec![
-                Expr::Binary(Box::new(BinaryExpr {
-                    op: BinaryOp::Gt,
-                    left: Expr::FieldAccess(Box::new(FieldAccessExpr {
-                        object: Expr::Identifier("result".into()),
-                        field: "confidence".into(),
-                    })),
-                    right: Expr::FloatLiteral(0.8),
+            predicates: vec![Expr::Binary(Box::new(BinaryExpr {
+                op: BinaryOp::Gt,
+                left: Expr::FieldAccess(Box::new(FieldAccessExpr {
+                    object: Expr::Identifier("result".into()),
+                    field: "confidence".into(),
                 })),
-            ],
+                right: Expr::FloatLiteral(0.8),
+            }))],
         })));
     }
 
@@ -1336,8 +1381,14 @@ mod tests {
         round_trip(&Declaration::Function(FnDecl {
             name: "add".into(),
             params: vec![
-                Param { name: "a".into(), type_annotation: TypeAnnotation::Named("int".into()) },
-                Param { name: "b".into(), type_annotation: TypeAnnotation::Named("int".into()) },
+                Param {
+                    name: "a".into(),
+                    type_annotation: TypeAnnotation::Named("int".into()),
+                },
+                Param {
+                    name: "b".into(),
+                    type_annotation: TypeAnnotation::Named("int".into()),
+                },
             ],
             return_type: Some(TypeAnnotation::Named("int".into())),
             body: Block {
@@ -1366,9 +1417,10 @@ mod tests {
     fn decl_agent() {
         round_trip(&Declaration::Agent(AgentDecl {
             name: "scanner".into(),
-            params: vec![
-                Param { name: "url".into(), type_annotation: TypeAnnotation::Named("string".into()) },
-            ],
+            params: vec![Param {
+                name: "url".into(),
+                type_annotation: TypeAnnotation::Named("string".into()),
+            }],
             return_type: Some(TypeAnnotation::Named("Report".into())),
             body: Block {
                 statements: vec![
@@ -1406,15 +1458,13 @@ mod tests {
     fn decl_type_with_generic_field() {
         round_trip(&Declaration::Type(TypeDecl {
             name: "Dataset".into(),
-            fields: vec![
-                TypeField {
-                    name: "items".into(),
-                    type_annotation: TypeAnnotation::Generic(
-                        "list".into(),
-                        vec![TypeAnnotation::Named("string".into())],
-                    ),
-                },
-            ],
+            fields: vec![TypeField {
+                name: "items".into(),
+                type_annotation: TypeAnnotation::Generic(
+                    "list".into(),
+                    vec![TypeAnnotation::Named("string".into())],
+                ),
+            }],
         }));
     }
 
@@ -1422,7 +1472,9 @@ mod tests {
 
     #[test]
     fn program_empty() {
-        round_trip(&Program { declarations: vec![] });
+        round_trip(&Program {
+            declarations: vec![],
+        });
     }
 
     #[test]
@@ -1445,8 +1497,14 @@ mod tests {
                 Declaration::Function(FnDecl {
                     name: "add".into(),
                     params: vec![
-                        Param { name: "a".into(), type_annotation: TypeAnnotation::Named("int".into()) },
-                        Param { name: "b".into(), type_annotation: TypeAnnotation::Named("int".into()) },
+                        Param {
+                            name: "a".into(),
+                            type_annotation: TypeAnnotation::Named("int".into()),
+                        },
+                        Param {
+                            name: "b".into(),
+                            type_annotation: TypeAnnotation::Named("int".into()),
+                        },
                     ],
                     return_type: Some(TypeAnnotation::Named("int".into())),
                     body: Block {
@@ -1461,9 +1519,10 @@ mod tests {
                 }),
                 Declaration::Agent(AgentDecl {
                     name: "analyzer".into(),
-                    params: vec![
-                        Param { name: "data".into(), type_annotation: TypeAnnotation::Named("string".into()) },
-                    ],
+                    params: vec![Param {
+                        name: "data".into(),
+                        type_annotation: TypeAnnotation::Named("string".into()),
+                    }],
                     return_type: Some(TypeAnnotation::Named("Report".into())),
                     body: Block {
                         statements: vec![
@@ -1480,16 +1539,14 @@ mod tests {
                             Statement::Expression(ExprStmt {
                                 expr: Expr::Validate(Box::new(ValidateExpr {
                                     target: Expr::Identifier("result".into()),
-                                    predicates: vec![
-                                        Expr::Binary(Box::new(BinaryExpr {
-                                            op: BinaryOp::Gt,
-                                            left: Expr::FieldAccess(Box::new(FieldAccessExpr {
-                                                object: Expr::Identifier("result".into()),
-                                                field: "score".into(),
-                                            })),
-                                            right: Expr::FloatLiteral(0.5),
+                                    predicates: vec![Expr::Binary(Box::new(BinaryExpr {
+                                        op: BinaryOp::Gt,
+                                        left: Expr::FieldAccess(Box::new(FieldAccessExpr {
+                                            object: Expr::Identifier("result".into()),
+                                            field: "score".into(),
                                         })),
-                                    ],
+                                        right: Expr::FloatLiteral(0.5),
+                                    }))],
                                 })),
                             }),
                             Statement::Return(ReturnStmt {
@@ -1527,21 +1584,19 @@ mod tests {
     #[test]
     fn serialization_is_deterministic() {
         let program = Program {
-            declarations: vec![
-                Declaration::Function(FnDecl {
-                    name: "test".into(),
-                    params: vec![Param {
-                        name: "x".into(),
-                        type_annotation: TypeAnnotation::Named("int".into()),
-                    }],
-                    return_type: Some(TypeAnnotation::Named("int".into())),
-                    body: Block {
-                        statements: vec![Statement::Return(ReturnStmt {
-                            value: Some(Expr::Identifier("x".into())),
-                        })],
-                    },
-                }),
-            ],
+            declarations: vec![Declaration::Function(FnDecl {
+                name: "test".into(),
+                params: vec![Param {
+                    name: "x".into(),
+                    type_annotation: TypeAnnotation::Named("int".into()),
+                }],
+                return_type: Some(TypeAnnotation::Named("int".into())),
+                body: Block {
+                    statements: vec![Statement::Return(ReturnStmt {
+                        value: Some(Expr::Identifier("x".into())),
+                    })],
+                },
+            })],
         };
         let bytes1 = program.to_bytes();
         let bytes2 = program.to_bytes();
@@ -1619,9 +1674,11 @@ mod tests {
                     name: "main".into(),
                     params: vec![],
                     return_type: Some(TypeAnnotation::Named("int".into())),
-                    body: Block { statements: vec![Statement::Return(ReturnStmt {
-                        value: Some(Expr::IntLiteral(42)),
-                    })] },
+                    body: Block {
+                        statements: vec![Statement::Return(ReturnStmt {
+                            value: Some(Expr::IntLiteral(42)),
+                        })],
+                    },
                 }),
             ],
         };

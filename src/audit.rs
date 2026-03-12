@@ -66,10 +66,7 @@ impl AuditLog {
         let input_len = entry.input.len() as i64;
 
         let (pii_scan, pii_types) = if entry.pii_result.is_clean() {
-            (
-                "clean".to_string(),
-                json::array(vec![]),
-            )
+            ("clean".to_string(), json::array(vec![]))
         } else {
             (
                 "detected".to_string(),
@@ -97,7 +94,10 @@ impl AuditLog {
             ("input_len", JsonValue::Int(input_len)),
             ("pii_scan", JsonValue::String(pii_scan)),
             ("pii_types", pii_types),
-            ("pii_transmit_granted", JsonValue::Bool(entry.pii_transmit_granted)),
+            (
+                "pii_transmit_granted",
+                JsonValue::Bool(entry.pii_transmit_granted),
+            ),
             ("backend", JsonValue::String(entry.backend_name.to_string())),
             ("model", JsonValue::String(entry.model.to_string())),
         ]);
@@ -119,11 +119,7 @@ fn sha256_short(data: &str) -> String {
     hasher.update(data.as_bytes());
     let result = hasher.finalize();
     // First 12 hex chars
-    result
-        .iter()
-        .take(6)
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    result.iter().take(6).map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]
@@ -175,10 +171,21 @@ mod tests {
         let parsed = crate::json::parse(lines[0]).unwrap();
         assert_eq!(parsed.get("agent").unwrap().as_str(), Some("analyzer"));
         assert_eq!(parsed.get("pii_scan").unwrap().as_str(), Some("clean"));
-        assert_eq!(parsed.get("pii_transmit_granted").unwrap().as_bool(), Some(false));
+        assert_eq!(
+            parsed.get("pii_transmit_granted").unwrap().as_bool(),
+            Some(false)
+        );
         assert_eq!(parsed.get("backend").unwrap().as_str(), Some("mock"));
         assert!(parsed.get("ts").unwrap().as_i64().is_some());
-        assert!(parsed.get("instruction_hash").unwrap().as_str().unwrap().len() == 12);
+        assert!(
+            parsed
+                .get("instruction_hash")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .len()
+                == 12
+        );
         assert!(parsed.get("input_hash").unwrap().as_str().unwrap().len() == 12);
         assert_eq!(parsed.get("input_len").unwrap().as_i64(), Some(11));
     }
@@ -203,7 +210,10 @@ mod tests {
         let content = std::fs::read_to_string(root.join("audit/prompts.jsonl")).unwrap();
         let parsed = crate::json::parse(content.trim()).unwrap();
         assert_eq!(parsed.get("pii_scan").unwrap().as_str(), Some("detected"));
-        assert_eq!(parsed.get("pii_transmit_granted").unwrap().as_bool(), Some(true));
+        assert_eq!(
+            parsed.get("pii_transmit_granted").unwrap().as_bool(),
+            Some(true)
+        );
         assert_eq!(parsed.get("backend").unwrap().as_str(), Some("cli"));
         assert_eq!(parsed.get("model").unwrap().as_str(), Some("claude"));
 

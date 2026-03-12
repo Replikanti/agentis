@@ -63,7 +63,11 @@ const HASH_LEN: usize = 64; // SHA-256 hex string length
 
 // --- Message encoding/decoding ---
 
-pub fn write_msg(stream: &mut impl Write, msg_type: u8, payload: &[u8]) -> Result<(), NetworkError> {
+pub fn write_msg(
+    stream: &mut impl Write,
+    msg_type: u8,
+    payload: &[u8],
+) -> Result<(), NetworkError> {
     stream.write_all(&[msg_type])?;
     stream.write_all(&(payload.len() as u32).to_le_bytes())?;
     stream.write_all(payload)?;
@@ -286,10 +290,7 @@ mod tests {
 
     #[test]
     fn encode_decode_hashes_roundtrip() {
-        let hashes = vec![
-            "a".repeat(64),
-            "b".repeat(64),
-        ];
+        let hashes = vec!["a".repeat(64), "b".repeat(64)];
         let encoded = encode_hashes(&hashes);
         let decoded = decode_hashes(&encoded).unwrap();
         assert_eq!(hashes, decoded);
@@ -385,8 +386,20 @@ mod tests {
         let result_a = sync_over_stream(&store_a, &mut stream).unwrap();
         let result_b = handle.join().unwrap();
 
-        assert_eq!(result_a, SyncResult { sent: 0, received: 0 });
-        assert_eq!(result_b, SyncResult { sent: 0, received: 0 });
+        assert_eq!(
+            result_a,
+            SyncResult {
+                sent: 0,
+                received: 0
+            }
+        );
+        assert_eq!(
+            result_b,
+            SyncResult {
+                sent: 0,
+                received: 0
+            }
+        );
     }
 
     #[test]
@@ -480,8 +493,20 @@ mod tests {
         let result_a = sync_over_stream(&store_a, &mut stream).unwrap();
         let result_b = handle.join().unwrap();
 
-        assert_eq!(result_a, SyncResult { sent: 0, received: 0 });
-        assert_eq!(result_b, SyncResult { sent: 0, received: 0 });
+        assert_eq!(
+            result_a,
+            SyncResult {
+                sent: 0,
+                received: 0
+            }
+        );
+        assert_eq!(
+            result_b,
+            SyncResult {
+                sent: 0,
+                received: 0
+            }
+        );
     }
 
     #[test]
@@ -538,7 +563,11 @@ mod tests {
         let (_, store_b) = handle.join().unwrap();
 
         assert_eq!(result.sent, 1);
-        assert!(store_b.load_raw(&store_a.list_objects().unwrap()[0]).is_ok());
+        assert!(
+            store_b
+                .load_raw(&store_a.list_objects().unwrap()[0])
+                .is_ok()
+        );
     }
 
     // --- Error handling ---
@@ -553,7 +582,10 @@ mod tests {
 
     #[test]
     fn sync_result_debug() {
-        let r = SyncResult { sent: 3, received: 5 };
+        let r = SyncResult {
+            sent: 3,
+            received: 5,
+        };
         let s = format!("{r:?}");
         assert!(s.contains("sent: 3"));
         assert!(s.contains("received: 5"));

@@ -20,7 +20,10 @@ impl std::fmt::Display for StorageError {
         match self {
             StorageError::Io(e) => write!(f, "storage I/O error: {e}"),
             StorageError::IntegrityError { expected, actual } => {
-                write!(f, "integrity check failed: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "integrity check failed: expected {expected}, got {actual}"
+                )
             }
             StorageError::NotFound(hash) => write!(f, "object not found: {hash}"),
             StorageError::DeserializeError(msg) => write!(f, "deserialization error: {msg}"),
@@ -223,7 +226,8 @@ mod tests {
     #[test]
     fn load_nonexistent() {
         let (store, _dir) = temp_store();
-        let result = store.load_raw("deadbeef00000000000000000000000000000000000000000000000000000000");
+        let result =
+            store.load_raw("deadbeef00000000000000000000000000000000000000000000000000000000");
         assert!(matches!(result, Err(StorageError::NotFound(_))));
     }
 
@@ -261,25 +265,29 @@ mod tests {
     fn save_and_load_program() {
         let (store, _dir) = temp_store();
         let program = Program {
-            declarations: vec![
-                Declaration::Function(FnDecl {
-                    name: "add".into(),
-                    params: vec![
-                        Param { name: "a".into(), type_annotation: TypeAnnotation::Named("int".into()) },
-                        Param { name: "b".into(), type_annotation: TypeAnnotation::Named("int".into()) },
-                    ],
-                    return_type: Some(TypeAnnotation::Named("int".into())),
-                    body: Block {
-                        statements: vec![Statement::Return(ReturnStmt {
-                            value: Some(Expr::Binary(Box::new(BinaryExpr {
-                                op: BinaryOp::Add,
-                                left: Expr::Identifier("a".into()),
-                                right: Expr::Identifier("b".into()),
-                            }))),
-                        })],
+            declarations: vec![Declaration::Function(FnDecl {
+                name: "add".into(),
+                params: vec![
+                    Param {
+                        name: "a".into(),
+                        type_annotation: TypeAnnotation::Named("int".into()),
                     },
-                }),
-            ],
+                    Param {
+                        name: "b".into(),
+                        type_annotation: TypeAnnotation::Named("int".into()),
+                    },
+                ],
+                return_type: Some(TypeAnnotation::Named("int".into())),
+                body: Block {
+                    statements: vec![Statement::Return(ReturnStmt {
+                        value: Some(Expr::Binary(Box::new(BinaryExpr {
+                            op: BinaryOp::Add,
+                            left: Expr::Identifier("a".into()),
+                            right: Expr::Identifier("b".into()),
+                        }))),
+                    })],
+                },
+            })],
         };
 
         let hash = store.save(&program).unwrap();

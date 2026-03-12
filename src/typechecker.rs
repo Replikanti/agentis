@@ -109,18 +109,16 @@ impl TypeEnv {
                     }
                 }
             },
-            TypeAnnotation::Generic(name, args) => {
-                match name.as_str() {
-                    "List" if args.len() == 1 => {
-                        Type::List(Box::new(self.resolve_annotation(&args[0])))
-                    }
-                    "Map" if args.len() == 2 => Type::Map(
-                        Box::new(self.resolve_annotation(&args[0])),
-                        Box::new(self.resolve_annotation(&args[1])),
-                    ),
-                    _ => Type::Any,
+            TypeAnnotation::Generic(name, args) => match name.as_str() {
+                "List" if args.len() == 1 => {
+                    Type::List(Box::new(self.resolve_annotation(&args[0])))
                 }
-            }
+                "Map" if args.len() == 2 => Type::Map(
+                    Box::new(self.resolve_annotation(&args[0])),
+                    Box::new(self.resolve_annotation(&args[1])),
+                ),
+                _ => Type::Any,
+            },
         }
     }
 }
@@ -149,7 +147,12 @@ impl TypeChecker {
                     let fields: Vec<(String, Type)> = td
                         .fields
                         .iter()
-                        .map(|f| (f.name.clone(), self.env.resolve_annotation(&f.type_annotation)))
+                        .map(|f| {
+                            (
+                                f.name.clone(),
+                                self.env.resolve_annotation(&f.type_annotation),
+                            )
+                        })
                         .collect();
                     self.env.types.insert(td.name.clone(), fields);
                 }
@@ -331,19 +334,14 @@ impl TypeChecker {
                             }
                         }
                         self.errors.push(TypeError {
-                            message: format!(
-                                "no field '{}' on type {obj_type}",
-                                fa.field
-                            ),
+                            message: format!("no field '{}' on type {obj_type}", fa.field),
                         });
                         Type::Any
                     }
                     Type::Any => Type::Any,
                     _ => {
                         self.errors.push(TypeError {
-                            message: format!(
-                                "field access on non-struct type {obj_type}"
-                            ),
+                            message: format!("field access on non-struct type {obj_type}"),
                         });
                         Type::Any
                     }
@@ -377,17 +375,18 @@ impl TypeChecker {
                     (Type::Any, _) | (_, Type::Any) => Type::Any,
                     _ => {
                         self.errors.push(TypeError {
-                            message: format!(
-                                "cannot apply {:?} to {left} and {right}",
-                                expr.op
-                            ),
+                            message: format!("cannot apply {:?} to {left} and {right}", expr.op),
                         });
                         Type::Any
                     }
                 }
             }
-            BinaryOp::Eq | BinaryOp::NotEq | BinaryOp::Lt | BinaryOp::Gt
-            | BinaryOp::LtEq | BinaryOp::GtEq => Type::Bool,
+            BinaryOp::Eq
+            | BinaryOp::NotEq
+            | BinaryOp::Lt
+            | BinaryOp::Gt
+            | BinaryOp::LtEq
+            | BinaryOp::GtEq => Type::Bool,
         }
     }
 
@@ -473,7 +472,10 @@ mod tests {
 
     #[test]
     fn function_return_type() {
-        assert!(check_source("fn add(a: int, b: int) -> int { return a + b; } let x: int = add(1, 2);").is_empty());
+        assert!(
+            check_source("fn add(a: int, b: int) -> int { return a + b; } let x: int = add(1, 2);")
+                .is_empty()
+        );
     }
 
     #[test]

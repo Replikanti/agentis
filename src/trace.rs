@@ -148,8 +148,9 @@ impl Tracer {
         if self.level == TraceLevel::Quiet {
             return;
         }
-        self.output
-            .write_trace(&format!("[await #{handle_id}] completed, result={result_type}"));
+        self.output.write_trace(&format!(
+            "[await #{handle_id}] completed, result={result_type}"
+        ));
     }
 
     pub fn explore_entered(&self, name: &str, budget: u64) {
@@ -193,12 +194,12 @@ impl Tracer {
         }
         let short_hash = if hash.len() > 12 { &hash[..12] } else { hash };
         match alias {
-            Some(a) => self.output.write_trace(&format!(
-                "[import] {short_hash}... as {a}"
-            )),
-            None => self.output.write_trace(&format!(
-                "[import] {short_hash}..."
-            )),
+            Some(a) => self
+                .output
+                .write_trace(&format!("[import] {short_hash}... as {a}")),
+            None => self
+                .output
+                .write_trace(&format!("[import] {short_hash}...")),
         }
     }
 
@@ -227,8 +228,7 @@ impl Tracer {
         } else {
             s
         };
-        self.output
-            .write_trace(&format!("[llm] response: {short}"));
+        self.output.write_trace(&format!("[llm] response: {short}"));
     }
 
     pub fn cb_remaining(&self, budget: u64, max_budget: u64) {

@@ -36,31 +36,31 @@ pub enum Token {
     StringLiteral(std::string::String),
 
     // Operators
-    Plus,        // +
-    Minus,       // -
-    Star,        // *
-    Slash,       // /
-    Assign,      // =
-    Eq,          // ==
-    NotEq,       // !=
-    Lt,          // <
-    Gt,          // >
-    LtEq,       // <=
-    GtEq,       // >=
-    Arrow,       // ->
-    Dot,         // .
-    Bang,        // !
+    Plus,   // +
+    Minus,  // -
+    Star,   // *
+    Slash,  // /
+    Assign, // =
+    Eq,     // ==
+    NotEq,  // !=
+    Lt,     // <
+    Gt,     // >
+    LtEq,   // <=
+    GtEq,   // >=
+    Arrow,  // ->
+    Dot,    // .
+    Bang,   // !
 
     // Delimiters
-    LParen,      // (
-    RParen,      // )
-    LBrace,      // {
-    RBrace,      // }
-    LBracket,    // [
-    RBracket,    // ]
-    Comma,       // ,
-    Semicolon,   // ;
-    Colon,       // :
+    LParen,    // (
+    RParen,    // )
+    LBrace,    // {
+    RBrace,    // }
+    LBracket,  // [
+    RBracket,  // ]
+    Comma,     // ,
+    Semicolon, // ;
+    Colon,     // :
 
     // Special
     Eof,
@@ -231,7 +231,10 @@ impl Lexer {
         }
 
         // Check for float
-        if !self.is_at_end() && self.current() == '.' && self.peek().is_some_and(|c| c.is_ascii_digit()) {
+        if !self.is_at_end()
+            && self.current() == '.'
+            && self.peek().is_some_and(|c| c.is_ascii_digit())
+        {
             self.advance(); // skip .
             while !self.is_at_end() && self.current().is_ascii_digit() {
                 self.advance();
@@ -267,7 +270,8 @@ impl Lexer {
         let start_col = self.column;
         let start_pos = self.pos;
 
-        while !self.is_at_end() && (self.current().is_ascii_alphanumeric() || self.current() == '_') {
+        while !self.is_at_end() && (self.current().is_ascii_alphanumeric() || self.current() == '_')
+        {
             self.advance();
         }
 
@@ -452,8 +456,14 @@ mod tests {
         assert_eq!(
             tokenize("fn let if else return true false type"),
             vec![
-                Token::Fn, Token::Let, Token::If, Token::Else,
-                Token::Return, Token::True, Token::False, Token::Type,
+                Token::Fn,
+                Token::Let,
+                Token::If,
+                Token::Else,
+                Token::Return,
+                Token::True,
+                Token::False,
+                Token::Type,
                 Token::Eof,
             ]
         );
@@ -464,8 +474,12 @@ mod tests {
         assert_eq!(
             tokenize("agent prompt validate explore cb"),
             vec![
-                Token::Agent, Token::Prompt, Token::Validate,
-                Token::Explore, Token::Cb, Token::Eof,
+                Token::Agent,
+                Token::Prompt,
+                Token::Validate,
+                Token::Explore,
+                Token::Cb,
+                Token::Eof,
             ]
         );
     }
@@ -475,8 +489,13 @@ mod tests {
         assert_eq!(
             tokenize("int float string bool list map"),
             vec![
-                Token::Int, Token::Float, Token::String,
-                Token::Bool, Token::List, Token::Map, Token::Eof,
+                Token::Int,
+                Token::Float,
+                Token::String,
+                Token::Bool,
+                Token::List,
+                Token::Map,
+                Token::Eof,
             ]
         );
     }
@@ -551,10 +570,7 @@ mod tests {
     fn string_escape_sequences() {
         assert_eq!(
             tokenize(r#""\n\t\\\"""#),
-            vec![
-                Token::StringLiteral("\n\t\\\"".into()),
-                Token::Eof,
-            ]
+            vec![Token::StringLiteral("\n\t\\\"".into()), Token::Eof,]
         );
     }
 
@@ -570,10 +586,20 @@ mod tests {
         assert_eq!(
             tokenize("+ - * / = == != < > <= >= -> ."),
             vec![
-                Token::Plus, Token::Minus, Token::Star, Token::Slash,
-                Token::Assign, Token::Eq, Token::NotEq,
-                Token::Lt, Token::Gt, Token::LtEq, Token::GtEq,
-                Token::Arrow, Token::Dot, Token::Eof,
+                Token::Plus,
+                Token::Minus,
+                Token::Star,
+                Token::Slash,
+                Token::Assign,
+                Token::Eq,
+                Token::NotEq,
+                Token::Lt,
+                Token::Gt,
+                Token::LtEq,
+                Token::GtEq,
+                Token::Arrow,
+                Token::Dot,
+                Token::Eof,
             ]
         );
     }
@@ -588,9 +614,13 @@ mod tests {
         assert_eq!(
             tokenize("( ) { } , ; :"),
             vec![
-                Token::LParen, Token::RParen,
-                Token::LBrace, Token::RBrace,
-                Token::Comma, Token::Semicolon, Token::Colon,
+                Token::LParen,
+                Token::RParen,
+                Token::LBrace,
+                Token::RBrace,
+                Token::Comma,
+                Token::Semicolon,
+                Token::Colon,
                 Token::Eof,
             ]
         );
@@ -702,7 +732,12 @@ mod tests {
     fn cognitive_budget_statement() {
         assert_eq!(
             tokenize("cb 1000;"),
-            vec![Token::Cb, Token::IntLiteral(1000), Token::Semicolon, Token::Eof]
+            vec![
+                Token::Cb,
+                Token::IntLiteral(1000),
+                Token::Semicolon,
+                Token::Eof
+            ]
         );
     }
 
@@ -772,9 +807,7 @@ type Category {
     fn generic_types() {
         assert_eq!(
             tokenize("list<int>"),
-            vec![
-                Token::List, Token::Lt, Token::Int, Token::Gt, Token::Eof,
-            ]
+            vec![Token::List, Token::Lt, Token::Int, Token::Gt, Token::Eof,]
         );
     }
 

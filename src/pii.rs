@@ -44,15 +44,19 @@ impl PiiScanResult {
     }
 
     pub fn types_str(&self) -> String {
-        let names: Vec<&str> = self.detected.iter().map(|t| match t {
-            PiiType::Email => "email",
-            PiiType::Phone => "phone",
-            PiiType::CreditCard => "credit_card",
-            PiiType::CzechBirthNumber => "czech_birth_number",
-            PiiType::Iban => "iban",
-            PiiType::Ipv4 => "ipv4",
-            PiiType::Ssn => "ssn",
-        }).collect();
+        let names: Vec<&str> = self
+            .detected
+            .iter()
+            .map(|t| match t {
+                PiiType::Email => "email",
+                PiiType::Phone => "phone",
+                PiiType::CreditCard => "credit_card",
+                PiiType::CzechBirthNumber => "czech_birth_number",
+                PiiType::Iban => "iban",
+                PiiType::Ipv4 => "ipv4",
+                PiiType::Ssn => "ssn",
+            })
+            .collect();
         names.join(", ")
     }
 }
@@ -62,13 +66,27 @@ impl PiiScanResult {
 pub fn scan(text: &str) -> PiiScanResult {
     let mut found = Vec::new();
 
-    if has_email(text) { found.push(PiiType::Email); }
-    if has_phone(text) { found.push(PiiType::Phone); }
-    if has_credit_card(text) { found.push(PiiType::CreditCard); }
-    if has_czech_birth_number(text) { found.push(PiiType::CzechBirthNumber); }
-    if has_iban(text) { found.push(PiiType::Iban); }
-    if has_ipv4(text) { found.push(PiiType::Ipv4); }
-    if has_ssn(text) { found.push(PiiType::Ssn); }
+    if has_email(text) {
+        found.push(PiiType::Email);
+    }
+    if has_phone(text) {
+        found.push(PiiType::Phone);
+    }
+    if has_credit_card(text) {
+        found.push(PiiType::CreditCard);
+    }
+    if has_czech_birth_number(text) {
+        found.push(PiiType::CzechBirthNumber);
+    }
+    if has_iban(text) {
+        found.push(PiiType::Iban);
+    }
+    if has_ipv4(text) {
+        found.push(PiiType::Ipv4);
+    }
+    if has_ssn(text) {
+        found.push(PiiType::Ssn);
+    }
 
     PiiScanResult { detected: found }
 }
@@ -81,16 +99,24 @@ fn has_email(text: &str) -> bool {
     for (i, ch) in text.char_indices() {
         if ch == '@' && i > 0 {
             // Check left side: at least one alnum/dot/+/-/_
-            let left_ok = text[..i].chars().rev()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '+' || *c == '-' || *c == '_')
-                .count() > 0;
+            let left_ok = text[..i]
+                .chars()
+                .rev()
+                .take_while(|c| {
+                    c.is_ascii_alphanumeric() || *c == '.' || *c == '+' || *c == '-' || *c == '_'
+                })
+                .count()
+                > 0;
             // Check right side: at least one dot after some chars
             let right = &text[i + 1..];
-            let domain_part: String = right.chars()
+            let domain_part: String = right
+                .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-')
                 .collect();
-            let right_ok = domain_part.contains('.') && domain_part.len() >= 3
-                && !domain_part.starts_with('.') && !domain_part.ends_with('.');
+            let right_ok = domain_part.contains('.')
+                && domain_part.len() >= 3
+                && !domain_part.starts_with('.')
+                && !domain_part.ends_with('.');
             if left_ok && right_ok {
                 return true;
             }
@@ -116,14 +142,21 @@ fn has_phone(text: &str) -> bool {
         if i < chars.len() && chars[i].is_ascii_digit() {
             let mut digit_count = 0;
             let mut total_len = 0;
-            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == ' ' || chars[i] == '-' || chars[i] == '.') {
+            while i < chars.len()
+                && (chars[i].is_ascii_digit()
+                    || chars[i] == ' '
+                    || chars[i] == '-'
+                    || chars[i] == '.')
+            {
                 if chars[i].is_ascii_digit() {
                     digit_count += 1;
                 }
                 total_len += 1;
                 i += 1;
                 // Don't let it run forever on huge non-phone sequences
-                if total_len > 20 { break; }
+                if total_len > 20 {
+                    break;
+                }
             }
             // Phone: 8-15 digits
             if digit_count >= 8 && digit_count <= 15 {
@@ -143,7 +176,8 @@ fn has_phone(text: &str) -> bool {
 
 fn has_credit_card(text: &str) -> bool {
     // 4 groups of 4 digits, separated by spaces or dashes (or no separator)
-    let digits_and_seps: Vec<(usize, char)> = text.char_indices()
+    let digits_and_seps: Vec<(usize, char)> = text
+        .char_indices()
         .filter(|(_, c)| c.is_ascii_digit() || *c == ' ' || *c == '-')
         .collect();
 
@@ -154,12 +188,16 @@ fn has_credit_card(text: &str) -> bool {
         if chars[i].is_ascii_digit() {
             let start = i;
             let mut digits = Vec::new();
-            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == ' ' || chars[i] == '-') {
+            while i < chars.len()
+                && (chars[i].is_ascii_digit() || chars[i] == ' ' || chars[i] == '-')
+            {
                 if chars[i].is_ascii_digit() {
                     digits.push(chars[i]);
                 }
                 i += 1;
-                if digits.len() > 19 { break; }
+                if digits.len() > 19 {
+                    break;
+                }
             }
             if digits.len() >= 13 && digits.len() <= 19 {
                 // Check word boundaries
@@ -184,7 +222,9 @@ fn luhn_check(digits: &[char]) -> bool {
         let mut d = ch as u32 - '0' as u32;
         if double {
             d *= 2;
-            if d > 9 { d -= 9; }
+            if d > 9 {
+                d -= 9;
+            }
         }
         sum += d;
         double = !double;
@@ -211,7 +251,7 @@ fn has_czech_birth_number(text: &str) -> bool {
 
             // Parse YYMMDD
             if let (Some(y1), Some(y2), Some(m1), Some(m2), Some(d1), Some(d2)) =
-                (d(i), d(i+1), d(i+2), d(i+3), d(i+4), d(i+5))
+                (d(i), d(i + 1), d(i + 2), d(i + 3), d(i + 4), d(i + 5))
             {
                 let month = m1 * 10 + m2;
                 let day = d1 * 10 + d2;
@@ -227,7 +267,9 @@ fn has_czech_birth_number(text: &str) -> bool {
                         let suffix_digits = (suffix_start..len)
                             .take_while(|&j| bytes[j].is_ascii_digit())
                             .count();
-                        if (suffix_digits == 3 || suffix_digits == 4) && is_word_boundary(bytes, i, suffix_start + suffix_digits, len) {
+                        if (suffix_digits == 3 || suffix_digits == 4)
+                            && is_word_boundary(bytes, i, suffix_start + suffix_digits, len)
+                        {
                             return true;
                         }
                     }
@@ -235,7 +277,9 @@ fn has_czech_birth_number(text: &str) -> bool {
                     let suffix_digits = (after6..len)
                         .take_while(|&j| bytes[j].is_ascii_digit())
                         .count();
-                    if (suffix_digits == 3 || suffix_digits == 4) && is_word_boundary(bytes, i, after6 + suffix_digits, len) {
+                    if (suffix_digits == 3 || suffix_digits == 4)
+                        && is_word_boundary(bytes, i, after6 + suffix_digits, len)
+                    {
                         return true;
                     }
                 }
@@ -252,9 +296,13 @@ fn has_iban(text: &str) -> bool {
     let len = bytes.len();
     let mut i = 0;
     while i + 5 <= len {
-        if bytes[i].is_ascii_uppercase() && i + 1 < len && bytes[i + 1].is_ascii_uppercase()
-            && i + 2 < len && bytes[i + 2].is_ascii_digit()
-            && i + 3 < len && bytes[i + 3].is_ascii_digit()
+        if bytes[i].is_ascii_uppercase()
+            && i + 1 < len
+            && bytes[i + 1].is_ascii_uppercase()
+            && i + 2 < len
+            && bytes[i + 2].is_ascii_digit()
+            && i + 3 < len
+            && bytes[i + 3].is_ascii_digit()
         {
             // Check word boundary before
             if i > 0 && bytes[i - 1].is_ascii_alphanumeric() {
@@ -269,7 +317,9 @@ fn has_iban(text: &str) -> bool {
                     alnum_count += 1;
                 }
                 j += 1;
-                if alnum_count > 30 { break; }
+                if alnum_count > 30 {
+                    break;
+                }
             }
             if alnum_count >= 8 && alnum_count <= 30 {
                 return true;
@@ -297,15 +347,21 @@ fn has_ipv4(text: &str) -> bool {
                 while j < len && bytes[j].is_ascii_digit() {
                     j += 1;
                 }
-                if j == num_start { break; }
+                if j == num_start {
+                    break;
+                }
                 let num_str: String = text[num_start..j].to_string();
                 if let Ok(n) = num_str.parse::<u32>() {
-                    if n > 255 { break; }
+                    if n > 255 {
+                        break;
+                    }
                     octets.push(n);
                 } else {
                     break;
                 }
-                if octets.len() == 4 { break; }
+                if octets.len() == 4 {
+                    break;
+                }
                 // Expect dot
                 if j < len && bytes[j] == b'.' {
                     j += 1;
@@ -315,9 +371,13 @@ fn has_ipv4(text: &str) -> bool {
             }
             if octets.len() == 4 {
                 // Skip common non-PII IPs: 0.0.0.0, 127.x.x.x, 255.255.255.255
-                let is_trivial = (octets[0] == 0 && octets[1] == 0 && octets[2] == 0 && octets[3] == 0)
-                    || octets[0] == 127
-                    || (octets[0] == 255 && octets[1] == 255 && octets[2] == 255 && octets[3] == 255);
+                let is_trivial =
+                    (octets[0] == 0 && octets[1] == 0 && octets[2] == 0 && octets[3] == 0)
+                        || octets[0] == 127
+                        || (octets[0] == 255
+                            && octets[1] == 255
+                            && octets[2] == 255
+                            && octets[3] == 255);
                 if !is_trivial && is_word_boundary(bytes, start, j, len) {
                     return true;
                 }
@@ -337,23 +397,36 @@ fn has_ssn(text: &str) -> bool {
     let mut i = 0;
     while i + 10 < len {
         if bytes[i].is_ascii_digit()
-            && i + 1 < len && bytes[i + 1].is_ascii_digit()
-            && i + 2 < len && bytes[i + 2].is_ascii_digit()
-            && i + 3 < len && bytes[i + 3] == b'-'
-            && i + 4 < len && bytes[i + 4].is_ascii_digit()
-            && i + 5 < len && bytes[i + 5].is_ascii_digit()
-            && i + 6 < len && bytes[i + 6] == b'-'
-            && i + 7 < len && bytes[i + 7].is_ascii_digit()
-            && i + 8 < len && bytes[i + 8].is_ascii_digit()
-            && i + 9 < len && bytes[i + 9].is_ascii_digit()
-            && i + 10 < len && bytes[i + 10].is_ascii_digit()
+            && i + 1 < len
+            && bytes[i + 1].is_ascii_digit()
+            && i + 2 < len
+            && bytes[i + 2].is_ascii_digit()
+            && i + 3 < len
+            && bytes[i + 3] == b'-'
+            && i + 4 < len
+            && bytes[i + 4].is_ascii_digit()
+            && i + 5 < len
+            && bytes[i + 5].is_ascii_digit()
+            && i + 6 < len
+            && bytes[i + 6] == b'-'
+            && i + 7 < len
+            && bytes[i + 7].is_ascii_digit()
+            && i + 8 < len
+            && bytes[i + 8].is_ascii_digit()
+            && i + 9 < len
+            && bytes[i + 9].is_ascii_digit()
+            && i + 10 < len
+            && bytes[i + 10].is_ascii_digit()
         {
             if is_word_boundary(bytes, i, i + 11, len) {
                 // Reject known invalid: 000-xx-xxxx, xxx-00-xxxx, xxx-xx-0000
-                let area = (bytes[i] - b'0') * 100 + (bytes[i+1] - b'0') * 10 + (bytes[i+2] - b'0');
-                let group = (bytes[i+4] - b'0') * 10 + (bytes[i+5] - b'0');
-                let serial = (bytes[i+7] - b'0') as u32 * 1000 + (bytes[i+8] - b'0') as u32 * 100
-                    + (bytes[i+9] - b'0') as u32 * 10 + (bytes[i+10] - b'0') as u32;
+                let area =
+                    (bytes[i] - b'0') * 100 + (bytes[i + 1] - b'0') * 10 + (bytes[i + 2] - b'0');
+                let group = (bytes[i + 4] - b'0') * 10 + (bytes[i + 5] - b'0');
+                let serial = (bytes[i + 7] - b'0') as u32 * 1000
+                    + (bytes[i + 8] - b'0') as u32 * 100
+                    + (bytes[i + 9] - b'0') as u32 * 10
+                    + (bytes[i + 10] - b'0') as u32;
                 if area != 0 && group != 0 && serial != 0 {
                     return true;
                 }
