@@ -84,9 +84,9 @@ struct FuncInfo {
 const NUM_IMPORTS: u32 = 3;
 
 // Import type indices (in the type section)
-const TYPE_CAP_CHECK: u32 = 0;   // (i64) -> i32
-const TYPE_CAP_REVOKE: u32 = 1;  // (i64) -> ()
-const TYPE_HOST_PRINT: u32 = 2;  // (i32, i32) -> ()
+const TYPE_CAP_CHECK: u32 = 0; // (i64) -> i32
+const TYPE_CAP_REVOKE: u32 = 1; // (i64) -> ()
+const TYPE_HOST_PRINT: u32 = 2; // (i32, i32) -> ()
 
 // --- Compiler ---
 
@@ -498,12 +498,7 @@ impl Compiler {
                     instrs.push(Instruction::If(wasm_encoder::BlockType::Result(
                         ValType::I64,
                     )));
-                    self.compile_block_stmts(
-                        instrs,
-                        ctx,
-                        &i.then_block.statements,
-                        true,
-                    )?;
+                    self.compile_block_stmts(instrs, ctx, &i.then_block.statements, true)?;
                     instrs.push(Instruction::Else);
                     self.compile_block_stmts(
                         instrs,
@@ -515,12 +510,7 @@ impl Compiler {
                 } else {
                     // If without else — void
                     instrs.push(Instruction::If(wasm_encoder::BlockType::Empty));
-                    self.compile_block_stmts(
-                        instrs,
-                        ctx,
-                        &i.then_block.statements,
-                        false,
-                    )?;
+                    self.compile_block_stmts(instrs, ctx, &i.then_block.statements, false)?;
                     instrs.push(Instruction::End);
                     // Push a default value since expressions must produce i64
                     instrs.push(Instruction::I64Const(0));
@@ -533,27 +523,17 @@ impl Compiler {
             Expr::StringLiteral(_) => Err(CompileError::UnsupportedFeature(
                 "string literals".to_string(),
             )),
-            Expr::Prompt(_) => {
-                Err(CompileError::UnsupportedFeature("prompt".to_string()))
+            Expr::Prompt(_) => Err(CompileError::UnsupportedFeature("prompt".to_string())),
+            Expr::Validate(_) => Err(CompileError::UnsupportedFeature("validate".to_string())),
+            Expr::Explore(_) => Err(CompileError::UnsupportedFeature("explore".to_string())),
+            Expr::FieldAccess(_) => {
+                Err(CompileError::UnsupportedFeature("field access".to_string()))
             }
-            Expr::Validate(_) => {
-                Err(CompileError::UnsupportedFeature("validate".to_string()))
+            Expr::ListLiteral(_) => {
+                Err(CompileError::UnsupportedFeature("list literal".to_string()))
             }
-            Expr::Explore(_) => {
-                Err(CompileError::UnsupportedFeature("explore".to_string()))
-            }
-            Expr::FieldAccess(_) => Err(CompileError::UnsupportedFeature(
-                "field access".to_string(),
-            )),
-            Expr::ListLiteral(_) => Err(CompileError::UnsupportedFeature(
-                "list literal".to_string(),
-            )),
-            Expr::MapLiteral(_) => Err(CompileError::UnsupportedFeature(
-                "map literal".to_string(),
-            )),
-            Expr::Spawn(_) => Err(CompileError::UnsupportedFeature(
-                "spawn".to_string(),
-            )),
+            Expr::MapLiteral(_) => Err(CompileError::UnsupportedFeature("map literal".to_string())),
+            Expr::Spawn(_) => Err(CompileError::UnsupportedFeature("spawn".to_string())),
         }
     }
 }
@@ -641,10 +621,7 @@ pub fn compile_program(program: &Program) -> Result<Vec<u8>, CompileError> {
     Ok(module.finish())
 }
 
-pub fn compile_from_store(
-    store: &ObjectStore,
-    root_hash: &str,
-) -> Result<Vec<u8>, CompileError> {
+pub fn compile_from_store(store: &ObjectStore, root_hash: &str) -> Result<Vec<u8>, CompileError> {
     let program: Program = store
         .load(root_hash)
         .map_err(|e| CompileError::InternalError(format!("storage error: {e}")))?;
@@ -670,7 +647,10 @@ mod tests {
     #[test]
     fn compile_empty_program() {
         let wasm = compile("").unwrap();
-        assert!(validate_wasm(&wasm), "empty program should produce valid WASM");
+        assert!(
+            validate_wasm(&wasm),
+            "empty program should produce valid WASM"
+        );
     }
 
     #[test]

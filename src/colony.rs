@@ -4,22 +4,21 @@
 // M32: Worker node — TCP server for remote evaluation.
 
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use crate::fitness::FitnessWeights;
 use crate::network::{
-    self, NetworkError,
-    MSG_EVAL, MSG_RESULT, MSG_PING, MSG_PONG,
-    MSG_AUTH, MSG_AUTH_OK, MSG_AUTH_FAIL,
+    self, MSG_AUTH, MSG_AUTH_FAIL, MSG_AUTH_OK, MSG_EVAL, MSG_PING, MSG_PONG, MSG_RESULT,
+    NetworkError,
 };
 
 // --- Constants ---
 
 const MAX_SOURCE_SIZE: usize = 1_048_576; // 1 MB
-const MAX_OUTPUT_SIZE: usize = 4096;      // 4 KB
+const MAX_OUTPUT_SIZE: usize = 4096; // 4 KB
 
 // Result status codes
 const STATUS_OK: u8 = 0x00;
@@ -80,7 +79,9 @@ impl ThreadPool {
     /// next available worker thread.
     pub fn execute<F: FnOnce() + Send + 'static>(&self, f: F) {
         if let Some(ref sender) = self.sender {
-            sender.send(Box::new(f)).expect("thread pool channel closed");
+            sender
+                .send(Box::new(f))
+                .expect("thread pool channel closed");
         }
     }
 
@@ -143,7 +144,11 @@ pub struct EvalResult {
 
 impl EvalResult {
     /// Convert to an ArenaEntry for ranking.
-    pub fn to_arena_entry(&self, file: &str, worker_addr: Option<&str>) -> crate::arena::ArenaEntry {
+    pub fn to_arena_entry(
+        &self,
+        file: &str,
+        worker_addr: Option<&str>,
+    ) -> crate::arena::ArenaEntry {
         if self.status != STATUS_OK || !self.error.is_empty() {
             let mut entry = crate::arena::ArenaEntry::from_error(file, &self.error);
             entry.score = self.score;
@@ -177,8 +182,7 @@ pub fn encode_eval_request(req: &EvalRequest) -> Vec<u8> {
     let filename_bytes = req.filename.as_bytes();
 
     let mut buf = Vec::with_capacity(
-        4 + 4 + source_bytes.len() + 8 + 4 + weights_bytes.len()
-        + 4 + filename_bytes.len() + 1 + 8
+        4 + 4 + source_bytes.len() + 8 + 4 + weights_bytes.len() + 4 + filename_bytes.len() + 1 + 8,
     );
 
     buf.extend_from_slice(&req.request_id.to_le_bytes());
@@ -203,7 +207,8 @@ pub fn decode_eval_request(payload: &[u8]) -> Result<EvalRequest, NetworkError> 
     let source_len = read_u32(payload, &mut pos)? as usize;
     if source_len > MAX_SOURCE_SIZE {
         return Err(NetworkError::Protocol(format!(
-            "source too large: {} bytes (max {})", source_len, MAX_SOURCE_SIZE
+            "source too large: {} bytes (max {})",
+            source_len, MAX_SOURCE_SIZE
         )));
     }
     let source = read_string(payload, &mut pos, source_len)?;
@@ -234,9 +239,8 @@ pub fn encode_eval_result(res: &EvalResult) -> Vec<u8> {
     let output_bytes = truncate_bytes(res.output.as_bytes(), MAX_OUTPUT_SIZE);
     let error_bytes = truncate_bytes(res.error.as_bytes(), MAX_OUTPUT_SIZE);
 
-    let mut buf = Vec::with_capacity(
-        4 + 1 + 5 * 8 + 4 + 4 + output_bytes.len() + 4 + error_bytes.len() + 8
-    );
+    let mut buf =
+        Vec::with_capacity(4 + 1 + 5 * 8 + 4 + 4 + output_bytes.len() + 4 + error_bytes.len() + 8);
 
     buf.extend_from_slice(&res.request_id.to_le_bytes());
     buf.push(res.status);
@@ -326,7 +330,14 @@ pub fn decode_pong(payload: &[u8]) -> Result<PongData, NetworkError> {
     let busy = read_u8(payload, &mut pos)? != 0;
     let backend_len = read_u32(payload, &mut pos)? as usize;
     let backend = read_string(payload, &mut pos, backend_len)?;
-    Ok(PongData { echo_ts, evals_completed, evals_failed, avg_eval_ms, busy, backend })
+    Ok(PongData {
+        echo_ts,
+        evals_completed,
+        evals_failed,
+        avg_eval_ms,
+        busy,
+        backend,
+    })
 }
 
 /// Decoded PONG data.
@@ -344,7 +355,7 @@ pub struct PongData {
 
 /// Compute SHA-256 of secret bytes for auth handshake.
 pub fn hash_secret(secret: &str) -> [u8; 32] {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(secret.as_bytes());
     let result = hasher.finalize();
@@ -416,7 +427,9 @@ impl WorkerStats {
 
     pub fn avg_eval_ms(&self) -> u64 {
         let completed = self.evals_completed.load(Ordering::Relaxed) as u64;
-        if completed == 0 { return 0; }
+        if completed == 0 {
+            return 0;
+        }
         self.total_eval_ms.load(Ordering::Relaxed) / completed
     }
 
@@ -438,8 +451,10 @@ pub struct WorkerConfig {
 /// Run a worker node that listens for EVAL/PING requests.
 pub fn run_worker(config: WorkerConfig) -> Result<(), NetworkError> {
     let listener = TcpListener::bind(&config.addr)?;
-    eprintln!("Worker listening on {} (max-concurrent: {}, max-connections: {})",
-        config.addr, config.max_concurrent, config.max_connections);
+    eprintln!(
+        "Worker listening on {} (max-concurrent: {}, max-connections: {})",
+        config.addr, config.max_concurrent, config.max_connections
+    );
 
     let stats = Arc::new(WorkerStats::new());
 
@@ -465,15 +480,19 @@ pub fn run_worker(config: WorkerConfig) -> Result<(), NetworkError> {
 
         let current = active_connections.load(Ordering::Relaxed);
         if current >= config.max_connections as u32 {
-            eprintln!("[worker] connection limit reached ({}/{}), rejecting",
-                current, config.max_connections);
+            eprintln!(
+                "[worker] connection limit reached ({}/{}), rejecting",
+                current, config.max_connections
+            );
             continue;
         }
 
         // Auth handshake on the accept thread (before spawning handler)
         if let Err(e) = server_auth(&mut stream, config.secret.as_deref()) {
-            let peer = stream.peer_addr()
-                .map(|a| a.to_string()).unwrap_or_default();
+            let peer = stream
+                .peer_addr()
+                .map(|a| a.to_string())
+                .unwrap_or_default();
             eprintln!("[worker] auth failed from {peer}: {e}");
             continue;
         }
@@ -500,7 +519,8 @@ fn handle_worker_connection(
     pool: &ThreadPool,
     backend_name: &str,
 ) {
-    let peer = stream.peer_addr()
+    let peer = stream
+        .peer_addr()
         .map(|a| a.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
 
@@ -520,14 +540,20 @@ fn handle_worker_connection(
                         let err_result = EvalResult {
                             request_id: 0,
                             status: STATUS_REJECTED,
-                            score: 0.0, cb_eff: 0.0, val_rate: 0.0, exp_rate: 0.0,
+                            score: 0.0,
+                            cb_eff: 0.0,
+                            val_rate: 0.0,
+                            exp_rate: 0.0,
                             prompt_count: 0,
                             output: String::new(),
                             error: format!("{e}"),
                             eval_time_ms: 0,
                         };
-                        let _ = network::write_msg(stream, MSG_RESULT,
-                            &encode_eval_result(&err_result));
+                        let _ = network::write_msg(
+                            stream,
+                            MSG_RESULT,
+                            &encode_eval_result(&err_result),
+                        );
                         continue;
                     }
                 };
@@ -569,15 +595,22 @@ fn handle_worker_connection(
                 } else {
                     stats.evals_failed.fetch_add(1, Ordering::Relaxed);
                 }
-                stats.total_eval_ms.fetch_add(result.eval_time_ms, Ordering::Relaxed);
+                stats
+                    .total_eval_ms
+                    .fetch_add(result.eval_time_ms, Ordering::Relaxed);
 
                 // Log
                 if result.error.is_empty() {
-                    eprintln!("[worker] EVAL #{req_id} {filename} ({source_len}B) -> {:.3} ({}ms)",
-                        result.score, result.eval_time_ms);
+                    eprintln!(
+                        "[worker] EVAL #{req_id} {filename} ({source_len}B) -> {:.3} ({}ms)",
+                        result.score, result.eval_time_ms
+                    );
                 } else {
-                    eprintln!("[worker] EVAL #{req_id} {filename} ({source_len}B) -> error: {} ({}ms)",
-                        truncate_str(&result.error, 60), result.eval_time_ms);
+                    eprintln!(
+                        "[worker] EVAL #{req_id} {filename} ({source_len}B) -> error: {} ({}ms)",
+                        truncate_str(&result.error, 60),
+                        result.eval_time_ms
+                    );
                 }
 
                 let result_payload = encode_eval_result(&result);
@@ -612,7 +645,10 @@ fn evaluate_locally(req: &EvalRequest) -> EvalResult {
             return EvalResult {
                 request_id: req.request_id,
                 status: STATUS_ERROR,
-                score: 0.0, cb_eff: 0.0, val_rate: 0.0, exp_rate: 0.0,
+                score: 0.0,
+                cb_eff: 0.0,
+                val_rate: 0.0,
+                exp_rate: 0.0,
                 prompt_count: 0,
                 output: String::new(),
                 error: truncate_str(&format!("{e}"), MAX_OUTPUT_SIZE).to_string(),
@@ -629,7 +665,10 @@ fn evaluate_locally(req: &EvalRequest) -> EvalResult {
             return EvalResult {
                 request_id: req.request_id,
                 status: STATUS_ERROR,
-                score: 0.0, cb_eff: 0.0, val_rate: 0.0, exp_rate: 0.0,
+                score: 0.0,
+                cb_eff: 0.0,
+                val_rate: 0.0,
+                exp_rate: 0.0,
                 prompt_count: 0,
                 output: String::new(),
                 error: truncate_str(&format!("{e}"), MAX_OUTPUT_SIZE).to_string(),
@@ -644,12 +683,18 @@ fn evaluate_locally(req: &EvalRequest) -> EvalResult {
 
     // Workers may not have an .agentis dir; create temp store if needed
     let (store, refs) = if root.join("objects").exists() {
-        (crate::storage::ObjectStore::new(&root), crate::refs::Refs::new(&root))
+        (
+            crate::storage::ObjectStore::new(&root),
+            crate::refs::Refs::new(&root),
+        )
     } else {
         let tmp = std::env::temp_dir().join(format!("agentis_worker_{}", std::process::id()));
         let _ = std::fs::create_dir_all(tmp.join("objects"));
         let _ = std::fs::create_dir_all(tmp.join("refs"));
-        (crate::storage::ObjectStore::new(&tmp), crate::refs::Refs::new(&tmp))
+        (
+            crate::storage::ObjectStore::new(&tmp),
+            crate::refs::Refs::new(&tmp),
+        )
     };
 
     let _ = store.save(&program).ok();
@@ -722,14 +767,16 @@ pub fn parse_workers(value: &str) -> Vec<String> {
     let path = std::path::Path::new(value);
     if path.is_file() {
         if let Ok(contents) = std::fs::read_to_string(path) {
-            return contents.lines()
+            return contents
+                .lines()
                 .map(|l| l.trim())
                 .filter(|l| !l.is_empty() && !l.starts_with('#'))
                 .map(|l| l.to_string())
                 .collect();
         }
     }
-    value.split(',')
+    value
+        .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
@@ -749,7 +796,8 @@ pub fn evaluate_on_worker(
     eval_timeout_ms: u64,
 ) -> Result<crate::arena::ArenaEntry, String> {
     // Connect with timeout
-    let addr: std::net::SocketAddr = worker_addr.parse()
+    let addr: std::net::SocketAddr = worker_addr
+        .parse()
         .map_err(|e| format!("invalid address: {e}"))?;
     let connect_timeout = std::time::Duration::from_millis(connect_timeout_ms);
     let mut stream = TcpStream::connect_timeout(&addr, connect_timeout)
@@ -757,14 +805,15 @@ pub fn evaluate_on_worker(
 
     // Set read/write timeouts for eval
     let eval_timeout = std::time::Duration::from_millis(eval_timeout_ms);
-    stream.set_read_timeout(Some(eval_timeout))
+    stream
+        .set_read_timeout(Some(eval_timeout))
         .map_err(|e| format!("failed to set read timeout: {e}"))?;
-    stream.set_write_timeout(Some(eval_timeout))
+    stream
+        .set_write_timeout(Some(eval_timeout))
         .map_err(|e| format!("failed to set write timeout: {e}"))?;
 
     // Auth handshake
-    client_auth(&mut stream, secret)
-        .map_err(|e| categorize_auth_error(e))?;
+    client_auth(&mut stream, secret).map_err(|e| categorize_auth_error(e))?;
 
     // Send EVAL
     let request_id = 1; // single eval per connection for now
@@ -782,14 +831,16 @@ pub fn evaluate_on_worker(
         .map_err(|e| categorize_protocol_error(e))?;
 
     // Read RESULT
-    let (msg_type, result_payload) = network::read_msg(&mut stream)
-        .map_err(|e| categorize_protocol_error(e))?;
+    let (msg_type, result_payload) =
+        network::read_msg(&mut stream).map_err(|e| categorize_protocol_error(e))?;
     if msg_type != MSG_RESULT {
-        return Err(format!("protocol error (expected RESULT 0x06, got 0x{msg_type:02x})"));
+        return Err(format!(
+            "protocol error (expected RESULT 0x06, got 0x{msg_type:02x})"
+        ));
     }
 
-    let result = decode_eval_result(&result_payload)
-        .map_err(|e| format!("protocol error ({e})"))?;
+    let result =
+        decode_eval_result(&result_payload).map_err(|e| format!("protocol error ({e})"))?;
 
     Ok(result.to_arena_entry(file, Some(worker_addr)))
 }
@@ -806,7 +857,8 @@ pub fn run_arena_colony(
     budget: u64,
 ) -> Vec<crate::arena::ArenaEntry> {
     let num_workers = colony.workers.len();
-    eprintln!("Colony arena: {} variants, {} worker{}, {} round{} each",
+    eprintln!(
+        "Colony arena: {} variants, {} worker{}, {} round{} each",
         files.len(),
         num_workers,
         if num_workers == 1 { "" } else { "s" },
@@ -835,24 +887,38 @@ pub fn run_arena_colony(
 
             if source.len() > MAX_SOURCE_SIZE {
                 round_entries.push(crate::arena::ArenaEntry::from_error(
-                    file, &format!("source too large ({} bytes, max {})", source.len(), MAX_SOURCE_SIZE)));
+                    file,
+                    &format!(
+                        "source too large ({} bytes, max {})",
+                        source.len(),
+                        MAX_SOURCE_SIZE
+                    ),
+                ));
                 continue;
             }
 
             match evaluate_on_worker(
-                worker_addr, file, &source, budget, weights,
-                grant_pii, colony.secret.as_deref(),
-                colony.connect_timeout_ms, colony.eval_timeout_ms,
+                worker_addr,
+                file,
+                &source,
+                budget,
+                weights,
+                grant_pii,
+                colony.secret.as_deref(),
+                colony.connect_timeout_ms,
+                colony.eval_timeout_ms,
             ) {
                 Ok(entry) => {
                     round_entries.push(entry);
                 }
                 Err(reason) => {
-                    eprintln!("Warning: Worker {} {}, falling back to local",
-                        worker_addr, reason);
+                    eprintln!(
+                        "Warning: Worker {} {}, falling back to local",
+                        worker_addr, reason
+                    );
                     // Fallback to local
-                    let entry = evaluate_locally_for_arena(
-                        file, &source, root, grant_pii, weights, budget);
+                    let entry =
+                        evaluate_locally_for_arena(file, &source, root, grant_pii, weights, budget);
                     round_entries.push(entry);
                 }
             }
@@ -922,8 +988,8 @@ fn evaluate_locally_for_arena(
 
     match evaluator.eval_program(&program) {
         Ok(_) => {
-            let mut entry = crate::arena::ArenaEntry::from_report(
-                file, &evaluator.fitness_report(), weights);
+            let mut entry =
+                crate::arena::ArenaEntry::from_report(file, &evaluator.fitness_report(), weights);
             entry.worker = Some("local".to_string());
             entry.eval_time_ms = Some(elapsed);
             entry
@@ -982,19 +1048,17 @@ pub struct WorkerStatus {
 
 /// Ping a single worker: connect, auth, send PING, read PONG.
 /// Returns WorkerStatus with latency measured as PING/PONG roundtrip.
-pub fn ping_worker(
-    addr: &str,
-    secret: Option<&str>,
-    connect_timeout_ms: u64,
-) -> WorkerStatus {
+pub fn ping_worker(addr: &str, secret: Option<&str>, connect_timeout_ms: u64) -> WorkerStatus {
     let parsed: std::net::SocketAddr = match addr.parse() {
         Ok(a) => a,
-        Err(_) => return WorkerStatus {
-            addr: addr.to_string(),
-            status: "invalid-address".to_string(),
-            pong: None,
-            latency_ms: None,
-        },
+        Err(_) => {
+            return WorkerStatus {
+                addr: addr.to_string(),
+                status: "invalid-address".to_string(),
+                pong: None,
+                latency_ms: None,
+            };
+        }
     };
 
     let timeout = std::time::Duration::from_millis(connect_timeout_ms);
@@ -1041,12 +1105,14 @@ pub fn ping_worker(
     let rtt_start = Instant::now();
     let (msg_type, pong_payload) = match network::read_msg(&mut stream) {
         Ok(r) => r,
-        Err(_) => return WorkerStatus {
-            addr: addr.to_string(),
-            status: "offline (read error)".to_string(),
-            pong: None,
-            latency_ms: None,
-        },
+        Err(_) => {
+            return WorkerStatus {
+                addr: addr.to_string(),
+                status: "offline (read error)".to_string(),
+                pong: None,
+                latency_ms: None,
+            };
+        }
     };
     let latency = rtt_start.elapsed().as_millis() as u64;
 
@@ -1081,7 +1147,8 @@ pub fn colony_status(
     secret: Option<&str>,
     connect_timeout_ms: u64,
 ) -> Vec<WorkerStatus> {
-    workers.iter()
+    workers
+        .iter()
         .map(|addr| ping_worker(addr, secret, connect_timeout_ms))
         .collect()
 }
@@ -1089,26 +1156,36 @@ pub fn colony_status(
 /// Format colony status as a table.
 pub fn format_status_table(statuses: &[WorkerStatus]) -> String {
     let mut out = String::new();
-    out.push_str(&format!("Colony Status: {} worker{}\n\n",
+    out.push_str(&format!(
+        "Colony Status: {} worker{}\n\n",
         statuses.len(),
         if statuses.len() == 1 { "" } else { "s" },
     ));
 
     // Find max address length for column alignment
-    let max_addr = statuses.iter()
+    let max_addr = statuses
+        .iter()
         .map(|s| s.addr.len())
         .max()
         .unwrap_or(6)
         .max(6);
 
-    out.push_str(&format!("{:<width$}  {:<12}{:>7}{:>8}{:>8}  {:<5}{}\n",
-        "WORKER", "STATUS", "EVALS", "FAILED", "AVG_MS", "BUSY", "BACKEND",
+    out.push_str(&format!(
+        "{:<width$}  {:<12}{:>7}{:>8}{:>8}  {:<5}{}\n",
+        "WORKER",
+        "STATUS",
+        "EVALS",
+        "FAILED",
+        "AVG_MS",
+        "BUSY",
+        "BACKEND",
         width = max_addr,
     ));
 
     for s in statuses {
         if let Some(ref pong) = s.pong {
-            out.push_str(&format!("{:<width$}  {:<12}{:>7}{:>8}{:>7}ms  {:<5}{}\n",
+            out.push_str(&format!(
+                "{:<width$}  {:<12}{:>7}{:>8}{:>7}ms  {:<5}{}\n",
                 s.addr,
                 s.status,
                 pong.evals_completed,
@@ -1119,10 +1196,15 @@ pub fn format_status_table(statuses: &[WorkerStatus]) -> String {
                 width = max_addr,
             ));
         } else {
-            out.push_str(&format!("{:<width$}  {:<12}{:>7}{:>8}{:>8}  {:<5}{}\n",
+            out.push_str(&format!(
+                "{:<width$}  {:<12}{:>7}{:>8}{:>8}  {:<5}{}\n",
                 s.addr,
                 s.status,
-                "--", "--", "--", "--", "--",
+                "--",
+                "--",
+                "--",
+                "--",
+                "--",
                 width = max_addr,
             ));
         }
@@ -1130,52 +1212,78 @@ pub fn format_status_table(statuses: &[WorkerStatus]) -> String {
 
     // Summary
     let online = statuses.iter().filter(|s| s.status == "online").count();
-    let total_evals: u32 = statuses.iter()
+    let total_evals: u32 = statuses
+        .iter()
         .filter_map(|s| s.pong.as_ref().map(|p| p.evals_completed))
         .sum();
-    let total_failed: u32 = statuses.iter()
+    let total_failed: u32 = statuses
+        .iter()
         .filter_map(|s| s.pong.as_ref().map(|p| p.evals_failed))
         .sum();
-    let eval_times: Vec<u64> = statuses.iter()
+    let eval_times: Vec<u64> = statuses
+        .iter()
         .filter_map(|s| s.pong.as_ref().map(|p| p.avg_eval_ms))
         .collect();
-    let avg_eval = if eval_times.is_empty() { 0 } else {
+    let avg_eval = if eval_times.is_empty() {
+        0
+    } else {
         eval_times.iter().sum::<u64>() / eval_times.len() as u64
     };
 
-    out.push_str(&format!("\nSummary: {}/{} online, {} evals completed, {} failed, avg {}ms\n",
-        online, statuses.len(), total_evals, total_failed, avg_eval));
+    out.push_str(&format!(
+        "\nSummary: {}/{} online, {} evals completed, {} failed, avg {}ms\n",
+        online,
+        statuses.len(),
+        total_evals,
+        total_failed,
+        avg_eval
+    ));
 
     out
 }
 
 /// Format colony status as JSON.
 pub fn format_status_json(statuses: &[WorkerStatus]) -> String {
-    let items: Vec<String> = statuses.iter().map(|s| {
-        let mut fields: Vec<(&str, crate::json::JsonValue)> = vec![
-            ("worker", crate::json::JsonValue::String(s.addr.clone())),
-            ("status", crate::json::JsonValue::String(s.status.clone())),
-        ];
-        if let Some(ref pong) = s.pong {
-            fields.push(("evals_completed", crate::json::JsonValue::Int(pong.evals_completed as i64)));
-            fields.push(("evals_failed", crate::json::JsonValue::Int(pong.evals_failed as i64)));
-            fields.push(("avg_eval_ms", crate::json::JsonValue::Int(pong.avg_eval_ms as i64)));
-            fields.push(("busy", crate::json::JsonValue::Bool(pong.busy)));
-            fields.push(("backend", crate::json::JsonValue::String(pong.backend.clone())));
-        } else {
-            fields.push(("evals_completed", crate::json::JsonValue::Null));
-            fields.push(("evals_failed", crate::json::JsonValue::Null));
-            fields.push(("avg_eval_ms", crate::json::JsonValue::Null));
-            fields.push(("busy", crate::json::JsonValue::Null));
-            fields.push(("backend", crate::json::JsonValue::Null));
-        }
-        if let Some(lat) = s.latency_ms {
-            fields.push(("latency_ms", crate::json::JsonValue::Int(lat as i64)));
-        } else {
-            fields.push(("latency_ms", crate::json::JsonValue::Null));
-        }
-        format!("{}", crate::json::object(fields))
-    }).collect();
+    let items: Vec<String> = statuses
+        .iter()
+        .map(|s| {
+            let mut fields: Vec<(&str, crate::json::JsonValue)> = vec![
+                ("worker", crate::json::JsonValue::String(s.addr.clone())),
+                ("status", crate::json::JsonValue::String(s.status.clone())),
+            ];
+            if let Some(ref pong) = s.pong {
+                fields.push((
+                    "evals_completed",
+                    crate::json::JsonValue::Int(pong.evals_completed as i64),
+                ));
+                fields.push((
+                    "evals_failed",
+                    crate::json::JsonValue::Int(pong.evals_failed as i64),
+                ));
+                fields.push((
+                    "avg_eval_ms",
+                    crate::json::JsonValue::Int(pong.avg_eval_ms as i64),
+                ));
+                fields.push(("busy", crate::json::JsonValue::Bool(pong.busy)));
+                fields.push((
+                    "backend",
+                    crate::json::JsonValue::String(pong.backend.clone()),
+                ));
+            } else {
+                fields.push(("evals_completed", crate::json::JsonValue::Null));
+                fields.push(("evals_failed", crate::json::JsonValue::Null));
+                fields.push(("avg_eval_ms", crate::json::JsonValue::Null));
+                fields.push(("busy", crate::json::JsonValue::Null));
+                fields.push(("backend", crate::json::JsonValue::Null));
+            }
+            if let Some(lat) = s.latency_ms {
+                fields.push(("latency_ms", crate::json::JsonValue::Int(lat as i64)));
+            } else {
+                fields.push(("latency_ms", crate::json::JsonValue::Null));
+            }
+            format!("{}", crate::json::object(fields))
+        })
+        .collect();
 
     format!("[{}]", items.join(","))
 }
@@ -1187,10 +1295,15 @@ pub fn format_ping(status: &WorkerStatus) -> String {
     out.push_str(&format!("  Status:     {}\n", status.status));
 
     if let Some(ref pong) = status.pong {
-        out.push_str(&format!("  Evals:      {} completed, {} failed\n",
-            pong.evals_completed, pong.evals_failed));
+        out.push_str(&format!(
+            "  Evals:      {} completed, {} failed\n",
+            pong.evals_completed, pong.evals_failed
+        ));
         out.push_str(&format!("  Avg eval:   {}ms\n", pong.avg_eval_ms));
-        out.push_str(&format!("  Busy:       {}\n", if pong.busy { "yes" } else { "no" }));
+        out.push_str(&format!(
+            "  Busy:       {}\n",
+            if pong.busy { "yes" } else { "no" }
+        ));
         out.push_str(&format!("  Backend:    {}\n", pong.backend));
     }
 
@@ -1214,7 +1327,9 @@ fn read_u8(buf: &[u8], pos: &mut usize) -> Result<u8, NetworkError> {
 
 fn read_u32(buf: &[u8], pos: &mut usize) -> Result<u32, NetworkError> {
     if *pos + 4 > buf.len() {
-        return Err(NetworkError::Protocol("truncated payload (u32)".to_string()));
+        return Err(NetworkError::Protocol(
+            "truncated payload (u32)".to_string(),
+        ));
     }
     let val = u32::from_le_bytes(buf[*pos..*pos + 4].try_into().unwrap());
     *pos += 4;
@@ -1223,7 +1338,9 @@ fn read_u32(buf: &[u8], pos: &mut usize) -> Result<u32, NetworkError> {
 
 fn read_u64(buf: &[u8], pos: &mut usize) -> Result<u64, NetworkError> {
     if *pos + 8 > buf.len() {
-        return Err(NetworkError::Protocol("truncated payload (u64)".to_string()));
+        return Err(NetworkError::Protocol(
+            "truncated payload (u64)".to_string(),
+        ));
     }
     let val = u64::from_le_bytes(buf[*pos..*pos + 8].try_into().unwrap());
     *pos += 8;
@@ -1232,7 +1349,9 @@ fn read_u64(buf: &[u8], pos: &mut usize) -> Result<u64, NetworkError> {
 
 fn read_f64(buf: &[u8], pos: &mut usize) -> Result<f64, NetworkError> {
     if *pos + 8 > buf.len() {
-        return Err(NetworkError::Protocol("truncated payload (f64)".to_string()));
+        return Err(NetworkError::Protocol(
+            "truncated payload (f64)".to_string(),
+        ));
     }
     let val = f64::from_le_bytes(buf[*pos..*pos + 8].try_into().unwrap());
     *pos += 8;
@@ -1241,7 +1360,9 @@ fn read_f64(buf: &[u8], pos: &mut usize) -> Result<f64, NetworkError> {
 
 fn read_string(buf: &[u8], pos: &mut usize, len: usize) -> Result<String, NetworkError> {
     if *pos + len > buf.len() {
-        return Err(NetworkError::Protocol("truncated payload (string)".to_string()));
+        return Err(NetworkError::Protocol(
+            "truncated payload (string)".to_string(),
+        ));
     }
     let s = String::from_utf8(buf[*pos..*pos + len].to_vec())
         .map_err(|_| NetworkError::Protocol("invalid UTF-8".to_string()))?;
@@ -1699,7 +1820,8 @@ mod tests {
             let stats = WorkerStats::new();
             stats.evals_completed.store(5, Ordering::Relaxed);
             let pong_payload = encode_pong(echo_ts, &stats, "test-backend");
-            crate::network::write_msg(&mut stream, crate::network::MSG_PONG, &pong_payload).unwrap();
+            crate::network::write_msg(&mut stream, crate::network::MSG_PONG, &pong_payload)
+                .unwrap();
         });
 
         let mut client = std::net::TcpStream::connect(&addr).unwrap();
@@ -1755,7 +1877,10 @@ mod tests {
     #[test]
     fn parse_workers_csv() {
         let workers = parse_workers("10.0.0.1:9462,10.0.0.2:9462,10.0.0.3:9462");
-        assert_eq!(workers, vec!["10.0.0.1:9462", "10.0.0.2:9462", "10.0.0.3:9462"]);
+        assert_eq!(
+            workers,
+            vec!["10.0.0.1:9462", "10.0.0.2:9462", "10.0.0.3:9462"]
+        );
     }
 
     #[test]
@@ -1769,10 +1894,17 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("agentis_test_workers_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let file = dir.join("workers.txt");
-        std::fs::write(&file, "10.0.0.1:9462\n# comment\n10.0.0.2:9462\n\n10.0.0.3:9462\n").unwrap();
+        std::fs::write(
+            &file,
+            "10.0.0.1:9462\n# comment\n10.0.0.2:9462\n\n10.0.0.3:9462\n",
+        )
+        .unwrap();
 
         let workers = parse_workers(file.to_str().unwrap());
-        assert_eq!(workers, vec!["10.0.0.1:9462", "10.0.0.2:9462", "10.0.0.3:9462"]);
+        assert_eq!(
+            workers,
+            vec!["10.0.0.1:9462", "10.0.0.2:9462", "10.0.0.3:9462"]
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1821,7 +1953,7 @@ mod tests {
     fn evaluate_on_worker_connection_refused() {
         // Try connecting to a port that's not listening
         let result = evaluate_on_worker(
-            "127.0.0.1:1",   // port 1 should be refused
+            "127.0.0.1:1", // port 1 should be refused
             "test.ag",
             "let x = 1;",
             10_000,
@@ -1833,7 +1965,10 @@ mod tests {
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("refused") || err.contains("unreachable"), "got: {err}");
+        assert!(
+            err.contains("refused") || err.contains("unreachable"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -1881,7 +2016,8 @@ mod tests {
             None,
             5_000,
             30_000,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(entry.file, "test.ag");
         assert!((entry.score - 0.85).abs() < 1e-10);
@@ -1938,7 +2074,8 @@ mod tests {
             Some(secret),
             5_000,
             30_000,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!((entry.score - 0.7).abs() < 1e-10);
         handle.join().unwrap();
@@ -1980,15 +2117,25 @@ mod tests {
         let entries = vec![
             crate::arena::ArenaEntry {
                 file: "a.ag".to_string(),
-                score: 0.9, cb_eff: 0.95, val_rate: 1.0, exp_rate: 0.5,
-                prompt_count: 3, error: None, rounds: 1,
+                score: 0.9,
+                cb_eff: 0.95,
+                val_rate: 1.0,
+                exp_rate: 0.5,
+                prompt_count: 3,
+                error: None,
+                rounds: 1,
                 worker: Some("10.0.0.1:9462".to_string()),
                 eval_time_ms: Some(100),
             },
             crate::arena::ArenaEntry {
                 file: "b.ag".to_string(),
-                score: 0.8, cb_eff: 0.9, val_rate: 1.0, exp_rate: 0.5,
-                prompt_count: 2, error: None, rounds: 1,
+                score: 0.8,
+                cb_eff: 0.9,
+                val_rate: 1.0,
+                exp_rate: 0.5,
+                prompt_count: 2,
+                error: None,
+                rounds: 1,
                 worker: Some("local".to_string()),
                 eval_time_ms: Some(200),
             },
@@ -2005,7 +2152,11 @@ mod tests {
     fn ping_worker_offline() {
         // Port 1 should be unreachable
         let status = ping_worker("127.0.0.1:1", None, 1_000);
-        assert!(status.status.starts_with("offline"), "got: {}", status.status);
+        assert!(
+            status.status.starts_with("offline"),
+            "got: {}",
+            status.status
+        );
         assert!(status.pong.is_none());
         assert!(status.latency_ms.is_none());
     }
@@ -2087,7 +2238,11 @@ mod tests {
         });
 
         let status = ping_worker(&addr, Some("wrong-secret"), 5_000);
-        assert!(status.status.starts_with("auth-fail"), "got: {}", status.status);
+        assert!(
+            status.status.starts_with("auth-fail"),
+            "got: {}",
+            status.status
+        );
         assert!(status.pong.is_none());
 
         handle.join().unwrap();
@@ -2160,21 +2315,19 @@ mod tests {
 
     #[test]
     fn format_status_json_output() {
-        let statuses = vec![
-            WorkerStatus {
-                addr: "10.0.0.1:9462".to_string(),
-                status: "online".to_string(),
-                pong: Some(PongData {
-                    echo_ts: 0,
-                    evals_completed: 10,
-                    evals_failed: 1,
-                    avg_eval_ms: 100,
-                    busy: true,
-                    backend: "cli".to_string(),
-                }),
-                latency_ms: Some(5),
-            },
-        ];
+        let statuses = vec![WorkerStatus {
+            addr: "10.0.0.1:9462".to_string(),
+            status: "online".to_string(),
+            pong: Some(PongData {
+                echo_ts: 0,
+                evals_completed: 10,
+                evals_failed: 1,
+                avg_eval_ms: 100,
+                busy: true,
+                backend: "cli".to_string(),
+            }),
+            latency_ms: Some(5),
+        }];
 
         let json = format_status_json(&statuses);
         assert!(json.contains("\"worker\":\"10.0.0.1:9462\""), "got: {json}");
@@ -2187,14 +2340,12 @@ mod tests {
 
     #[test]
     fn format_status_json_offline() {
-        let statuses = vec![
-            WorkerStatus {
-                addr: "10.0.0.1:9462".to_string(),
-                status: "offline".to_string(),
-                pong: None,
-                latency_ms: None,
-            },
-        ];
+        let statuses = vec![WorkerStatus {
+            addr: "10.0.0.1:9462".to_string(),
+            status: "offline".to_string(),
+            pong: None,
+            latency_ms: None,
+        }];
 
         let json = format_status_json(&statuses);
         assert!(json.contains("\"evals_completed\":null"), "got: {json}");

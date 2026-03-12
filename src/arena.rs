@@ -34,7 +34,11 @@ impl ArenaEntry {
             val_rate: report.validate_rate(),
             exp_rate: report.explore_rate(),
             prompt_count: report.prompt_count,
-            error: if report.error { Some("runtime error".to_string()) } else { None },
+            error: if report.error {
+                Some("runtime error".to_string())
+            } else {
+                None
+            },
             rounds: 1,
             worker: None,
             eval_time_ms: None,
@@ -90,7 +94,8 @@ impl ArenaEntry {
             cb_eff: successful.iter().map(|e| e.cb_eff).sum::<f64>() / sn,
             val_rate: successful.iter().map(|e| e.val_rate).sum::<f64>() / sn,
             exp_rate: successful.iter().map(|e| e.exp_rate).sum::<f64>() / sn,
-            prompt_count: (successful.iter().map(|e| e.prompt_count).sum::<usize>() as f64 / sn).round() as usize,
+            prompt_count: (successful.iter().map(|e| e.prompt_count).sum::<usize>() as f64 / sn)
+                .round() as usize,
             error: if has_error {
                 Some(format!("{}/{} rounds failed", errors.len(), entries.len()))
             } else {
@@ -116,22 +121,30 @@ fn truncate_error(s: &str, max: usize) -> String {
 /// Format the arena results as a human-readable table.
 pub fn format_table(entries: &[ArenaEntry], rounds: usize) -> String {
     let mut out = String::new();
-    out.push_str(&format!("Arena: {} variants, {} round{} each\n\n",
+    out.push_str(&format!(
+        "Arena: {} variants, {} round{} each\n\n",
         entries.len(),
         rounds,
         if rounds == 1 { "" } else { "s" },
     ));
 
     // Find max file name length for column alignment
-    let max_file_len = entries.iter()
+    let max_file_len = entries
+        .iter()
         .map(|e| e.file.len())
         .max()
         .unwrap_or(4)
         .max(4)
         .min(30);
 
-    out.push_str(&format!("{:<6}{:<width$}  {:<8}{:<8}{:<7}{}\n",
-        "RANK", "FILE", "SCORE", "CB_EFF", "VAL", "EXP",
+    out.push_str(&format!(
+        "{:<6}{:<width$}  {:<8}{:<8}{:<7}{}\n",
+        "RANK",
+        "FILE",
+        "SCORE",
+        "CB_EFF",
+        "VAL",
+        "EXP",
         width = max_file_len + 2,
     ));
 
@@ -143,7 +156,8 @@ pub fn format_table(entries: &[ArenaEntry], rounds: usize) -> String {
         };
 
         if let Some(ref err) = entry.error {
-            out.push_str(&format!("{:<6}{:<width$}  {:<8}\u{2014}       \u{2014}      \u{2014} (error: {})\n",
+            out.push_str(&format!(
+                "{:<6}{:<width$}  {:<8}\u{2014}       \u{2014}      \u{2014} (error: {})\n",
                 i + 1,
                 file_display,
                 format!("{:.3}", entry.score),
@@ -151,7 +165,8 @@ pub fn format_table(entries: &[ArenaEntry], rounds: usize) -> String {
                 width = max_file_len + 2,
             ));
         } else {
-            out.push_str(&format!("{:<6}{:<width$}  {:<8}{:<8}{:<7}{:.2}\n",
+            out.push_str(&format!(
+                "{:<6}{:<width$}  {:<8}{:<8}{:<7}{:.2}\n",
                 i + 1,
                 file_display,
                 format!("{:.3}", entry.score),
@@ -165,7 +180,10 @@ pub fn format_table(entries: &[ArenaEntry], rounds: usize) -> String {
 
     if let Some(winner) = entries.first() {
         if winner.error.is_none() {
-            out.push_str(&format!("\nWinner: {} (score: {:.3})\n", winner.file, winner.score));
+            out.push_str(&format!(
+                "\nWinner: {} (score: {:.3})\n",
+                winner.file, winner.score
+            ));
         }
     }
 
@@ -174,16 +192,18 @@ pub fn format_table(entries: &[ArenaEntry], rounds: usize) -> String {
 
 /// Format a colony stats summary line.
 pub fn format_colony_stats(entries: &[ArenaEntry], worker_count: usize) -> String {
-    let local_count = entries.iter()
+    let local_count = entries
+        .iter()
         .filter(|e| e.worker.as_deref() == Some("local"))
         .count();
-    let eval_times: Vec<u64> = entries.iter()
-        .filter_map(|e| e.eval_time_ms)
-        .collect();
-    let avg_ms = if eval_times.is_empty() { 0 } else {
+    let eval_times: Vec<u64> = entries.iter().filter_map(|e| e.eval_time_ms).collect();
+    let avg_ms = if eval_times.is_empty() {
+        0
+    } else {
         eval_times.iter().sum::<u64>() / eval_times.len() as u64
     };
-    format!("Colony: {} worker{}, {} local fallback{}, avg eval {}ms",
+    format!(
+        "Colony: {} worker{}, {} local fallback{}, avg eval {}ms",
         worker_count,
         if worker_count == 1 { "" } else { "s" },
         local_count,
@@ -194,53 +214,62 @@ pub fn format_colony_stats(entries: &[ArenaEntry], worker_count: usize) -> Strin
 
 /// Format the arena results as JSON.
 pub fn format_json(entries: &[ArenaEntry], rounds: usize) -> String {
-    let items: Vec<String> = entries.iter().enumerate().map(|(i, e)| {
-        let mut fields: Vec<(&str, json::JsonValue)> = vec![
-            ("rank", json::JsonValue::Int((i + 1) as i64)),
-            ("file", json::JsonValue::String(e.file.clone())),
-            ("score", json::JsonValue::Float(e.score)),
-        ];
+    let items: Vec<String> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let mut fields: Vec<(&str, json::JsonValue)> = vec![
+                ("rank", json::JsonValue::Int((i + 1) as i64)),
+                ("file", json::JsonValue::String(e.file.clone())),
+                ("score", json::JsonValue::Float(e.score)),
+            ];
 
-        if e.error.is_none() {
-            fields.push(("cb_eff", json::JsonValue::Float(e.cb_eff)));
-            fields.push(("val_rate", json::JsonValue::Float(e.val_rate)));
-            fields.push(("exp_rate", json::JsonValue::Float(e.exp_rate)));
-            fields.push(("prompt_count", json::JsonValue::Int(e.prompt_count as i64)));
-            fields.push(("error", json::JsonValue::Null));
-        } else {
-            fields.push(("cb_eff", json::JsonValue::Null));
-            fields.push(("val_rate", json::JsonValue::Null));
-            fields.push(("exp_rate", json::JsonValue::Null));
-            fields.push(("prompt_count", json::JsonValue::Int(e.prompt_count as i64)));
-            fields.push(("error", json::JsonValue::String(e.error.clone().unwrap())));
-        }
+            if e.error.is_none() {
+                fields.push(("cb_eff", json::JsonValue::Float(e.cb_eff)));
+                fields.push(("val_rate", json::JsonValue::Float(e.val_rate)));
+                fields.push(("exp_rate", json::JsonValue::Float(e.exp_rate)));
+                fields.push(("prompt_count", json::JsonValue::Int(e.prompt_count as i64)));
+                fields.push(("error", json::JsonValue::Null));
+            } else {
+                fields.push(("cb_eff", json::JsonValue::Null));
+                fields.push(("val_rate", json::JsonValue::Null));
+                fields.push(("exp_rate", json::JsonValue::Null));
+                fields.push(("prompt_count", json::JsonValue::Int(e.prompt_count as i64)));
+                fields.push(("error", json::JsonValue::String(e.error.clone().unwrap())));
+            }
 
-        if rounds > 1 {
-            fields.push(("rounds", json::JsonValue::Int(rounds as i64)));
-            fields.push(("rounds_avg", json::JsonValue::Bool(true)));
-        }
+            if rounds > 1 {
+                fields.push(("rounds", json::JsonValue::Int(rounds as i64)));
+                fields.push(("rounds_avg", json::JsonValue::Bool(true)));
+            }
 
-        // Colony fields (only present when running with --workers)
-        if let Some(ref w) = e.worker {
-            fields.push(("worker", json::JsonValue::String(w.clone())));
-        }
-        if let Some(t) = e.eval_time_ms {
-            fields.push(("eval_time_ms", json::JsonValue::Int(t as i64)));
-        }
+            // Colony fields (only present when running with --workers)
+            if let Some(ref w) = e.worker {
+                fields.push(("worker", json::JsonValue::String(w.clone())));
+            }
+            if let Some(t) = e.eval_time_ms {
+                fields.push(("eval_time_ms", json::JsonValue::Int(t as i64)));
+            }
 
-        format!("{}", json::object(fields))
-    }).collect();
+            format!("{}", json::object(fields))
+        })
+        .collect();
 
     format!("[{}]", items.join(","))
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fitness::FitnessReport;
 
-    fn make_report(cb_remaining: u64, val_passed: usize, val_total: usize, exp_passed: usize, exp_total: usize) -> FitnessReport {
+    fn make_report(
+        cb_remaining: u64,
+        val_passed: usize,
+        val_total: usize,
+        exp_passed: usize,
+        exp_total: usize,
+    ) -> FitnessReport {
         FitnessReport {
             cb_initial: 10000,
             cb_remaining,
@@ -360,20 +389,18 @@ mod tests {
 
     #[test]
     fn format_json_basic() {
-        let entries = vec![
-            ArenaEntry {
-                file: "a.ag".to_string(),
-                score: 0.9,
-                cb_eff: 0.95,
-                val_rate: 1.0,
-                exp_rate: 0.5,
-                prompt_count: 3,
-                error: None,
-                rounds: 1,
-                worker: None,
-                eval_time_ms: None,
-            },
-        ];
+        let entries = vec![ArenaEntry {
+            file: "a.ag".to_string(),
+            score: 0.9,
+            cb_eff: 0.95,
+            val_rate: 1.0,
+            exp_rate: 0.5,
+            prompt_count: 3,
+            error: None,
+            rounds: 1,
+            worker: None,
+            eval_time_ms: None,
+        }];
         let j = format_json(&entries, 1);
         assert!(j.starts_with("[{"));
         assert!(j.ends_with("}]"));
@@ -386,20 +413,18 @@ mod tests {
 
     #[test]
     fn format_json_multi_round() {
-        let entries = vec![
-            ArenaEntry {
-                file: "a.ag".to_string(),
-                score: 0.9,
-                cb_eff: 0.95,
-                val_rate: 1.0,
-                exp_rate: 0.5,
-                prompt_count: 3,
-                error: None,
-                rounds: 3,
-                worker: None,
-                eval_time_ms: None,
-            },
-        ];
+        let entries = vec![ArenaEntry {
+            file: "a.ag".to_string(),
+            score: 0.9,
+            cb_eff: 0.95,
+            val_rate: 1.0,
+            exp_rate: 0.5,
+            prompt_count: 3,
+            error: None,
+            rounds: 3,
+            worker: None,
+            eval_time_ms: None,
+        }];
         let j = format_json(&entries, 3);
         assert!(j.contains("\"rounds\":3"));
         assert!(j.contains("\"rounds_avg\":true"));
@@ -407,20 +432,18 @@ mod tests {
 
     #[test]
     fn format_table_multiple_rounds() {
-        let entries = vec![
-            ArenaEntry {
-                file: "a.ag".to_string(),
-                score: 0.85,
-                cb_eff: 0.9,
-                val_rate: 1.0,
-                exp_rate: 0.5,
-                prompt_count: 3,
-                error: None,
-                rounds: 5,
-                worker: None,
-                eval_time_ms: None,
-            },
-        ];
+        let entries = vec![ArenaEntry {
+            file: "a.ag".to_string(),
+            score: 0.85,
+            cb_eff: 0.9,
+            val_rate: 1.0,
+            exp_rate: 0.5,
+            prompt_count: 3,
+            error: None,
+            rounds: 5,
+            worker: None,
+            eval_time_ms: None,
+        }];
         let table = format_table(&entries, 5);
         assert!(table.contains("5 rounds each"));
     }

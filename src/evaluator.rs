@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::ast::*;
 use crate::audit::AuditLog;
@@ -85,7 +85,9 @@ impl std::fmt::Display for Value {
             Value::List(items) => {
                 write!(f, "[")?;
                 for (i, v) in items.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{v}")?;
                 }
                 write!(f, "]")
@@ -93,7 +95,9 @@ impl std::fmt::Display for Value {
             Value::Map(entries) => {
                 write!(f, "{{")?;
                 for (i, (k, v)) in entries.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{k}: {v}")?;
                 }
                 write!(f, "}}")
@@ -101,7 +105,9 @@ impl std::fmt::Display for Value {
             Value::Struct(name, fields) => {
                 write!(f, "{name} {{ ")?;
                 for (i, (k, v)) in fields.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{k}: {v}")?;
                 }
                 write!(f, " }}")
@@ -140,22 +146,43 @@ impl std::fmt::Display for ErrorDetail {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvalError {
-    CognitiveOverload { budget: u64, required: u64 },
-    ValidationFailed { predicate_index: usize, detail: String },
+    CognitiveOverload {
+        budget: u64,
+        required: u64,
+    },
+    ValidationFailed {
+        predicate_index: usize,
+        detail: String,
+    },
     UndefinedVariable(String),
     UndefinedFunction(String),
-    UndefinedField { type_name: String, field: String },
-    TypeError { expected: String, got: String },
+    UndefinedField {
+        type_name: String,
+        field: String,
+    },
+    TypeError {
+        expected: String,
+        got: String,
+    },
     DivisionByZero,
-    ArityMismatch { expected: usize, got: usize },
+    ArityMismatch {
+        expected: usize,
+        got: usize,
+    },
     Return(Value),
     NotAStruct(String),
     CapabilityDenied(CapError),
     General(String),
     /// Wraps an inner error with DAG context path.
-    InContext { context: Vec<String>, inner: Box<EvalError> },
+    InContext {
+        context: Vec<String>,
+        inner: Box<EvalError>,
+    },
     /// Rich error with structured context and actionable hints.
-    Detailed { inner: Box<EvalError>, detail: ErrorDetail },
+    Detailed {
+        inner: Box<EvalError>,
+        detail: ErrorDetail,
+    },
 }
 
 impl EvalError {
@@ -201,8 +228,14 @@ impl std::fmt::Display for EvalError {
             EvalError::CognitiveOverload { budget, required } => {
                 write!(f, "CognitiveOverload: budget {budget}, required {required}")
             }
-            EvalError::ValidationFailed { predicate_index, detail } => {
-                write!(f, "ValidationFailed: predicate #{predicate_index}: {detail}")
+            EvalError::ValidationFailed {
+                predicate_index,
+                detail,
+            } => {
+                write!(
+                    f,
+                    "ValidationFailed: predicate #{predicate_index}: {detail}"
+                )
             }
             EvalError::UndefinedVariable(name) => write!(f, "undefined variable: {name}"),
             EvalError::UndefinedFunction(name) => write!(f, "undefined function: {name}"),
@@ -476,11 +509,13 @@ impl<'a> Evaluator<'a> {
                         return Ok(());
                     }
                 }
-                Err(EvalError::CapabilityDenied(CapError::RevokedCapability(kind)))
+                Err(EvalError::CapabilityDenied(CapError::RevokedCapability(
+                    kind,
+                )))
             }
-            None => Err(EvalError::CapabilityDenied(
-                CapError::MissingCapability(kind),
-            )),
+            None => Err(EvalError::CapabilityDenied(CapError::MissingCapability(
+                kind,
+            ))),
         }
     }
 
@@ -557,11 +592,15 @@ impl<'a> Evaluator<'a> {
             return Err(EvalError::CognitiveOverload {
                 budget: self.budget,
                 required: cost,
-            }.with_detail(ErrorDetail {
+            }
+            .with_detail(ErrorDetail {
                 agent_name: self.current_agent_name.clone(),
                 expression_desc: format!("operation costing {} CB", cost),
                 hints: vec![
-                    format!("remaining budget: {}, initial: {}", self.budget, self.initial_budget),
+                    format!(
+                        "remaining budget: {}, initial: {}",
+                        self.budget, self.initial_budget
+                    ),
                     "increase budget with 'cb <amount>;' or reduce operations".to_string(),
                 ],
             }));
@@ -578,10 +617,12 @@ impl<'a> Evaluator<'a> {
                     self.resolve_import(imp)?;
                 }
                 Declaration::Function(f) => {
-                    self.functions.insert(f.name.clone(), Callable::Function(f.clone()));
+                    self.functions
+                        .insert(f.name.clone(), Callable::Function(f.clone()));
                 }
                 Declaration::Agent(a) => {
-                    self.functions.insert(a.name.clone(), Callable::Agent(a.clone()));
+                    self.functions
+                        .insert(a.name.clone(), Callable::Agent(a.clone()));
                 }
                 Declaration::Type(t) => {
                     self.types.insert(t.name.clone(), t.clone());
@@ -604,7 +645,10 @@ impl<'a> Evaluator<'a> {
                             if let Statement::Expression(expr_stmt) = stmt {
                                 if let Expr::Validate(v) = &expr_stmt.expr {
                                     self.test_outcomes.as_mut().unwrap().push(TestOutcome {
-                                        name: format!("validate ({} predicates)", v.predicates.len()),
+                                        name: format!(
+                                            "validate ({} predicates)",
+                                            v.predicates.len()
+                                        ),
                                         kind: TestKind::Validate,
                                         passed: true,
                                         detail: None,
@@ -621,7 +665,10 @@ impl<'a> Evaluator<'a> {
                             if let Statement::Expression(expr_stmt) = stmt {
                                 if let Expr::Validate(v) = &expr_stmt.expr {
                                     self.test_outcomes.as_mut().unwrap().push(TestOutcome {
-                                        name: format!("validate ({} predicates)", v.predicates.len()),
+                                        name: format!(
+                                            "validate ({} predicates)",
+                                            v.predicates.len()
+                                        ),
                                         kind: TestKind::Validate,
                                         passed: false,
                                         detail: Some(format!("{e}")),
@@ -650,11 +697,13 @@ impl<'a> Evaluator<'a> {
                 Ok(Value::Void)
             }
             Declaration::Function(f) => {
-                self.functions.insert(f.name.clone(), Callable::Function(f.clone()));
+                self.functions
+                    .insert(f.name.clone(), Callable::Function(f.clone()));
                 Ok(Value::Void)
             }
             Declaration::Agent(a) => {
-                self.functions.insert(a.name.clone(), Callable::Agent(a.clone()));
+                self.functions
+                    .insert(a.name.clone(), Callable::Agent(a.clone()));
                 Ok(Value::Void)
             }
             Declaration::Type(t) => {
@@ -675,7 +724,8 @@ impl<'a> Evaluator<'a> {
         // Cycle detection
         if self.imported_hashes.contains(&imp.hash) {
             return Err(EvalError::General(format!(
-                "cyclic import detected: {}", &imp.hash[..12.min(imp.hash.len())]
+                "cyclic import detected: {}",
+                &imp.hash[..12.min(imp.hash.len())]
             )));
         }
         self.imported_hashes.insert(imp.hash.clone());
@@ -695,7 +745,10 @@ impl<'a> Evaluator<'a> {
         };
 
         let imported_program: Program = store.load(&imp.hash).map_err(|e| {
-            EvalError::General(format!("import {}: {e}", &imp.hash[..12.min(imp.hash.len())]))
+            EvalError::General(format!(
+                "import {}: {e}",
+                &imp.hash[..12.min(imp.hash.len())]
+            ))
         })?;
 
         // Recursively resolve imports in the imported program
@@ -737,7 +790,8 @@ impl<'a> Evaluator<'a> {
                 } else {
                     return Err(EvalError::General(format!(
                         "import: '{}' not found in {}",
-                        name, &imp.hash[..12.min(imp.hash.len())]
+                        name,
+                        &imp.hash[..12.min(imp.hash.len())]
                     )));
                 }
             }
@@ -745,10 +799,12 @@ impl<'a> Evaluator<'a> {
             // Aliased import: import "hash" as utils;
             // Register with prefixed names: utils.func_name
             for (name, callable) in &funcs {
-                self.functions.insert(format!("{alias}.{name}"), callable.clone());
+                self.functions
+                    .insert(format!("{alias}.{name}"), callable.clone());
             }
             for (name, type_decl) in &type_decls {
-                self.types.insert(format!("{alias}.{name}"), type_decl.clone());
+                self.types
+                    .insert(format!("{alias}.{name}"), type_decl.clone());
             }
         } else {
             // Bare import: import "hash"; — import everything
@@ -848,7 +904,9 @@ impl<'a> Evaluator<'a> {
             (Value::Int(a), BinaryOp::Sub, Value::Int(b)) => Ok(Value::Int(a - b)),
             (Value::Int(a), BinaryOp::Mul, Value::Int(b)) => Ok(Value::Int(a * b)),
             (Value::Int(a), BinaryOp::Div, Value::Int(b)) => {
-                if *b == 0 { return Err(EvalError::DivisionByZero); }
+                if *b == 0 {
+                    return Err(EvalError::DivisionByZero);
+                }
                 Ok(Value::Int(a / b))
             }
 
@@ -857,7 +915,9 @@ impl<'a> Evaluator<'a> {
             (Value::Float(a), BinaryOp::Sub, Value::Float(b)) => Ok(Value::Float(a - b)),
             (Value::Float(a), BinaryOp::Mul, Value::Float(b)) => Ok(Value::Float(a * b)),
             (Value::Float(a), BinaryOp::Div, Value::Float(b)) => {
-                if *b == 0.0 { return Err(EvalError::DivisionByZero); }
+                if *b == 0.0 {
+                    return Err(EvalError::DivisionByZero);
+                }
                 Ok(Value::Float(a / b))
             }
 
@@ -869,11 +929,15 @@ impl<'a> Evaluator<'a> {
             (Value::Int(a), BinaryOp::Mul, Value::Float(b)) => Ok(Value::Float(*a as f64 * b)),
             (Value::Float(a), BinaryOp::Mul, Value::Int(b)) => Ok(Value::Float(a * *b as f64)),
             (Value::Int(a), BinaryOp::Div, Value::Float(b)) => {
-                if *b == 0.0 { return Err(EvalError::DivisionByZero); }
+                if *b == 0.0 {
+                    return Err(EvalError::DivisionByZero);
+                }
                 Ok(Value::Float(*a as f64 / b))
             }
             (Value::Float(a), BinaryOp::Div, Value::Int(b)) => {
-                if *b == 0 { return Err(EvalError::DivisionByZero); }
+                if *b == 0 {
+                    return Err(EvalError::DivisionByZero);
+                }
                 Ok(Value::Float(a / *b as f64))
             }
 
@@ -958,7 +1022,10 @@ impl<'a> Evaluator<'a> {
             }
             "len" => {
                 if expr.args.len() != 1 {
-                    return Err(EvalError::ArityMismatch { expected: 1, got: expr.args.len() });
+                    return Err(EvalError::ArityMismatch {
+                        expected: 1,
+                        got: expr.args.len(),
+                    });
                 }
                 let val = self.eval_expr(&expr.args[0])?;
                 return match val {
@@ -973,7 +1040,10 @@ impl<'a> Evaluator<'a> {
             }
             "push" => {
                 if expr.args.len() != 2 {
-                    return Err(EvalError::ArityMismatch { expected: 2, got: expr.args.len() });
+                    return Err(EvalError::ArityMismatch {
+                        expected: 2,
+                        got: expr.args.len(),
+                    });
                 }
                 let list = self.eval_expr(&expr.args[0])?;
                 let item = self.eval_expr(&expr.args[1])?;
@@ -990,16 +1060,22 @@ impl<'a> Evaluator<'a> {
             }
             "get" => {
                 if expr.args.len() != 2 {
-                    return Err(EvalError::ArityMismatch { expected: 2, got: expr.args.len() });
+                    return Err(EvalError::ArityMismatch {
+                        expected: 2,
+                        got: expr.args.len(),
+                    });
                 }
                 let collection = self.eval_expr(&expr.args[0])?;
                 let key = self.eval_expr(&expr.args[1])?;
                 return match (&collection, &key) {
                     (Value::List(items), Value::Int(idx)) => {
                         let i = *idx as usize;
-                        items.get(i).cloned().ok_or_else(|| EvalError::General(
-                            format!("index {i} out of bounds (len {})", items.len()),
-                        ))
+                        items.get(i).cloned().ok_or_else(|| {
+                            EvalError::General(format!(
+                                "index {i} out of bounds (len {})",
+                                items.len()
+                            ))
+                        })
                     }
                     (Value::Map(entries), _) => {
                         for (k, v) in entries {
@@ -1033,7 +1109,10 @@ impl<'a> Evaluator<'a> {
             }
             "typeof" => {
                 if expr.args.len() != 1 {
-                    return Err(EvalError::ArityMismatch { expected: 1, got: expr.args.len() });
+                    return Err(EvalError::ArityMismatch {
+                        expected: 1,
+                        got: expr.args.len(),
+                    });
                 }
                 let val = self.eval_expr(&expr.args[0])?;
                 return Ok(Value::String(val.type_name().to_string()));
@@ -1042,20 +1121,26 @@ impl<'a> Evaluator<'a> {
                 self.require_cap(CapKind::FileRead)?;
                 self.spend(10)?;
                 if expr.args.len() != 1 {
-                    return Err(EvalError::ArityMismatch { expected: 1, got: expr.args.len() });
+                    return Err(EvalError::ArityMismatch {
+                        expected: 1,
+                        got: expr.args.len(),
+                    });
                 }
                 let path = self.eval_expr(&expr.args[0])?;
                 let path_str = match &path {
                     Value::String(s) => s.as_str(),
-                    _ => return Err(EvalError::TypeError {
-                        expected: "string".into(),
-                        got: path.type_name().to_string(),
-                    }),
+                    _ => {
+                        return Err(EvalError::TypeError {
+                            expected: "string".into(),
+                            got: path.type_name().to_string(),
+                        });
+                    }
                 };
-                let io = self.io_context.ok_or_else(|| {
-                    EvalError::General("I/O not configured".into())
-                })?;
-                let content = io.file_read(path_str)
+                let io = self
+                    .io_context
+                    .ok_or_else(|| EvalError::General("I/O not configured".into()))?;
+                let content = io
+                    .file_read(path_str)
                     .map_err(|e| EvalError::General(format!("{e}")))?;
                 return Ok(Value::String(content));
             }
@@ -1063,21 +1148,26 @@ impl<'a> Evaluator<'a> {
                 self.require_cap(CapKind::FileWrite)?;
                 self.spend(10)?;
                 if expr.args.len() != 2 {
-                    return Err(EvalError::ArityMismatch { expected: 2, got: expr.args.len() });
+                    return Err(EvalError::ArityMismatch {
+                        expected: 2,
+                        got: expr.args.len(),
+                    });
                 }
                 let path = self.eval_expr(&expr.args[0])?;
                 let content = self.eval_expr(&expr.args[1])?;
                 let path_str = match &path {
                     Value::String(s) => s.as_str(),
-                    _ => return Err(EvalError::TypeError {
-                        expected: "string".into(),
-                        got: path.type_name().to_string(),
-                    }),
+                    _ => {
+                        return Err(EvalError::TypeError {
+                            expected: "string".into(),
+                            got: path.type_name().to_string(),
+                        });
+                    }
                 };
                 let content_str = format!("{content}");
-                let io = self.io_context.ok_or_else(|| {
-                    EvalError::General("I/O not configured".into())
-                })?;
+                let io = self
+                    .io_context
+                    .ok_or_else(|| EvalError::General("I/O not configured".into()))?;
                 io.file_write(path_str, &content_str)
                     .map_err(|e| EvalError::General(format!("{e}")))?;
                 return Ok(Value::Void);
@@ -1086,20 +1176,26 @@ impl<'a> Evaluator<'a> {
                 self.require_cap(CapKind::NetConnect)?;
                 self.spend(25)?;
                 if expr.args.len() != 1 {
-                    return Err(EvalError::ArityMismatch { expected: 1, got: expr.args.len() });
+                    return Err(EvalError::ArityMismatch {
+                        expected: 1,
+                        got: expr.args.len(),
+                    });
                 }
                 let url = self.eval_expr(&expr.args[0])?;
                 let url_str = match &url {
                     Value::String(s) => s.as_str(),
-                    _ => return Err(EvalError::TypeError {
-                        expected: "string".into(),
-                        got: url.type_name().to_string(),
-                    }),
+                    _ => {
+                        return Err(EvalError::TypeError {
+                            expected: "string".into(),
+                            got: url.type_name().to_string(),
+                        });
+                    }
                 };
-                let io = self.io_context.ok_or_else(|| {
-                    EvalError::General("I/O not configured".into())
-                })?;
-                let body = io.http_get(url_str)
+                let io = self
+                    .io_context
+                    .ok_or_else(|| EvalError::General("I/O not configured".into()))?;
+                let body = io
+                    .http_get(url_str)
                     .map_err(|e| EvalError::General(format!("{e}")))?;
                 return Ok(Value::String(body));
             }
@@ -1107,47 +1203,61 @@ impl<'a> Evaluator<'a> {
                 self.require_cap(CapKind::NetConnect)?;
                 self.spend(25)?;
                 if expr.args.len() != 2 {
-                    return Err(EvalError::ArityMismatch { expected: 2, got: expr.args.len() });
+                    return Err(EvalError::ArityMismatch {
+                        expected: 2,
+                        got: expr.args.len(),
+                    });
                 }
                 let url = self.eval_expr(&expr.args[0])?;
                 let body = self.eval_expr(&expr.args[1])?;
                 let url_str = match &url {
                     Value::String(s) => s.as_str(),
-                    _ => return Err(EvalError::TypeError {
-                        expected: "string".into(),
-                        got: url.type_name().to_string(),
-                    }),
+                    _ => {
+                        return Err(EvalError::TypeError {
+                            expected: "string".into(),
+                            got: url.type_name().to_string(),
+                        });
+                    }
                 };
                 let body_str = match &body {
                     Value::String(s) => s.clone(),
                     _ => format!("{body}"),
                 };
-                let io = self.io_context.ok_or_else(|| {
-                    EvalError::General("I/O not configured".into())
-                })?;
-                let response = io.http_post(url_str, &body_str)
+                let io = self
+                    .io_context
+                    .ok_or_else(|| EvalError::General("I/O not configured".into()))?;
+                let response = io
+                    .http_post(url_str, &body_str)
                     .map_err(|e| EvalError::General(format!("{e}")))?;
                 return Ok(Value::String(response));
             }
             "await" => {
                 if expr.args.len() != 1 {
-                    return Err(EvalError::ArityMismatch { expected: 1, got: expr.args.len() });
+                    return Err(EvalError::ArityMismatch {
+                        expected: 1,
+                        got: expr.args.len(),
+                    });
                 }
                 let handle_val = self.eval_expr(&expr.args[0])?;
                 return self.await_agent(handle_val);
             }
             "await_timeout" => {
                 if expr.args.len() != 2 {
-                    return Err(EvalError::ArityMismatch { expected: 2, got: expr.args.len() });
+                    return Err(EvalError::ArityMismatch {
+                        expected: 2,
+                        got: expr.args.len(),
+                    });
                 }
                 let handle_val = self.eval_expr(&expr.args[0])?;
                 let timeout_val = self.eval_expr(&expr.args[1])?;
                 let ms = match &timeout_val {
                     Value::Int(n) => *n as u64,
-                    _ => return Err(EvalError::TypeError {
-                        expected: "int".into(),
-                        got: timeout_val.type_name().to_string(),
-                    }),
+                    _ => {
+                        return Err(EvalError::TypeError {
+                            expected: "int".into(),
+                            got: timeout_val.type_name().to_string(),
+                        });
+                    }
                 };
                 return self.await_agent_timeout(handle_val, ms);
             }
@@ -1161,15 +1271,25 @@ impl<'a> Evaluator<'a> {
                 let err = EvalError::UndefinedFunction(expr.callee.clone());
                 let mut hints = Vec::new();
                 // Suggest similar names
-                let similar: Vec<&String> = self.functions.keys()
+                let similar: Vec<&String> = self
+                    .functions
+                    .keys()
                     .filter(|k| {
-                        k.contains(&expr.callee) || expr.callee.contains(k.as_str())
+                        k.contains(&expr.callee)
+                            || expr.callee.contains(k.as_str())
                             || levenshtein_close(k, &expr.callee)
                     })
                     .take(3)
                     .collect();
                 if !similar.is_empty() {
-                    hints.push(format!("similar: {}", similar.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")));
+                    hints.push(format!(
+                        "similar: {}",
+                        similar
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
                 }
                 return Err(err.with_detail(ErrorDetail {
                     agent_name: self.current_agent_name.clone(),
@@ -1190,17 +1310,17 @@ impl<'a> Evaluator<'a> {
             return Err(EvalError::ArityMismatch {
                 expected: params.len(),
                 got: expr.args.len(),
-            }.with_detail(ErrorDetail {
+            }
+            .with_detail(ErrorDetail {
                 agent_name: self.current_agent_name.clone(),
-                expression_desc: format!(
-                    "{kind} {}({})",
-                    expr.callee,
-                    param_names.join(", ")
-                ),
+                expression_desc: format!("{kind} {}({})", expr.callee, param_names.join(", ")),
                 hints: vec![format!(
                     "{} \"{}\" expects {} args ({}), got {}",
-                    kind, expr.callee, params.len(),
-                    param_names.join(", "), expr.args.len()
+                    kind,
+                    expr.callee,
+                    params.len(),
+                    param_names.join(", "),
+                    expr.args.len()
                 )],
             }));
         }
@@ -1219,7 +1339,11 @@ impl<'a> Evaluator<'a> {
         }
 
         // Save state for agents (isolated scope)
-        let saved_env = if is_agent { Some(self.env.clone()) } else { None };
+        let saved_env = if is_agent {
+            Some(self.env.clone())
+        } else {
+            None
+        };
         let saved_agent_name = if is_agent {
             let prev = self.current_agent_name.take();
             self.current_agent_name = Some(expr.callee.clone());
@@ -1293,10 +1417,13 @@ impl<'a> Evaluator<'a> {
         let object = self.eval_expr(&expr.object)?;
         match &object {
             Value::Struct(type_name, fields) => {
-                fields.get(&expr.field).cloned().ok_or_else(|| EvalError::UndefinedField {
-                    type_name: type_name.clone(),
-                    field: expr.field.clone(),
-                })
+                fields
+                    .get(&expr.field)
+                    .cloned()
+                    .ok_or_else(|| EvalError::UndefinedField {
+                        type_name: type_name.clone(),
+                        field: expr.field.clone(),
+                    })
             }
             _ => Err(EvalError::NotAStruct(object.type_name().to_string())),
         }
@@ -1337,7 +1464,8 @@ impl<'a> Evaluator<'a> {
                     hints: vec![
                         format!("PII detected: {}", pii_result.types_str()),
                         format!("input length: {} chars", input_str.len()),
-                        "grant PiiTransmit via --grant-pii or config pii_transmit = allow".to_string(),
+                        "grant PiiTransmit via --grant-pii or config pii_transmit = allow"
+                            .to_string(),
                     ],
                 }));
             }
@@ -1383,7 +1511,13 @@ impl<'a> Evaluator<'a> {
             }
             r
         } else {
-            self.call_llm_with_timer(backend, &expr.instruction, &input_str, &expr.return_type, fields_opt)?
+            self.call_llm_with_timer(
+                backend,
+                &expr.instruction,
+                &input_str,
+                &expr.return_type,
+                fields_opt,
+            )?
         };
 
         if let Some(t) = &self.tracer {
@@ -1457,9 +1591,7 @@ impl<'a> Evaluator<'a> {
             let mut next_tick = start + interval;
             while !done_clone.load(AtomOrd::Relaxed) {
                 std::thread::sleep(Duration::from_millis(100));
-                if !done_clone.load(AtomOrd::Relaxed)
-                    && Instant::now() >= next_tick
-                {
+                if !done_clone.load(AtomOrd::Relaxed) && Instant::now() >= next_tick {
                     let elapsed = start.elapsed().as_secs_f64();
                     eprintln!("[llm] still waiting ... ({elapsed:.1}s)");
                     next_tick += interval;
@@ -1532,11 +1664,13 @@ impl<'a> Evaluator<'a> {
                     return Err(EvalError::ValidationFailed {
                         predicate_index: i,
                         detail: format!("predicate #{i} evaluated to false"),
-                    }.with_detail(ErrorDetail {
+                    }
+                    .with_detail(ErrorDetail {
                         agent_name: self.current_agent_name.clone(),
                         expression_desc: format!(
                             "validate <{}> ({} predicates)",
-                            target.type_name(), count
+                            target.type_name(),
+                            count
                         ),
                         hints: vec![format!(
                             "predicate #{i} of {count} failed (target type: {})",
@@ -1573,14 +1707,18 @@ impl<'a> Evaluator<'a> {
         let handle_id = self.spawn_counter;
 
         // Look up the agent
-        let callable = self.functions.get(&expr.agent_name).cloned()
+        let callable = self
+            .functions
+            .get(&expr.agent_name)
+            .cloned()
             .ok_or_else(|| EvalError::UndefinedFunction(expr.agent_name.clone()))?;
 
         let (params, body) = match &callable {
             Callable::Agent(a) => (&a.params, a.body.clone()),
             Callable::Function(_) => {
                 return Err(EvalError::General(format!(
-                    "spawn requires an agent, '{}' is a function", expr.agent_name
+                    "spawn requires an agent, '{}' is a function",
+                    expr.agent_name
                 )));
             }
         };
@@ -1590,7 +1728,8 @@ impl<'a> Evaluator<'a> {
             return Err(EvalError::ArityMismatch {
                 expected: params.len(),
                 got: expr.args.len(),
-            }.with_detail(ErrorDetail {
+            }
+            .with_detail(ErrorDetail {
                 agent_name: self.current_agent_name.clone(),
                 expression_desc: format!(
                     "spawn agent {}({})",
@@ -1599,7 +1738,9 @@ impl<'a> Evaluator<'a> {
                 ),
                 hints: vec![format!(
                     "agent \"{}\" expects {} args, got {}",
-                    expr.agent_name, params.len(), expr.args.len()
+                    expr.agent_name,
+                    params.len(),
+                    expr.args.len()
                 )],
             }));
         }
@@ -1614,7 +1755,8 @@ impl<'a> Evaluator<'a> {
         let child_functions = self.functions.clone();
         let child_types = self.types.clone();
         let child_budget = self.budget; // child gets same budget as parent's current
-        let child_params: Vec<(String, Value)> = params.iter()
+        let child_params: Vec<(String, Value)> = params
+            .iter()
             .map(|p| p.name.clone())
             .zip(arg_vals)
             .collect();
@@ -1630,8 +1772,7 @@ impl<'a> Evaluator<'a> {
 
         let handle = std::thread::spawn(move || {
             let result = (|| {
-                let mut child = Evaluator::new(child_budget)
-                    .with_max_agents(max_agents);
+                let mut child = Evaluator::new(child_budget).with_max_agents(max_agents);
                 child.active_agents = counter_for_thread.clone();
                 child.grant_all();
                 child.functions = child_functions;
@@ -1664,13 +1805,16 @@ impl<'a> Evaluator<'a> {
     fn await_agent(&mut self, handle_val: Value) -> Result<Value, EvalError> {
         let handle_arc = match handle_val {
             Value::AgentHandle(h) => h,
-            _ => return Err(EvalError::TypeError {
-                expected: "agent_handle".into(),
-                got: handle_val.type_name().to_string(),
-            }),
+            _ => {
+                return Err(EvalError::TypeError {
+                    expected: "agent_handle".into(),
+                    got: handle_val.type_name().to_string(),
+                });
+            }
         };
 
-        let join_handle = handle_arc.lock()
+        let join_handle = handle_arc
+            .lock()
             .map_err(|_| EvalError::General("agent handle poisoned".into()))?
             .take()
             .ok_or_else(|| EvalError::General("agent already awaited".into()))?;
@@ -1695,20 +1839,22 @@ impl<'a> Evaluator<'a> {
     fn await_agent_timeout(&mut self, handle_val: Value, ms: u64) -> Result<Value, EvalError> {
         let handle_arc = match handle_val {
             Value::AgentHandle(h) => h,
-            _ => return Err(EvalError::TypeError {
-                expected: "agent_handle".into(),
-                got: handle_val.type_name().to_string(),
-            }),
+            _ => {
+                return Err(EvalError::TypeError {
+                    expected: "agent_handle".into(),
+                    got: handle_val.type_name().to_string(),
+                });
+            }
         };
 
-        let join_handle = handle_arc.lock()
+        let join_handle = handle_arc
+            .lock()
             .map_err(|_| EvalError::General("agent handle poisoned".into()))?
             .take()
             .ok_or_else(|| EvalError::General("agent already awaited".into()))?;
 
         // Poll with timeout using a parking thread
-        let result_arc: Arc<Mutex<Option<Result<Value, EvalError>>>> =
-            Arc::new(Mutex::new(None));
+        let result_arc: Arc<Mutex<Option<Result<Value, EvalError>>>> = Arc::new(Mutex::new(None));
         let result_clone = result_arc.clone();
 
         let waiter = std::thread::spawn(move || {
@@ -1877,7 +2023,10 @@ mod tests {
 
     #[test]
     fn string_concat() {
-        assert_eq!(eval(r#""hello" + " " + "world";"#), Ok(Value::String("hello world".into())));
+        assert_eq!(
+            eval(r#""hello" + " " + "world";"#),
+            Ok(Value::String("hello world".into()))
+        );
     }
 
     #[test]
@@ -1944,33 +2093,39 @@ mod tests {
 
     #[test]
     fn if_true() {
-        let output = eval_output(r#"
+        let output = eval_output(
+            r#"
             if true {
                 print("yes");
             }
-        "#);
+        "#,
+        );
         assert_eq!(output, vec!["yes"]);
     }
 
     #[test]
     fn if_false_no_else() {
-        let output = eval_output(r#"
+        let output = eval_output(
+            r#"
             if false {
                 print("yes");
             }
-        "#);
+        "#,
+        );
         assert!(output.is_empty());
     }
 
     #[test]
     fn if_else() {
-        let output = eval_output(r#"
+        let output = eval_output(
+            r#"
             if false {
                 print("yes");
             } else {
                 print("no");
             }
-        "#);
+        "#,
+        );
         assert_eq!(output, vec!["no"]);
     }
 
@@ -1978,17 +2133,24 @@ mod tests {
 
     #[test]
     fn function_call() {
-        assert_eq!(eval(r#"
+        assert_eq!(
+            eval(
+                r#"
             fn add(a: int, b: int) -> int {
                 return a + b;
             }
             add(2, 3);
-        "#), Ok(Value::Int(5)));
+        "#
+            ),
+            Ok(Value::Int(5))
+        );
     }
 
     #[test]
     fn recursive_function() {
-        assert_eq!(eval(r#"
+        assert_eq!(
+            eval(
+                r#"
             fn factorial(n: int) -> int {
                 if n <= 1 {
                     return 1;
@@ -1996,24 +2158,33 @@ mod tests {
                 return n * factorial(n - 1);
             }
             factorial(5);
-        "#), Ok(Value::Int(120)));
+        "#
+            ),
+            Ok(Value::Int(120))
+        );
     }
 
     #[test]
     fn function_arity_mismatch() {
-        let result = eval(r#"
+        let result = eval(
+            r#"
             fn f(x: int) -> int { return x; }
             f(1, 2);
-        "#);
-        assert!(matches!(result.as_ref().map_err(|e| e.root_cause()),
-            Err(EvalError::ArityMismatch { .. })));
+        "#,
+        );
+        assert!(matches!(
+            result.as_ref().map_err(|e| e.root_cause()),
+            Err(EvalError::ArityMismatch { .. })
+        ));
     }
 
     #[test]
     fn undefined_function() {
         let result = eval("foo();");
-        assert!(matches!(result.as_ref().map_err(|e| e.root_cause()),
-            Err(EvalError::UndefinedFunction(_))));
+        assert!(matches!(
+            result.as_ref().map_err(|e| e.root_cause()),
+            Err(EvalError::UndefinedFunction(_))
+        ));
     }
 
     // --- Built-ins ---
@@ -2040,40 +2211,55 @@ mod tests {
     #[test]
     fn cb_exhaustion() {
         let result = eval_with_budget("let a = 1; let b = 2; let c = 3; let d = 4; let e = 5;", 3);
-        assert!(matches!(result.as_ref().map_err(|e| e.root_cause()),
-            Err(EvalError::CognitiveOverload { .. })));
+        assert!(matches!(
+            result.as_ref().map_err(|e| e.root_cause()),
+            Err(EvalError::CognitiveOverload { .. })
+        ));
     }
 
     #[test]
     fn cb_function_call_cost() {
         // Function call costs 5 CB
-        let result = eval_with_budget(r#"
+        let result = eval_with_budget(
+            r#"
             fn f() -> int { return 1; }
             f();
-        "#, 4);
-        assert!(matches!(result.as_ref().map_err(|e| e.root_cause()),
-            Err(EvalError::CognitiveOverload { .. })));
+        "#,
+            4,
+        );
+        assert!(matches!(
+            result.as_ref().map_err(|e| e.root_cause()),
+            Err(EvalError::CognitiveOverload { .. })
+        ));
     }
 
     #[test]
     fn cb_statement_override() {
-        assert_eq!(eval(r#"
+        assert_eq!(
+            eval(
+                r#"
             fn f() -> int {
                 cb 100;
                 return 42;
             }
             f();
-        "#), Ok(Value::Int(42)));
+        "#
+            ),
+            Ok(Value::Int(42))
+        );
     }
 
     #[test]
     fn cb_recursive_exhaustion() {
-        let result = eval_with_budget(r#"
+        let result = eval_with_budget(
+            r#"
             fn loop_forever(n: int) -> int {
                 return loop_forever(n + 1);
             }
             loop_forever(0);
-        "#, 100);
+        "#,
+            100,
+        );
         // Error is wrapped in InContext from the call chain
         assert!(result.is_err());
         let err_str = format!("{}", result.unwrap_err());
@@ -2084,18 +2270,24 @@ mod tests {
 
     #[test]
     fn agent_basic() {
-        assert_eq!(eval(r#"
+        assert_eq!(
+            eval(
+                r#"
             agent greet(name: string) -> string {
                 return "hello " + name;
             }
             greet("world");
-        "#), Ok(Value::String("hello world".into())));
+        "#
+            ),
+            Ok(Value::String("hello world".into()))
+        );
     }
 
     #[test]
     fn agent_isolation() {
         // Agent should not see outer mutable state
-        let output = eval_output(r#"
+        let output = eval_output(
+            r#"
             let x = 10;
             agent f(n: int) -> int {
                 return n + 1;
@@ -2103,7 +2295,8 @@ mod tests {
             let result = f(5);
             print(result);
             print(x);
-        "#);
+        "#,
+        );
         assert_eq!(output, vec!["6", "10"]);
     }
 
@@ -2111,22 +2304,29 @@ mod tests {
 
     #[test]
     fn prompt_mock_primitive() {
-        assert_eq!(eval(r#"
+        assert_eq!(
+            eval(
+                r#"
             let x = "input";
             prompt("classify", x) -> int;
-        "#), Ok(Value::Int(0)));
+        "#
+            ),
+            Ok(Value::Int(0))
+        );
     }
 
     #[test]
     fn prompt_mock_struct() {
-        let result = eval(r#"
+        let result = eval(
+            r#"
             type Report {
                 summary: string,
                 score: float
             }
             let data = "test";
             prompt("analyze", data) -> Report;
-        "#);
+        "#,
+        );
         match result {
             Ok(Value::Struct(name, fields)) => {
                 assert_eq!(name, "Report");
@@ -2139,50 +2339,73 @@ mod tests {
 
     #[test]
     fn prompt_costs_50_cb() {
-        let result = eval_with_budget(r#"
+        let result = eval_with_budget(
+            r#"
             let x = "input";
             prompt("classify", x) -> int;
-        "#, 49);
-        assert!(matches!(result.as_ref().map_err(|e| e.root_cause()),
-            Err(EvalError::CognitiveOverload { .. })));
+        "#,
+            49,
+        );
+        assert!(matches!(
+            result.as_ref().map_err(|e| e.root_cause()),
+            Err(EvalError::CognitiveOverload { .. })
+        ));
     }
 
     // --- Validate ---
 
     #[test]
     fn validate_passes() {
-        assert_eq!(eval(r#"
+        assert_eq!(
+            eval(
+                r#"
             let x = 10;
             validate x { x > 5 };
-        "#), Ok(Value::Int(10)));
+        "#
+            ),
+            Ok(Value::Int(10))
+        );
     }
 
     #[test]
     fn validate_fails() {
-        let result = eval(r#"
+        let result = eval(
+            r#"
             let x = 3;
             validate x { x > 5 };
-        "#);
-        assert!(matches!(result.as_ref().map_err(|e| e.root_cause()),
-            Err(EvalError::ValidationFailed { .. })));
+        "#,
+        );
+        assert!(matches!(
+            result.as_ref().map_err(|e| e.root_cause()),
+            Err(EvalError::ValidationFailed { .. })
+        ));
     }
 
     #[test]
     fn validate_multiple_predicates() {
-        assert_eq!(eval(r#"
+        assert_eq!(
+            eval(
+                r#"
             let x = 10;
             validate x { x > 5, x < 20 };
-        "#), Ok(Value::Int(10)));
+        "#
+            ),
+            Ok(Value::Int(10))
+        );
     }
 
     #[test]
     fn validate_second_predicate_fails() {
-        let result = eval(r#"
+        let result = eval(
+            r#"
             let x = 10;
             validate x { x > 5, x < 8 };
-        "#);
+        "#,
+        );
         match result.as_ref().map_err(|e| e.root_cause()) {
-            Err(EvalError::ValidationFailed { predicate_index, .. }) => {
+            Err(EvalError::ValidationFailed {
+                predicate_index, ..
+            }) => {
                 assert_eq!(*predicate_index, 1);
             }
             _ => panic!("expected validation failure on predicate 1"),
@@ -2193,26 +2416,30 @@ mod tests {
 
     #[test]
     fn explore_success() {
-        let result = eval(r#"
+        let result = eval(
+            r#"
             fn f() {
                 explore "test" {
                     let x = 42;
                 };
             }
             f();
-        "#);
+        "#,
+        );
         assert!(result.is_ok());
     }
 
     #[test]
     fn explore_failure_restores_state() {
         // Explore that fails should not affect outer state
-        let result = eval(r#"
+        let result = eval(
+            r#"
             let x = 10;
             explore "failing" {
                 let y = 1 / 0;
             }
-        "#);
+        "#,
+        );
         // The explore block fails, which propagates as an error
         // but the outer state should be restored
         assert!(result.is_err());
@@ -2222,7 +2449,8 @@ mod tests {
 
     #[test]
     fn field_access_on_struct() {
-        let result = eval(r#"
+        let result = eval(
+            r#"
             type Report {
                 summary: string,
                 score: float
@@ -2230,16 +2458,19 @@ mod tests {
             let data = "test";
             let r = prompt("analyze", data) -> Report;
             r.summary;
-        "#);
+        "#,
+        );
         assert_eq!(result, Ok(Value::String("mock".into())));
     }
 
     #[test]
     fn field_access_on_non_struct() {
-        let result = eval(r#"
+        let result = eval(
+            r#"
             let x = 42;
             x.field;
-        "#);
+        "#,
+        );
         assert!(matches!(result, Err(EvalError::NotAStruct(_))));
     }
 
@@ -2289,10 +2520,13 @@ mod tests {
 
     #[test]
     fn prompt_requires_capability() {
-        let program = Parser::parse_source(r#"
+        let program = Parser::parse_source(
+            r#"
             let x = "input";
             prompt("classify", x) -> int;
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let mut evaluator = Evaluator::new(10000);
         // No caps granted
         let result = evaluator.eval_program(&program);
@@ -2301,10 +2535,13 @@ mod tests {
 
     #[test]
     fn prompt_with_capability_succeeds() {
-        let program = Parser::parse_source(r#"
+        let program = Parser::parse_source(
+            r#"
             let x = "input";
             prompt("classify", x) -> int;
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let mut evaluator = Evaluator::new(10000);
         evaluator.grant(CapKind::Prompt);
         let result = evaluator.eval_program(&program);
@@ -2331,11 +2568,14 @@ mod tests {
 
     #[test]
     fn explore_requires_vcs_write_capability() {
-        let program = Parser::parse_source(r#"
+        let program = Parser::parse_source(
+            r#"
             explore "test-branch" {
                 let x = 42;
             }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let mut evaluator = Evaluator::new(10000);
         // No caps granted
         let result = evaluator.eval_program(&program);
@@ -2344,11 +2584,14 @@ mod tests {
 
     #[test]
     fn explore_with_capability_succeeds() {
-        let program = Parser::parse_source(r#"
+        let program = Parser::parse_source(
+            r#"
             explore "test-branch" {
                 let x = 42;
             }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let mut evaluator = Evaluator::new(10000);
         evaluator.grant(CapKind::VcsWrite);
         let result = evaluator.eval_program(&program);
@@ -2358,11 +2601,14 @@ mod tests {
     #[test]
     fn no_caps_pure_code_works() {
         // Arithmetic, let, if, functions should work without any capabilities
-        let program = Parser::parse_source(r#"
+        let program = Parser::parse_source(
+            r#"
             fn add(a: int, b: int) -> int { return a + b; }
             let x = add(2, 3);
             if x > 4 { x; } else { 0; };
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let mut evaluator = Evaluator::new(10000);
         // No caps granted
         let result = evaluator.eval_program(&program);
@@ -2371,11 +2617,14 @@ mod tests {
 
     #[test]
     fn grant_all_allows_everything() {
-        let program = Parser::parse_source(r#"
+        let program = Parser::parse_source(
+            r#"
             let x = "input";
             let r = prompt("classify", x) -> int;
             print(r);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let mut evaluator = Evaluator::new(10000);
         evaluator.grant_all();
         evaluator.eval_program(&program).unwrap();
@@ -2400,7 +2649,10 @@ mod tests {
         match result {
             Err(EvalError::CapabilityDenied(e)) => {
                 let msg = format!("{e}");
-                assert!(msg.contains("stdout"), "error should mention the capability kind");
+                assert!(
+                    msg.contains("stdout"),
+                    "error should mention the capability kind"
+                );
             }
             other => panic!("expected CapabilityDenied, got {other:?}"),
         }
@@ -2450,8 +2702,7 @@ mod tests {
         let store = crate::storage::ObjectStore::init(dir.path()).unwrap();
 
         let program = Parser::parse_source("let x = 1; let y = 2; let z = 3;").unwrap();
-        let mut evaluator = Evaluator::new(10000)
-            .with_persistence(&store);
+        let mut evaluator = Evaluator::new(10000).with_persistence(&store);
         evaluator.grant_all();
         evaluator.eval_program(&program).unwrap();
 
@@ -2465,8 +2716,7 @@ mod tests {
         let store = crate::storage::ObjectStore::init(dir.path()).unwrap();
 
         let program = Parser::parse_source("let x = 42;").unwrap();
-        let mut evaluator = Evaluator::new(10000)
-            .with_persistence(&store);
+        let mut evaluator = Evaluator::new(10000).with_persistence(&store);
         evaluator.grant_all();
         evaluator.eval_program(&program).unwrap();
 
@@ -2483,8 +2733,7 @@ mod tests {
         let store = crate::storage::ObjectStore::init(dir.path()).unwrap();
 
         let program = Parser::parse_source("let x = 1; let y = 2;").unwrap();
-        let mut evaluator = Evaluator::new(10000)
-            .with_persistence(&store);
+        let mut evaluator = Evaluator::new(10000).with_persistence(&store);
         evaluator.grant_all();
         evaluator.eval_program(&program).unwrap();
 
@@ -2523,8 +2772,7 @@ mod tests {
         let store = crate::storage::ObjectStore::init(dir.path()).unwrap();
 
         let program = Parser::parse_source(r#"print(42); print(99);"#).unwrap();
-        let mut evaluator = Evaluator::new(10000)
-            .with_persistence(&store);
+        let mut evaluator = Evaluator::new(10000).with_persistence(&store);
         evaluator.grant_all();
         evaluator.eval_program(&program).unwrap();
 
@@ -2575,7 +2823,11 @@ mod tests {
     fn list_literal_items() {
         assert_eq!(
             eval("[1, 2, 3];"),
-            Ok(Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]))
+            Ok(Value::List(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3)
+            ]))
         );
     }
 
@@ -2588,7 +2840,11 @@ mod tests {
     fn list_push() {
         assert_eq!(
             eval("push([1, 2], 3);"),
-            Ok(Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]))
+            Ok(Value::List(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3)
+            ]))
         );
     }
 
@@ -2627,7 +2883,10 @@ mod tests {
 
     #[test]
     fn map_of_odd_args_error() {
-        assert!(matches!(eval("map_of(\"a\", 1, \"b\");"), Err(EvalError::General(_))));
+        assert!(matches!(
+            eval("map_of(\"a\", 1, \"b\");"),
+            Err(EvalError::General(_))
+        ));
     }
 
     #[test]
@@ -2642,7 +2901,10 @@ mod tests {
 
     #[test]
     fn map_get_missing_key() {
-        assert!(matches!(eval("get(map_of(\"a\", 1), \"z\");"), Err(EvalError::General(_))));
+        assert!(matches!(
+            eval("get(map_of(\"a\", 1), \"z\");"),
+            Err(EvalError::General(_))
+        ));
     }
 
     #[test]
@@ -2667,7 +2929,12 @@ mod tests {
         let mgr = crate::snapshot::SnapshotManager::new(&store);
         let snap = mgr.load(&history[0]).unwrap();
         assert!(snap.scopes.iter().any(|scope| {
-            scope.get("xs") == Some(&Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]))
+            scope.get("xs")
+                == Some(&Value::List(vec![
+                    Value::Int(1),
+                    Value::Int(2),
+                    Value::Int(3),
+                ]))
         }));
     }
 
@@ -2685,9 +2952,11 @@ mod tests {
         let mgr = crate::snapshot::SnapshotManager::new(&store);
         let snap = mgr.load(&history[0]).unwrap();
         assert!(snap.scopes.iter().any(|scope| {
-            scope.get("m") == Some(&Value::Map(vec![
-                (Value::String("a".into()), Value::Int(1)),
-            ]))
+            scope.get("m")
+                == Some(&Value::Map(vec![(
+                    Value::String("a".into()),
+                    Value::Int(1),
+                )]))
         }));
     }
 
@@ -2784,14 +3053,15 @@ mod tests {
         let (_dir, io) = test_io_context();
         // file_write costs 5 (call) + 10 (io) = 15, file_read costs 5+10 = 15
         // Total: 30. Budget of 25 should fail on the read.
-        let program = Parser::parse_source(
-            r#"file_write("x.txt", "y"); file_read("x.txt");"#
-        ).unwrap();
+        let program =
+            Parser::parse_source(r#"file_write("x.txt", "y"); file_read("x.txt");"#).unwrap();
         let mut evaluator = Evaluator::new(25).with_io(&io);
         evaluator.grant_all();
         let result = evaluator.eval_program(&program);
-        assert!(matches!(result.as_ref().map_err(|e| e.root_cause()),
-            Err(EvalError::CognitiveOverload { .. })));
+        assert!(matches!(
+            result.as_ref().map_err(|e| e.root_cause()),
+            Err(EvalError::CognitiveOverload { .. })
+        ));
     }
 
     #[test]
@@ -2845,8 +3115,10 @@ mod tests {
         let lib_hash = store.save(&lib_program).unwrap();
 
         // Main program imports the library and calls the function
-        let main_source = format!(r#"import "{lib_hash}";
-            double(21);"#);
+        let main_source = format!(
+            r#"import "{lib_hash}";
+            double(21);"#
+        );
         let main_program = Parser::parse_source(&main_source).unwrap();
 
         let mut evaluator = Evaluator::new(10000).with_vcs(&store, &refs);
@@ -2865,8 +3137,10 @@ mod tests {
         let lib_hash = store.save(&lib_program).unwrap();
 
         // Import only 'add'
-        let main_source = format!(r#"import "{lib_hash}" {{ add }};
-            add(10, 5);"#);
+        let main_source = format!(
+            r#"import "{lib_hash}" {{ add }};
+            add(10, 5);"#
+        );
         let main_program = Parser::parse_source(&main_source).unwrap();
 
         let mut evaluator = Evaluator::new(10000).with_vcs(&store, &refs);
@@ -2875,8 +3149,10 @@ mod tests {
         assert_eq!(result, Value::Int(15));
 
         // 'sub' should NOT be available
-        let main_source2 = format!(r#"import "{lib_hash}" {{ add }};
-            sub(10, 5);"#);
+        let main_source2 = format!(
+            r#"import "{lib_hash}" {{ add }};
+            sub(10, 5);"#
+        );
         let main_program2 = Parser::parse_source(&main_source2).unwrap();
         let mut eval2 = Evaluator::new(10000).with_vcs(&store, &refs);
         eval2.grant_all();
@@ -2893,15 +3169,16 @@ mod tests {
 
         // Import with alias — function accessible as utils.greet
         // We test by calling directly since dotted calls go through the same lookup
-        let main_source = format!(r#"import "{lib_hash}" as utils;
-            utils.greet();"#);
+        let main_source = format!(
+            r#"import "{lib_hash}" as utils;
+            utils.greet();"#
+        );
 
         // Parser won't handle `utils.greet()` as a call — it would parse
         // as field access. Let's test aliased registration directly.
         // For now, verify the function is registered with aliased name.
-        let main_program = Parser::parse_source(&format!(
-            r#"import "{lib_hash}" as utils; 42;"#
-        )).unwrap();
+        let main_program =
+            Parser::parse_source(&format!(r#"import "{lib_hash}" as utils; 42;"#)).unwrap();
 
         let mut evaluator = Evaluator::new(10000).with_vcs(&store, &refs);
         evaluator.grant_all();
@@ -2966,8 +3243,10 @@ mod tests {
         let lib_program = Parser::parse_source(lib_source).unwrap();
         let lib_hash = store.save(&lib_program).unwrap();
 
-        let main_source = format!(r#"import "{lib_hash}" {{ nonexistent }};
-            42;"#);
+        let main_source = format!(
+            r#"import "{lib_hash}" {{ nonexistent }};
+            42;"#
+        );
         let main_program = Parser::parse_source(&main_source).unwrap();
         let mut evaluator = Evaluator::new(10000).with_vcs(&store, &refs);
         evaluator.grant_all();
@@ -2995,8 +3274,10 @@ mod tests {
         let hash_b = store.save(&lib_b).unwrap();
 
         // Main: imports B, calls wrapper (which calls helper from A)
-        let main_source = format!(r#"import "{hash_b}";
-            wrapper();"#);
+        let main_source = format!(
+            r#"import "{hash_b}";
+            wrapper();"#
+        );
         let main_program = Parser::parse_source(&main_source).unwrap();
 
         let mut evaluator = Evaluator::new(10000).with_vcs(&store, &refs);
@@ -3021,19 +3302,22 @@ mod tests {
 
     #[test]
     fn spawn_and_await_basic() {
-        let result = eval(r#"
+        let result = eval(
+            r#"
             agent worker(x: int) -> int {
                 return x * 2;
             }
             let h = spawn worker(21);
             await(h);
-        "#);
+        "#,
+        );
         assert_eq!(result, Ok(Value::Int(42)));
     }
 
     #[test]
     fn spawn_two_agents_parallel() {
-        let output = eval_output(r#"
+        let output = eval_output(
+            r#"
             agent adder(a: int, b: int) -> int {
                 return a + b;
             }
@@ -3043,17 +3327,20 @@ mod tests {
             let r2 = await(h2);
             print(r1);
             print(r2);
-        "#);
+        "#,
+        );
         assert_eq!(output, vec!["30", "300"]);
     }
 
     #[test]
     fn spawn_requires_agent_not_function() {
-        let result = eval(r#"
+        let result = eval(
+            r#"
             fn helper(x: int) -> int { return x; }
             let h = spawn helper(1);
             await(h);
-        "#);
+        "#,
+        );
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
         assert!(err.contains("spawn requires an agent"));
@@ -3061,13 +3348,15 @@ mod tests {
 
     #[test]
     fn spawn_error_propagates_on_await() {
-        let result = eval(r#"
+        let result = eval(
+            r#"
             agent failing() -> int {
                 return 1 / 0;
             }
             let h = spawn failing();
             await(h);
-        "#);
+        "#,
+        );
         assert!(result.is_err());
     }
 
@@ -3076,11 +3365,14 @@ mod tests {
         // agent call: spend(10) for spawn + spend(5) for internal call overhead
         // We need budget for: top-level statements parsing + spawn(10) + await
         // With very tight budget, spawn should exhaust it
-        let result = eval_with_budget(r#"
+        let result = eval_with_budget(
+            r#"
             agent noop() -> int { return 0; }
             let h = spawn noop(  );
             await(h);
-        "#, 12);
+        "#,
+            12,
+        );
         // Budget should be too tight: declarations are free, but first
         // `spawn noop()` costs 10, `await(h)` is a call costing 5
         // 12 < 10 + 5 for remaining `await` call, but spawn should succeed
@@ -3094,11 +3386,14 @@ mod tests {
     #[test]
     fn spawn_agent_limit() {
         // max_agents=0 means no agents can be spawned at all
-        let program = Parser::parse_source(r#"
+        let program = Parser::parse_source(
+            r#"
             agent noop() -> int { return 1; }
             let h = spawn noop();
             await(h);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let mut evaluator = Evaluator::new(10000).with_max_agents(0);
         evaluator.grant_all();
         let result = evaluator.eval_program(&program);
@@ -3109,12 +3404,14 @@ mod tests {
 
     #[test]
     fn await_twice_errors() {
-        let result = eval(r#"
+        let result = eval(
+            r#"
             agent worker() -> int { return 42; }
             let h = spawn worker();
             await(h);
             await(h);
-        "#);
+        "#,
+        );
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
         assert!(err.contains("already awaited"));
@@ -3122,35 +3419,41 @@ mod tests {
 
     #[test]
     fn await_timeout_success() {
-        let result = eval(r#"
+        let result = eval(
+            r#"
             agent fast() -> int { return 7; }
             let h = spawn fast();
             await_timeout(h, 5000);
-        "#);
+        "#,
+        );
         assert_eq!(result, Ok(Value::Int(7)));
     }
 
     #[test]
     fn spawn_with_string_args() {
-        let output = eval_output(r#"
+        let output = eval_output(
+            r#"
             agent echo(msg: string) -> string {
                 return msg;
             }
             let h = spawn echo("hello");
             let result = await(h);
             print(result);
-        "#);
+        "#,
+        );
         assert_eq!(output, vec!["hello"]);
     }
 
     #[test]
     fn typeof_agent_handle() {
-        let output = eval_output(r#"
+        let output = eval_output(
+            r#"
             agent noop() -> int { return 0; }
             let h = spawn noop();
             print(typeof(h));
             await(h);
-        "#);
+        "#,
+        );
         assert_eq!(output, vec!["agent_handle"]);
     }
 
@@ -3158,12 +3461,14 @@ mod tests {
 
     #[test]
     fn error_context_in_function() {
-        let result = eval(r#"
+        let result = eval(
+            r#"
             fn bad() -> int {
                 return x;
             }
             bad();
-        "#);
+        "#,
+        );
         let err_str = format!("{}", result.unwrap_err());
         assert!(err_str.contains("fn \"bad\""));
         assert!(err_str.contains("undefined variable: x"));
@@ -3171,12 +3476,14 @@ mod tests {
 
     #[test]
     fn error_context_in_agent() {
-        let result = eval(r#"
+        let result = eval(
+            r#"
             agent broken() -> int {
                 return y;
             }
             broken();
-        "#);
+        "#,
+        );
         let err_str = format!("{}", result.unwrap_err());
         assert!(err_str.contains("agent \"broken\""));
         assert!(err_str.contains("undefined variable: y"));
@@ -3184,7 +3491,8 @@ mod tests {
 
     #[test]
     fn error_context_nested() {
-        let result = eval(r#"
+        let result = eval(
+            r#"
             fn inner() -> int {
                 return z;
             }
@@ -3192,7 +3500,8 @@ mod tests {
                 return inner();
             }
             outer();
-        "#);
+        "#,
+        );
         let err_str = format!("{}", result.unwrap_err());
         assert!(err_str.contains("fn \"inner\""));
         assert!(err_str.contains("fn \"outer\""));
@@ -3212,21 +3521,26 @@ mod tests {
     #[test]
     fn pii_guard_blocks_email_in_prompt() {
         let program = Parser::parse_source(
-            r#"let x = prompt("analyze", "contact user@example.com") -> string;"#
-        ).unwrap();
+            r#"let x = prompt("analyze", "contact user@example.com") -> string;"#,
+        )
+        .unwrap();
         let mut ev = Evaluator::new(1000);
         ev.grant_all();
         let result = ev.eval_program(&program);
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
-        assert!(err.contains("pii_transmit"), "expected PII capability error, got: {err}");
+        assert!(
+            err.contains("pii_transmit"),
+            "expected PII capability error, got: {err}"
+        );
     }
 
     #[test]
     fn pii_guard_allows_with_pii_transmit() {
         let program = Parser::parse_source(
-            r#"let x = prompt("analyze", "contact user@example.com") -> string;"#
-        ).unwrap();
+            r#"let x = prompt("analyze", "contact user@example.com") -> string;"#,
+        )
+        .unwrap();
         let mut ev = Evaluator::new(1000);
         ev.grant_all();
         ev.grant(CapKind::PiiTransmit);
@@ -3236,9 +3550,8 @@ mod tests {
 
     #[test]
     fn pii_guard_passes_clean_text() {
-        let program = Parser::parse_source(
-            r#"let x = prompt("analyze", "hello world") -> string;"#
-        ).unwrap();
+        let program =
+            Parser::parse_source(r#"let x = prompt("analyze", "hello world") -> string;"#).unwrap();
         let mut ev = Evaluator::new(1000);
         ev.grant_all();
         let result = ev.eval_program(&program);
@@ -3248,8 +3561,9 @@ mod tests {
     #[test]
     fn pii_guard_blocks_phone() {
         let program = Parser::parse_source(
-            r#"let x = prompt("analyze", "call +420 123 456 789") -> string;"#
-        ).unwrap();
+            r#"let x = prompt("analyze", "call +420 123 456 789") -> string;"#,
+        )
+        .unwrap();
         let mut ev = Evaluator::new(1000);
         ev.grant_all();
         let result = ev.eval_program(&program);
@@ -3261,8 +3575,9 @@ mod tests {
     #[test]
     fn pii_guard_blocks_credit_card() {
         let program = Parser::parse_source(
-            r#"let x = prompt("analyze", "card 4111 1111 1111 1111") -> string;"#
-        ).unwrap();
+            r#"let x = prompt("analyze", "card 4111 1111 1111 1111") -> string;"#,
+        )
+        .unwrap();
         let mut ev = Evaluator::new(1000);
         ev.grant_all();
         let result = ev.eval_program(&program);
@@ -3283,9 +3598,9 @@ mod tests {
         std::fs::create_dir_all(root.join("audit")).unwrap();
         let audit = crate::audit::AuditLog::open(&root).unwrap();
 
-        let program = Parser::parse_source(
-            r#"let x = prompt("summarize", "hello world") -> string;"#
-        ).unwrap();
+        let program =
+            Parser::parse_source(r#"let x = prompt("summarize", "hello world") -> string;"#)
+                .unwrap();
         let mut ev = Evaluator::new(1000).with_audit(&audit);
         ev.grant_all();
         ev.eval_program(&program).unwrap();
@@ -3307,8 +3622,9 @@ mod tests {
         let audit = crate::audit::AuditLog::open(&root).unwrap();
 
         let program = Parser::parse_source(
-            r#"let x = prompt("analyze", "contact user@example.com") -> string;"#
-        ).unwrap();
+            r#"let x = prompt("analyze", "contact user@example.com") -> string;"#,
+        )
+        .unwrap();
         let mut ev = Evaluator::new(1000).with_audit(&audit);
         ev.grant_all();
         let result = ev.eval_program(&program);
@@ -3320,7 +3636,10 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let parsed = crate::json::parse(lines[0]).unwrap();
         assert_eq!(parsed.get("pii_scan").unwrap().as_str(), Some("detected"));
-        assert_eq!(parsed.get("pii_transmit_granted").unwrap().as_bool(), Some(false));
+        assert_eq!(
+            parsed.get("pii_transmit_granted").unwrap().as_bool(),
+            Some(false)
+        );
     }
 
     #[test]
@@ -3331,8 +3650,9 @@ mod tests {
         let audit = crate::audit::AuditLog::open(&root).unwrap();
 
         let program = Parser::parse_source(
-            r#"let x = prompt("analyze", "contact user@example.com") -> string;"#
-        ).unwrap();
+            r#"let x = prompt("analyze", "contact user@example.com") -> string;"#,
+        )
+        .unwrap();
         let mut ev = Evaluator::new(1000).with_audit(&audit);
         ev.grant_all();
         ev.grant(CapKind::PiiTransmit);
@@ -3344,7 +3664,10 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let parsed = crate::json::parse(lines[0]).unwrap();
         assert_eq!(parsed.get("pii_scan").unwrap().as_str(), Some("detected"));
-        assert_eq!(parsed.get("pii_transmit_granted").unwrap().as_bool(), Some(true));
+        assert_eq!(
+            parsed.get("pii_transmit_granted").unwrap().as_bool(),
+            Some(true)
+        );
     }
 
     #[test]
@@ -3354,13 +3677,16 @@ mod tests {
         std::fs::create_dir_all(root.join("audit")).unwrap();
         let audit = crate::audit::AuditLog::open(&root).unwrap();
 
-        let program = Parser::parse_source(r#"
+        let program = Parser::parse_source(
+            r#"
             agent worker(data: string) -> string {
                 cb 100;
                 return prompt("summarize", data) -> string;
             }
             let result = worker("hello");
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let mut ev = Evaluator::new(1000).with_audit(&audit);
         ev.grant_all();
         ev.eval_program(&program).unwrap();

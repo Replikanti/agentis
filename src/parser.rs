@@ -22,7 +22,11 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
-        Self { tokens, pos: 0, errors: Vec::new() }
+        Self {
+            tokens,
+            pos: 0,
+            errors: Vec::new(),
+        }
     }
 
     pub fn parse_source(source: &str) -> Result<Program, ParseError> {
@@ -37,11 +41,13 @@ impl Parser {
 
     /// Parse and return all collected errors (for multi-error reporting).
     pub fn parse_source_multi(source: &str) -> Result<Program, Vec<ParseError>> {
-        let tokens = Lexer::new(source).tokenize().map_err(|e| vec![ParseError {
-            message: e.message,
-            line: e.line,
-            column: e.column,
-        }])?;
+        let tokens = Lexer::new(source).tokenize().map_err(|e| {
+            vec![ParseError {
+                message: e.message,
+                line: e.line,
+                column: e.column,
+            }]
+        })?;
         let mut parser = Parser::new(tokens);
         let program = parser.parse_program_recovering();
         if parser.errors.is_empty() {
@@ -78,7 +84,12 @@ impl Parser {
         while !self.is_at_end() {
             // Stop at statement boundaries
             match self.current_token() {
-                Token::Fn | Token::Agent | Token::Type | Token::Import | Token::Let | Token::Return => return,
+                Token::Fn
+                | Token::Agent
+                | Token::Type
+                | Token::Import
+                | Token::Let
+                | Token::Return => return,
                 Token::Semicolon => {
                     self.advance();
                     return;
@@ -122,7 +133,9 @@ impl Parser {
                 if self.current_token() == Token::Semicolon {
                     self.advance();
                 }
-                Ok(Declaration::Statement(Statement::Expression(ExprStmt { expr })))
+                Ok(Declaration::Statement(Statement::Expression(ExprStmt {
+                    expr,
+                })))
             }
         }
     }
@@ -145,7 +158,12 @@ impl Parser {
         let params = self.parse_param_list()?;
         let return_type = self.parse_optional_return_type()?;
         let body = self.parse_block()?;
-        Ok(FnDecl { name, params, return_type, body })
+        Ok(FnDecl {
+            name,
+            params,
+            return_type,
+            body,
+        })
     }
 
     fn parse_agent_decl(&mut self) -> Result<AgentDecl, ParseError> {
@@ -154,7 +172,12 @@ impl Parser {
         let params = self.parse_param_list()?;
         let return_type = self.parse_optional_return_type()?;
         let body = self.parse_block()?;
-        Ok(AgentDecl { name, params, return_type, body })
+        Ok(AgentDecl {
+            name,
+            params,
+            return_type,
+            body,
+        })
     }
 
     fn parse_type_decl(&mut self) -> Result<TypeDecl, ParseError> {
@@ -166,7 +189,10 @@ impl Parser {
             let field_name = self.expect_identifier()?;
             self.expect(Token::Colon)?;
             let type_annotation = self.parse_type_annotation()?;
-            fields.push(TypeField { name: field_name, type_annotation });
+            fields.push(TypeField {
+                name: field_name,
+                type_annotation,
+            });
             if self.current_token() == Token::Comma {
                 self.advance();
             }
@@ -185,9 +211,7 @@ impl Parser {
                 h
             }
             other => {
-                return Err(self.error(&format!(
-                    "expected string literal (hash), got {other:?}"
-                )));
+                return Err(self.error(&format!("expected string literal (hash), got {other:?}")));
             }
         };
 
@@ -223,7 +247,10 @@ impl Parser {
             let name = self.expect_identifier()?;
             self.expect(Token::Colon)?;
             let type_annotation = self.parse_type_annotation()?;
-            params.push(Param { name, type_annotation });
+            params.push(Param {
+                name,
+                type_annotation,
+            });
             if self.current_token() == Token::Comma {
                 self.advance();
             }
@@ -243,12 +270,30 @@ impl Parser {
 
     fn parse_type_annotation(&mut self) -> Result<TypeAnnotation, ParseError> {
         let name = match self.current_token() {
-            Token::Int => { self.advance(); "int".to_string() }
-            Token::Float => { self.advance(); "float".to_string() }
-            Token::String => { self.advance(); "string".to_string() }
-            Token::Bool => { self.advance(); "bool".to_string() }
-            Token::List => { self.advance(); "list".to_string() }
-            Token::Map => { self.advance(); "map".to_string() }
+            Token::Int => {
+                self.advance();
+                "int".to_string()
+            }
+            Token::Float => {
+                self.advance();
+                "float".to_string()
+            }
+            Token::String => {
+                self.advance();
+                "string".to_string()
+            }
+            Token::Bool => {
+                self.advance();
+                "bool".to_string()
+            }
+            Token::List => {
+                self.advance();
+                "list".to_string()
+            }
+            Token::Map => {
+                self.advance();
+                "map".to_string()
+            }
             Token::Identifier(_) => self.expect_identifier()?,
             _ => return Err(self.error("expected type annotation")),
         };
@@ -292,7 +337,11 @@ impl Parser {
         self.expect(Token::Assign)?;
         let value = self.parse_expression()?;
         self.expect(Token::Semicolon)?;
-        Ok(Statement::Let(LetStmt { name, type_annotation, value }))
+        Ok(Statement::Let(LetStmt {
+            name,
+            type_annotation,
+            value,
+        }))
     }
 
     fn parse_return_stmt(&mut self) -> Result<Statement, ParseError> {
@@ -326,10 +375,7 @@ impl Parser {
     fn parse_expr_stmt(&mut self) -> Result<Statement, ParseError> {
         let expr = self.parse_expression()?;
         // Block-terminating expressions (if, explore, validate) don't require semicolons
-        let needs_semicolon = !matches!(
-            &expr,
-            Expr::If(_) | Expr::Explore(_) | Expr::Validate(_)
-        );
+        let needs_semicolon = !matches!(&expr, Expr::If(_) | Expr::Explore(_) | Expr::Validate(_));
         if needs_semicolon {
             self.expect(Token::Semicolon)?;
         } else if self.current_token() == Token::Semicolon {
@@ -389,12 +435,18 @@ impl Parser {
             Token::Minus => {
                 self.advance();
                 let operand = self.parse_unary()?;
-                Ok(Expr::Unary(Box::new(UnaryExpr { op: UnaryOp::Neg, operand })))
+                Ok(Expr::Unary(Box::new(UnaryExpr {
+                    op: UnaryOp::Neg,
+                    operand,
+                })))
             }
             Token::Bang => {
                 self.advance();
                 let operand = self.parse_unary()?;
-                Ok(Expr::Unary(Box::new(UnaryExpr { op: UnaryOp::Not, operand })))
+                Ok(Expr::Unary(Box::new(UnaryExpr {
+                    op: UnaryOp::Not,
+                    operand,
+                })))
             }
             _ => self.parse_postfix(),
         }
@@ -469,10 +521,7 @@ impl Parser {
                 let name = self.expect_identifier()?;
                 Ok(Expr::Identifier(name))
             }
-            _ => Err(self.error(&format!(
-                "unexpected token: {:?}",
-                self.current_token()
-            ))),
+            _ => Err(self.error(&format!("unexpected token: {:?}", self.current_token()))),
         }
     }
 
@@ -499,7 +548,11 @@ impl Parser {
         } else {
             None
         };
-        Ok(Expr::If(Box::new(IfExpr { condition, then_block, else_block })))
+        Ok(Expr::If(Box::new(IfExpr {
+            condition,
+            then_block,
+            else_block,
+        })))
     }
 
     // prompt("instruction", input) -> Type
@@ -519,7 +572,11 @@ impl Parser {
         self.expect(Token::RParen)?;
         self.expect(Token::Arrow)?;
         let return_type = self.parse_type_annotation()?;
-        Ok(Expr::Prompt(Box::new(PromptExpr { instruction, input, return_type })))
+        Ok(Expr::Prompt(Box::new(PromptExpr {
+            instruction,
+            input,
+            return_type,
+        })))
     }
 
     // validate target { pred1, pred2, ... }
@@ -535,7 +592,10 @@ impl Parser {
             }
         }
         self.expect(Token::RBrace)?;
-        Ok(Expr::Validate(Box::new(ValidateExpr { target, predicates })))
+        Ok(Expr::Validate(Box::new(ValidateExpr {
+            target,
+            predicates,
+        })))
     }
 
     // explore "name" { ... }
@@ -693,12 +753,14 @@ mod tests {
 
     #[test]
     fn agent_declaration() {
-        let prog = parse(r#"
+        let prog = parse(
+            r#"
             agent scanner(url: string) -> Report {
                 cb 1000;
                 return url;
             }
-        "#);
+        "#,
+        );
         match &prog.declarations[0] {
             Declaration::Agent(a) => {
                 assert_eq!(a.name, "scanner");
@@ -715,12 +777,14 @@ mod tests {
 
     #[test]
     fn type_declaration() {
-        let prog = parse(r#"
+        let prog = parse(
+            r#"
             type Category {
                 label: string,
                 confidence: float
             }
-        "#);
+        "#,
+        );
         match &prog.declarations[0] {
             Declaration::Type(t) => {
                 assert_eq!(t.name, "Category");
@@ -734,12 +798,14 @@ mod tests {
 
     #[test]
     fn type_with_generic_field() {
-        let prog = parse(r#"
+        let prog = parse(
+            r#"
             type Dataset {
                 items: list<string>,
                 metadata: map<string, int>
             }
-        "#);
+        "#,
+        );
         match &prog.declarations[0] {
             Declaration::Type(t) => {
                 assert_eq!(t.fields.len(), 2);
@@ -789,12 +855,10 @@ mod tests {
     fn return_with_value() {
         let prog = parse("fn f() { return 42; }");
         match &prog.declarations[0] {
-            Declaration::Function(f) => {
-                match &f.body.statements[0] {
-                    Statement::Return(r) => assert_eq!(r.value, Some(Expr::IntLiteral(42))),
-                    _ => panic!("expected return"),
-                }
-            }
+            Declaration::Function(f) => match &f.body.statements[0] {
+                Statement::Return(r) => assert_eq!(r.value, Some(Expr::IntLiteral(42))),
+                _ => panic!("expected return"),
+            },
             _ => panic!("expected function"),
         }
     }
@@ -803,12 +867,10 @@ mod tests {
     fn return_empty() {
         let prog = parse("fn f() { return; }");
         match &prog.declarations[0] {
-            Declaration::Function(f) => {
-                match &f.body.statements[0] {
-                    Statement::Return(r) => assert!(r.value.is_none()),
-                    _ => panic!("expected return"),
-                }
-            }
+            Declaration::Function(f) => match &f.body.statements[0] {
+                Statement::Return(r) => assert!(r.value.is_none()),
+                _ => panic!("expected return"),
+            },
             _ => panic!("expected function"),
         }
     }
@@ -819,12 +881,10 @@ mod tests {
     fn cb_statement() {
         let prog = parse("fn f() { cb 500; }");
         match &prog.declarations[0] {
-            Declaration::Function(f) => {
-                match &f.body.statements[0] {
-                    Statement::Cb(cb) => assert_eq!(cb.budget, 500),
-                    _ => panic!("expected cb statement"),
-                }
-            }
+            Declaration::Function(f) => match &f.body.statements[0] {
+                Statement::Cb(cb) => assert_eq!(cb.budget, 500),
+                _ => panic!("expected cb statement"),
+            },
             _ => panic!("expected function"),
         }
     }
@@ -836,23 +896,21 @@ mod tests {
         // 1 + 2 * 3 should parse as 1 + (2 * 3)
         let prog = parse("let x = 1 + 2 * 3;");
         match &prog.declarations[0] {
-            Declaration::Statement(Statement::Let(l)) => {
-                match &l.value {
-                    Expr::Binary(b) => {
-                        assert_eq!(b.op, BinaryOp::Add);
-                        assert_eq!(b.left, Expr::IntLiteral(1));
-                        match &b.right {
-                            Expr::Binary(r) => {
-                                assert_eq!(r.op, BinaryOp::Mul);
-                                assert_eq!(r.left, Expr::IntLiteral(2));
-                                assert_eq!(r.right, Expr::IntLiteral(3));
-                            }
-                            _ => panic!("expected binary mul"),
+            Declaration::Statement(Statement::Let(l)) => match &l.value {
+                Expr::Binary(b) => {
+                    assert_eq!(b.op, BinaryOp::Add);
+                    assert_eq!(b.left, Expr::IntLiteral(1));
+                    match &b.right {
+                        Expr::Binary(r) => {
+                            assert_eq!(r.op, BinaryOp::Mul);
+                            assert_eq!(r.left, Expr::IntLiteral(2));
+                            assert_eq!(r.right, Expr::IntLiteral(3));
                         }
+                        _ => panic!("expected binary mul"),
                     }
-                    _ => panic!("expected binary add"),
                 }
-            }
+                _ => panic!("expected binary add"),
+            },
             _ => panic!("expected let"),
         }
     }
@@ -861,12 +919,10 @@ mod tests {
     fn comparison() {
         let prog = parse("let x = a > 0;");
         match &prog.declarations[0] {
-            Declaration::Statement(Statement::Let(l)) => {
-                match &l.value {
-                    Expr::Binary(b) => assert_eq!(b.op, BinaryOp::Gt),
-                    _ => panic!("expected binary"),
-                }
-            }
+            Declaration::Statement(Statement::Let(l)) => match &l.value {
+                Expr::Binary(b) => assert_eq!(b.op, BinaryOp::Gt),
+                _ => panic!("expected binary"),
+            },
             _ => panic!("expected let"),
         }
     }
@@ -875,12 +931,10 @@ mod tests {
     fn equality() {
         let prog = parse("let x = a == b;");
         match &prog.declarations[0] {
-            Declaration::Statement(Statement::Let(l)) => {
-                match &l.value {
-                    Expr::Binary(b) => assert_eq!(b.op, BinaryOp::Eq),
-                    _ => panic!("expected binary"),
-                }
-            }
+            Declaration::Statement(Statement::Let(l)) => match &l.value {
+                Expr::Binary(b) => assert_eq!(b.op, BinaryOp::Eq),
+                _ => panic!("expected binary"),
+            },
             _ => panic!("expected let"),
         }
     }
@@ -889,15 +943,13 @@ mod tests {
     fn unary_neg() {
         let prog = parse("let x = -5;");
         match &prog.declarations[0] {
-            Declaration::Statement(Statement::Let(l)) => {
-                match &l.value {
-                    Expr::Unary(u) => {
-                        assert_eq!(u.op, UnaryOp::Neg);
-                        assert_eq!(u.operand, Expr::IntLiteral(5));
-                    }
-                    _ => panic!("expected unary"),
+            Declaration::Statement(Statement::Let(l)) => match &l.value {
+                Expr::Unary(u) => {
+                    assert_eq!(u.op, UnaryOp::Neg);
+                    assert_eq!(u.operand, Expr::IntLiteral(5));
                 }
-            }
+                _ => panic!("expected unary"),
+            },
             _ => panic!("expected let"),
         }
     }
@@ -906,15 +958,13 @@ mod tests {
     fn unary_not() {
         let prog = parse("let x = !true;");
         match &prog.declarations[0] {
-            Declaration::Statement(Statement::Let(l)) => {
-                match &l.value {
-                    Expr::Unary(u) => {
-                        assert_eq!(u.op, UnaryOp::Not);
-                        assert_eq!(u.operand, Expr::BoolLiteral(true));
-                    }
-                    _ => panic!("expected unary"),
+            Declaration::Statement(Statement::Let(l)) => match &l.value {
+                Expr::Unary(u) => {
+                    assert_eq!(u.op, UnaryOp::Not);
+                    assert_eq!(u.operand, Expr::BoolLiteral(true));
                 }
-            }
+                _ => panic!("expected unary"),
+            },
             _ => panic!("expected let"),
         }
     }
@@ -924,20 +974,18 @@ mod tests {
         // (1 + 2) * 3
         let prog = parse("let x = (1 + 2) * 3;");
         match &prog.declarations[0] {
-            Declaration::Statement(Statement::Let(l)) => {
-                match &l.value {
-                    Expr::Binary(b) => {
-                        assert_eq!(b.op, BinaryOp::Mul);
-                        match &b.left {
-                            Expr::Binary(inner) => {
-                                assert_eq!(inner.op, BinaryOp::Add);
-                            }
-                            _ => panic!("expected inner binary"),
+            Declaration::Statement(Statement::Let(l)) => match &l.value {
+                Expr::Binary(b) => {
+                    assert_eq!(b.op, BinaryOp::Mul);
+                    match &b.left {
+                        Expr::Binary(inner) => {
+                            assert_eq!(inner.op, BinaryOp::Add);
                         }
+                        _ => panic!("expected inner binary"),
                     }
-                    _ => panic!("expected binary"),
                 }
-            }
+                _ => panic!("expected binary"),
+            },
             _ => panic!("expected let"),
         }
     }
@@ -946,15 +994,13 @@ mod tests {
     fn function_call() {
         let prog = parse(r#"print("hello", 42);"#);
         match &prog.declarations[0] {
-            Declaration::Statement(Statement::Expression(e)) => {
-                match &e.expr {
-                    Expr::Call(c) => {
-                        assert_eq!(c.callee, "print");
-                        assert_eq!(c.args.len(), 2);
-                    }
-                    _ => panic!("expected call"),
+            Declaration::Statement(Statement::Expression(e)) => match &e.expr {
+                Expr::Call(c) => {
+                    assert_eq!(c.callee, "print");
+                    assert_eq!(c.args.len(), 2);
                 }
-            }
+                _ => panic!("expected call"),
+            },
             _ => panic!("expected expr statement"),
         }
     }
@@ -963,15 +1009,13 @@ mod tests {
     fn field_access() {
         let prog = parse("let x = result.confidence;");
         match &prog.declarations[0] {
-            Declaration::Statement(Statement::Let(l)) => {
-                match &l.value {
-                    Expr::FieldAccess(fa) => {
-                        assert_eq!(fa.field, "confidence");
-                        assert_eq!(fa.object, Expr::Identifier("result".into()));
-                    }
-                    _ => panic!("expected field access"),
+            Declaration::Statement(Statement::Let(l)) => match &l.value {
+                Expr::FieldAccess(fa) => {
+                    assert_eq!(fa.field, "confidence");
+                    assert_eq!(fa.object, Expr::Identifier("result".into()));
                 }
-            }
+                _ => panic!("expected field access"),
+            },
             _ => panic!("expected let"),
         }
     }
@@ -980,21 +1024,19 @@ mod tests {
     fn chained_field_access() {
         let prog = parse("let x = a.b.c;");
         match &prog.declarations[0] {
-            Declaration::Statement(Statement::Let(l)) => {
-                match &l.value {
-                    Expr::FieldAccess(outer) => {
-                        assert_eq!(outer.field, "c");
-                        match &outer.object {
-                            Expr::FieldAccess(inner) => {
-                                assert_eq!(inner.field, "b");
-                                assert_eq!(inner.object, Expr::Identifier("a".into()));
-                            }
-                            _ => panic!("expected inner field access"),
+            Declaration::Statement(Statement::Let(l)) => match &l.value {
+                Expr::FieldAccess(outer) => {
+                    assert_eq!(outer.field, "c");
+                    match &outer.object {
+                        Expr::FieldAccess(inner) => {
+                            assert_eq!(inner.field, "b");
+                            assert_eq!(inner.object, Expr::Identifier("a".into()));
                         }
+                        _ => panic!("expected inner field access"),
                     }
-                    _ => panic!("expected field access"),
                 }
-            }
+                _ => panic!("expected field access"),
+            },
             _ => panic!("expected let"),
         }
     }
@@ -1005,19 +1047,15 @@ mod tests {
     fn if_expression() {
         let prog = parse("fn f() { if x > 0 { return 1; } }");
         match &prog.declarations[0] {
-            Declaration::Function(f) => {
-                match &f.body.statements[0] {
-                    Statement::Expression(e) => {
-                        match &e.expr {
-                            Expr::If(i) => {
-                                assert!(i.else_block.is_none());
-                            }
-                            _ => panic!("expected if"),
-                        }
+            Declaration::Function(f) => match &f.body.statements[0] {
+                Statement::Expression(e) => match &e.expr {
+                    Expr::If(i) => {
+                        assert!(i.else_block.is_none());
                     }
-                    _ => panic!("expected expr stmt"),
-                }
-            }
+                    _ => panic!("expected if"),
+                },
+                _ => panic!("expected expr stmt"),
+            },
             _ => panic!("expected function"),
         }
     }
@@ -1026,19 +1064,15 @@ mod tests {
     fn if_else() {
         let prog = parse("fn f() { if x > 0 { return 1; } else { return 0; } }");
         match &prog.declarations[0] {
-            Declaration::Function(f) => {
-                match &f.body.statements[0] {
-                    Statement::Expression(e) => {
-                        match &e.expr {
-                            Expr::If(i) => {
-                                assert!(i.else_block.is_some());
-                            }
-                            _ => panic!("expected if"),
-                        }
+            Declaration::Function(f) => match &f.body.statements[0] {
+                Statement::Expression(e) => match &e.expr {
+                    Expr::If(i) => {
+                        assert!(i.else_block.is_some());
                     }
-                    _ => panic!("expected expr stmt"),
-                }
-            }
+                    _ => panic!("expected if"),
+                },
+                _ => panic!("expected expr stmt"),
+            },
             _ => panic!("expected function"),
         }
     }
@@ -1049,73 +1083,67 @@ mod tests {
     fn prompt_expression() {
         let prog = parse(r#"let r = prompt("Classify", data) -> Category;"#);
         match &prog.declarations[0] {
-            Declaration::Statement(Statement::Let(l)) => {
-                match &l.value {
-                    Expr::Prompt(p) => {
-                        assert_eq!(p.instruction, "Classify");
-                        assert_eq!(p.input, Expr::Identifier("data".into()));
-                        assert_eq!(p.return_type, TypeAnnotation::Named("Category".into()));
-                    }
-                    _ => panic!("expected prompt"),
+            Declaration::Statement(Statement::Let(l)) => match &l.value {
+                Expr::Prompt(p) => {
+                    assert_eq!(p.instruction, "Classify");
+                    assert_eq!(p.input, Expr::Identifier("data".into()));
+                    assert_eq!(p.return_type, TypeAnnotation::Named("Category".into()));
                 }
-            }
+                _ => panic!("expected prompt"),
+            },
             _ => panic!("expected let"),
         }
     }
 
     #[test]
     fn validate_expression() {
-        let prog = parse(r#"
+        let prog = parse(
+            r#"
             fn f() {
                 validate result {
                     result.confidence > 0.8,
                     result.label != "unknown"
                 };
             }
-        "#);
+        "#,
+        );
         match &prog.declarations[0] {
-            Declaration::Function(f) => {
-                match &f.body.statements[0] {
-                    Statement::Expression(e) => {
-                        match &e.expr {
-                            Expr::Validate(v) => {
-                                assert_eq!(v.target, Expr::Identifier("result".into()));
-                                assert_eq!(v.predicates.len(), 2);
-                            }
-                            _ => panic!("expected validate"),
-                        }
+            Declaration::Function(f) => match &f.body.statements[0] {
+                Statement::Expression(e) => match &e.expr {
+                    Expr::Validate(v) => {
+                        assert_eq!(v.target, Expr::Identifier("result".into()));
+                        assert_eq!(v.predicates.len(), 2);
                     }
-                    _ => panic!("expected expr stmt"),
-                }
-            }
+                    _ => panic!("expected validate"),
+                },
+                _ => panic!("expected expr stmt"),
+            },
             _ => panic!("expected function"),
         }
     }
 
     #[test]
     fn explore_expression() {
-        let prog = parse(r#"
+        let prog = parse(
+            r#"
             fn f() {
                 explore "experiment-1" {
                     let x = 42;
                 };
             }
-        "#);
+        "#,
+        );
         match &prog.declarations[0] {
-            Declaration::Function(f) => {
-                match &f.body.statements[0] {
-                    Statement::Expression(e) => {
-                        match &e.expr {
-                            Expr::Explore(ex) => {
-                                assert_eq!(ex.name, "experiment-1");
-                                assert_eq!(ex.body.statements.len(), 1);
-                            }
-                            _ => panic!("expected explore"),
-                        }
+            Declaration::Function(f) => match &f.body.statements[0] {
+                Statement::Expression(e) => match &e.expr {
+                    Expr::Explore(ex) => {
+                        assert_eq!(ex.name, "experiment-1");
+                        assert_eq!(ex.body.statements.len(), 1);
                     }
-                    _ => panic!("expected expr stmt"),
-                }
-            }
+                    _ => panic!("expected explore"),
+                },
+                _ => panic!("expected expr stmt"),
+            },
             _ => panic!("expected function"),
         }
     }
@@ -1124,7 +1152,8 @@ mod tests {
 
     #[test]
     fn full_agent_program() {
-        let prog = parse(r#"
+        let prog = parse(
+            r#"
             type Report {
                 summary: string,
                 score: float
@@ -1142,7 +1171,8 @@ mod tests {
                 };
                 return result;
             }
-        "#);
+        "#,
+        );
         assert_eq!(prog.declarations.len(), 3);
         assert!(matches!(&prog.declarations[0], Declaration::Type(_)));
         assert!(matches!(&prog.declarations[1], Declaration::Function(_)));
@@ -1195,7 +1225,11 @@ mod tests {
         let result = Parser::parse_source_multi("let x = ; let y = 42; let z = ;");
         assert!(result.is_err());
         let errors = result.unwrap_err();
-        assert!(errors.len() >= 2, "expected at least 2 errors, got {}", errors.len());
+        assert!(
+            errors.len() >= 2,
+            "expected at least 2 errors, got {}",
+            errors.len()
+        );
     }
 
     #[test]

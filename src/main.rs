@@ -62,14 +62,22 @@ fn main() {
         }
         "go" => {
             if args.len() < 3 {
-                eprintln!("Usage: agentis go <source_file> [--trace] [--grant-pii] [--fitness] [--weights W]");
+                eprintln!(
+                    "Usage: agentis go <source_file> [--trace] [--grant-pii] [--fitness] [--weights W]"
+                );
                 process::exit(1);
             }
             let force_verbose = args.iter().any(|a| a == "--trace");
             let grant_pii = args.iter().any(|a| a == "--grant-pii");
             let show_fitness = args.iter().any(|a| a == "--fitness");
             let weights = parse_flag_value(&args, "--weights");
-            cmd_go(&args[2], force_verbose, grant_pii, show_fitness, weights.as_deref())
+            cmd_go(
+                &args[2],
+                force_verbose,
+                grant_pii,
+                show_fitness,
+                weights.as_deref(),
+            )
         }
         "repl" => cmd_repl(&args[2..]),
         "test" => cmd_test(&args[2..]),
@@ -111,9 +119,13 @@ fn main() {
         "audit" => cmd_audit(&args[2..]),
         "arena" => {
             if args.len() < 3 {
-                eprintln!("Usage: agentis arena <files|dir> [--rounds N] [--top N] [--json] [--weights W]");
+                eprintln!(
+                    "Usage: agentis arena <files|dir> [--rounds N] [--top N] [--json] [--weights W]"
+                );
                 eprintln!("       agentis arena <files|dir> --parallel [--threads N]");
-                eprintln!("       agentis arena <files|dir> --workers host1:port,host2:port [--secret S]");
+                eprintln!(
+                    "       agentis arena <files|dir> --workers host1:port,host2:port [--secret S]"
+                );
                 process::exit(1);
             }
             cmd_arena(&args[2..])
@@ -147,12 +159,8 @@ fn main() {
             }
             cmd_evolve(&args[2], &args[3..])
         }
-        "worker" => {
-            cmd_worker(&args[2..])
-        }
-        "colony" => {
-            cmd_colony(&args[2..])
-        }
+        "worker" => cmd_worker(&args[2..]),
+        "colony" => cmd_colony(&args[2..]),
         "lineage" => {
             if args.len() < 3 {
                 eprintln!("Usage: agentis lineage <source_file>");
@@ -201,9 +209,13 @@ fn print_usage() {
     eprintln!("  colony status|ping   Colony diagnostics (--workers W --json)");
     eprintln!("  log [branch]         Show commit log for a branch");
     eprintln!("  snapshot list|show   List or inspect snapshots");
-    eprintln!("  arena <files|dir>    Rank variants by fitness (--rounds --top --json --parallel --workers)");
+    eprintln!(
+        "  arena <files|dir>    Rank variants by fitness (--rounds --top --json --parallel --workers)"
+    );
     eprintln!("  mutate <file> [flags] Generate mutated agent variants");
-    eprintln!("  evolve <file> [flags] Evolutionary loop (-g N -n N --out dir --threads N --workers W)");
+    eprintln!(
+        "  evolve <file> [flags] Evolutionary loop (-g N -n N --out dir --threads N --workers W)"
+    );
     eprintln!("  lineage <file>       Trace variant ancestry back to seed");
     eprintln!("  audit [flags]        Show prompt audit log");
     eprintln!("  version              Show version");
@@ -215,7 +227,9 @@ fn agentis_root() -> std::path::PathBuf {
 
 /// Parse a flag like `--weights 0.3,0.5,0.2` from args, returning the value after the flag.
 fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
-    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).cloned())
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1).cloned())
 }
 
 /// If the value is a path to an existing file, read its contents; otherwise return as-is.
@@ -377,7 +391,13 @@ audit = on
 trace.level = normal
 ";
 
-fn cmd_go(source_file: &str, force_verbose: bool, grant_pii: bool, show_fitness: bool, weights_str: Option<&str>) -> Result<(), AgentisError> {
+fn cmd_go(
+    source_file: &str,
+    force_verbose: bool,
+    grant_pii: bool,
+    show_fitness: bool,
+    weights_str: Option<&str>,
+) -> Result<(), AgentisError> {
     let (store, refs) = ensure_initialized()?;
 
     // Commit
@@ -396,7 +416,8 @@ fn cmd_go(source_file: &str, force_verbose: bool, grant_pii: bool, show_fitness:
     // Parse fitness weights: CLI flag > config > default
     let effective_weights_str = weights_str.map(|s| s.to_string());
     let cfg = config::Config::load(&agentis_root());
-    let effective_weights_str = effective_weights_str.or_else(|| cfg.get("fitness.weights").map(|s| s.to_string()));
+    let effective_weights_str =
+        effective_weights_str.or_else(|| cfg.get("fitness.weights").map(|s| s.to_string()));
     let fitness_weights = match effective_weights_str.as_deref() {
         Some(s) => fitness::FitnessWeights::parse(s)
             .map_err(|e| AgentisError::General(format!("weights: {e}")))?,
@@ -404,8 +425,8 @@ fn cmd_go(source_file: &str, force_verbose: bool, grant_pii: bool, show_fitness:
     };
 
     // Run
-    let llm_backend = llm::create_backend(&cfg)
-        .map_err(|e| AgentisError::General(format!("{e}")))?;
+    let llm_backend =
+        llm::create_backend(&cfg).map_err(|e| AgentisError::General(format!("{e}")))?;
     let io_ctx = io::IoContext::new(&agentis_root(), &cfg);
     let trace_level = if force_verbose {
         trace::TraceLevel::Verbose
@@ -483,7 +504,8 @@ fn cmd_commit(source_file: &str) -> Result<(), AgentisError> {
 fn cmd_run(branch: &str) -> Result<(), AgentisError> {
     let (store, refs) = ensure_initialized()?;
 
-    let tree_hash = refs.resolve_tree(branch, &store)?
+    let tree_hash = refs
+        .resolve_tree(branch, &store)?
         .ok_or_else(|| AgentisError::General(format!("branch '{branch}' has no commits")))?;
 
     let program: ast::Program = store.load(&tree_hash)?;
@@ -496,12 +518,10 @@ fn cmd_run(branch: &str) -> Result<(), AgentisError> {
 
     // Load config, LLM backend, I/O context, and tracer
     let cfg = config::Config::load(&agentis_root());
-    let llm_backend = llm::create_backend(&cfg)
-        .map_err(|e| AgentisError::General(format!("{e}")))?;
+    let llm_backend =
+        llm::create_backend(&cfg).map_err(|e| AgentisError::General(format!("{e}")))?;
     let io_ctx = io::IoContext::new(&agentis_root(), &cfg);
-    let trace_level = trace::TraceLevel::from_str(
-        &cfg.get_or("trace.level", "normal"),
-    );
+    let trace_level = trace::TraceLevel::from_str(&cfg.get_or("trace.level", "normal"));
     let tracer = trace::Tracer::new(trace_level);
 
     let audit_log = audit::AuditLog::open(&agentis_root());
@@ -652,7 +672,8 @@ fn cmd_switch(name: &str) -> Result<(), AgentisError> {
 fn cmd_compile(branch: &str, output: Option<&str>) -> Result<(), AgentisError> {
     let (store, refs) = ensure_initialized()?;
 
-    let tree_hash = refs.resolve_tree(branch, &store)?
+    let tree_hash = refs
+        .resolve_tree(branch, &store)?
         .ok_or_else(|| AgentisError::General(format!("branch '{branch}' has no commits")))?;
 
     let wasm = compiler::compile_from_store(&store, &tree_hash)?;
@@ -669,9 +690,12 @@ fn cmd_compile(branch: &str, output: Option<&str>) -> Result<(), AgentisError> {
 
 fn cmd_sync(addr: &str) -> Result<(), AgentisError> {
     let (store, _) = ensure_initialized()?;
-    let result = network::sync_push_pull(&store, addr)
-        .map_err(|e| AgentisError::General(format!("{e}")))?;
-    println!("Sync complete: sent {}, received {}", result.sent, result.received);
+    let result =
+        network::sync_push_pull(&store, addr).map_err(|e| AgentisError::General(format!("{e}")))?;
+    println!(
+        "Sync complete: sent {}, received {}",
+        result.sent, result.received
+    );
     Ok(())
 }
 
@@ -680,12 +704,16 @@ fn cmd_serve(addr: &str) -> Result<(), AgentisError> {
     println!("Listening on {addr}...");
     let result = network::sync_serve_once(&store, addr)
         .map_err(|e| AgentisError::General(format!("{e}")))?;
-    println!("Sync complete: sent {}, received {}", result.sent, result.received);
+    println!(
+        "Sync complete: sent {}, received {}",
+        result.sent, result.received
+    );
     Ok(())
 }
 
 fn cmd_worker(args: &[String]) -> Result<(), AgentisError> {
-    let addr = args.iter()
+    let addr = args
+        .iter()
         .find(|a| !a.starts_with("--"))
         .map(|s| s.as_str())
         .unwrap_or("0.0.0.0:9462");
@@ -710,8 +738,7 @@ fn cmd_worker(args: &[String]) -> Result<(), AgentisError> {
         max_connections,
     };
 
-    colony::run_worker(config)
-        .map_err(|e| AgentisError::General(format!("{e}")))
+    colony::run_worker(config).map_err(|e| AgentisError::General(format!("{e}")))
 }
 
 fn cmd_colony(args: &[String]) -> Result<(), AgentisError> {
@@ -731,17 +758,18 @@ fn cmd_colony(args: &[String]) -> Result<(), AgentisError> {
             let secret_flag = parse_flag_value(args, "--secret");
             let json_output = args.iter().any(|a| a == "--json");
 
-            let workers_str = workers_flag
-                .or_else(|| cfg.get("colony.workers").map(|s| s.to_string()));
+            let workers_str =
+                workers_flag.or_else(|| cfg.get("colony.workers").map(|s| s.to_string()));
             let workers = match workers_str {
                 Some(s) => colony::parse_workers(&s),
                 None => {
-                    eprintln!("No workers specified. Use --workers or set colony.workers in config.");
+                    eprintln!(
+                        "No workers specified. Use --workers or set colony.workers in config."
+                    );
                     process::exit(1);
                 }
             };
-            let secret = secret_flag
-                .or_else(|| cfg.get("colony.secret").map(|s| s.to_string()));
+            let secret = secret_flag.or_else(|| cfg.get("colony.secret").map(|s| s.to_string()));
             let connect_timeout = cfg.get_u64("colony.connect_timeout", 5) * 1000;
 
             let statuses = colony::colony_status(&workers, secret.as_deref(), connect_timeout);
@@ -761,8 +789,7 @@ fn cmd_colony(args: &[String]) -> Result<(), AgentisError> {
             }
             let addr = &args[1];
             let secret_flag = parse_flag_value(args, "--secret");
-            let secret = secret_flag
-                .or_else(|| cfg.get("colony.secret").map(|s| s.to_string()));
+            let secret = secret_flag.or_else(|| cfg.get("colony.secret").map(|s| s.to_string()));
             let connect_timeout = cfg.get_u64("colony.connect_timeout", 5) * 1000;
 
             let status = colony::ping_worker(addr, secret.as_deref(), connect_timeout);
@@ -825,9 +852,7 @@ fn cmd_test(args: &[String]) -> Result<(), AgentisError> {
             if let Ok(entries) = std::fs::read_dir(path) {
                 let mut dir_files: Vec<_> = entries
                     .filter_map(|e| e.ok())
-                    .filter(|e| {
-                        e.path().extension().is_some_and(|ext| ext == "ag")
-                    })
+                    .filter(|e| e.path().extension().is_some_and(|ext| ext == "ag"))
                     .map(|e| e.path().to_string_lossy().to_string())
                     .collect();
                 dir_files.sort();
@@ -846,8 +871,8 @@ fn cmd_test(args: &[String]) -> Result<(), AgentisError> {
     let (store, refs) = ensure_initialized()?;
     let root = agentis_root();
     let cfg = config::Config::load(&root);
-    let llm_backend = llm::create_backend(&cfg)
-        .map_err(|e| AgentisError::General(format!("{e}")))?;
+    let llm_backend =
+        llm::create_backend(&cfg).map_err(|e| AgentisError::General(format!("{e}")))?;
     let io_ctx = io::IoContext::new(&root, &cfg);
     let trace_level = if verbose {
         trace::TraceLevel::Verbose
@@ -868,7 +893,9 @@ fn cmd_test(args: &[String]) -> Result<(), AgentisError> {
                 eprintln!("  ERROR: {e}");
                 total_failed += 1;
                 any_file_failed = true;
-                if fail_fast { break; }
+                if fail_fast {
+                    break;
+                }
                 continue;
             }
         };
@@ -880,7 +907,9 @@ fn cmd_test(args: &[String]) -> Result<(), AgentisError> {
                 eprintln!("  PARSE ERROR: {e}");
                 total_failed += 1;
                 any_file_failed = true;
-                if fail_fast { break; }
+                if fail_fast {
+                    break;
+                }
                 continue;
             }
         };
@@ -957,7 +986,10 @@ fn cmd_test(args: &[String]) -> Result<(), AgentisError> {
 
     println!();
     let total = total_passed + total_failed;
-    println!("Results: {} passed, {} failed, {} total", total_passed, total_failed, total);
+    println!(
+        "Results: {} passed, {} failed, {} total",
+        total_passed, total_failed, total
+    );
 
     if any_file_failed {
         process::exit(1);
@@ -970,8 +1002,8 @@ fn cmd_repl(args: &[String]) -> Result<(), AgentisError> {
     let root = agentis_root();
 
     let cfg = config::Config::load(&root);
-    let llm_backend = llm::create_backend(&cfg)
-        .map_err(|e| AgentisError::General(format!("{e}")))?;
+    let llm_backend =
+        llm::create_backend(&cfg).map_err(|e| AgentisError::General(format!("{e}")))?;
     let io_ctx = io::IoContext::new(&root, &cfg);
     let trace_level = trace::TraceLevel::from_str(&cfg.get_or("trace.level", "normal"));
     let tracer = trace::Tracer::new(trace_level);
@@ -996,25 +1028,23 @@ fn cmd_repl(args: &[String]) -> Result<(), AgentisError> {
     }
 
     // Load current branch program (register functions/types/agents)
-    let branch_name = refs.current_branch().unwrap_or_else(|_| "genesis".to_string());
+    let branch_name = refs
+        .current_branch()
+        .unwrap_or_else(|_| "genesis".to_string());
     if let Ok(Some(tree_hash)) = refs.resolve_tree(&branch_name, &store) {
         if let Ok(program) = store.load::<ast::Program>(&tree_hash) {
             for decl in &program.declarations {
                 match decl {
                     ast::Declaration::Function(f) => {
-                        let _ = evaluator.eval_repl_declaration(
-                            &ast::Declaration::Function(f.clone()),
-                        );
+                        let _ =
+                            evaluator.eval_repl_declaration(&ast::Declaration::Function(f.clone()));
                     }
                     ast::Declaration::Agent(a) => {
-                        let _ = evaluator.eval_repl_declaration(
-                            &ast::Declaration::Agent(a.clone()),
-                        );
+                        let _ =
+                            evaluator.eval_repl_declaration(&ast::Declaration::Agent(a.clone()));
                     }
                     ast::Declaration::Type(t) => {
-                        let _ = evaluator.eval_repl_declaration(
-                            &ast::Declaration::Type(t.clone()),
-                        );
+                        let _ = evaluator.eval_repl_declaration(&ast::Declaration::Type(t.clone()));
                     }
                     _ => {}
                 }
@@ -1024,16 +1054,24 @@ fn cmd_repl(args: &[String]) -> Result<(), AgentisError> {
 
     // --resume <hash>: restore snapshot with CB penalty
     let resume_hash = args.windows(2).find_map(|w| {
-        if w[0] == "--resume" { Some(w[1].clone()) } else { None }
+        if w[0] == "--resume" {
+            Some(w[1].clone())
+        } else {
+            None
+        }
     });
     if let Some(ref prefix) = resume_hash {
         let full_hash = resolve_snapshot_hash(&root, prefix)?;
         let mgr = snapshot::SnapshotManager::new(&store).with_registry(&root);
-        let snap = mgr.load(&full_hash)
+        let snap = mgr
+            .load(&full_hash)
             .map_err(|e| AgentisError::General(format!("{e}")))?;
         evaluator.restore_snapshot_with_penalty(&snap);
         eprintln!("Restored snapshot {}", &full_hash[..12]);
-        eprintln!("  Budget: {} (after 30% resurrection tax)", evaluator.budget_remaining());
+        eprintln!(
+            "  Budget: {} (after 30% resurrection tax)",
+            evaluator.budget_remaining()
+        );
         eprintln!("  Output: {} lines", evaluator.output().len());
     }
 
@@ -1170,10 +1208,7 @@ fn cmd_snapshot(args: &[String]) -> Result<(), AgentisError> {
                 println!("No snapshots found.");
                 return Ok(());
             }
-            println!(
-                "{:<14} {:<12} {:<9} {}",
-                "HASH", "CB", "OUTPUT", "SCOPES"
-            );
+            println!("{:<14} {:<12} {:<9} {}", "HASH", "CB", "OUTPUT", "SCOPES");
             for info in &snapshots {
                 let short_hash = if info.hash.len() >= 12 {
                     &info.hash[..12]
@@ -1242,7 +1277,10 @@ fn cmd_snapshot(args: &[String]) -> Result<(), AgentisError> {
 }
 
 /// Resolve a possibly-abbreviated snapshot hash to its full hash.
-fn resolve_snapshot_hash(agentis_root: &std::path::Path, prefix: &str) -> Result<String, AgentisError> {
+fn resolve_snapshot_hash(
+    agentis_root: &std::path::Path,
+    prefix: &str,
+) -> Result<String, AgentisError> {
     let hashes = snapshot::load_registry(agentis_root);
     let matches: Vec<&String> = hashes.iter().filter(|h| h.starts_with(prefix)).collect();
     match matches.len() {
@@ -1262,8 +1300,7 @@ fn cmd_mutate(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
 
     // --list-agents: just print agent names and instructions, then exit
     if args.iter().any(|a| a == "--list-agents") {
-        let agents = mutation::extract_agents(&source)
-            .map_err(|e| AgentisError::General(e))?;
+        let agents = mutation::extract_agents(&source).map_err(|e| AgentisError::General(e))?;
         if agents.is_empty() {
             println!("No agents with prompt instructions found.");
         } else {
@@ -1288,13 +1325,12 @@ fn cmd_mutate(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     // Load LLM backend from config
     let root = agentis_root();
     let cfg = config::Config::load(&root);
-    let llm_backend = llm::create_backend(&cfg)
-        .map_err(|e| AgentisError::General(format!("{e}")))?;
+    let llm_backend =
+        llm::create_backend(&cfg).map_err(|e| AgentisError::General(format!("{e}")))?;
 
     if dry_run {
         // Dry-run: show what would be generated without writing files
-        let agents = mutation::extract_agents(&source)
-            .map_err(|e| AgentisError::General(e))?;
+        let agents = mutation::extract_agents(&source).map_err(|e| AgentisError::General(e))?;
         if agents.is_empty() {
             return Err(AgentisError::General(
                 "no agents with prompt instructions found in source".to_string(),
@@ -1308,7 +1344,11 @@ fn cmd_mutate(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
                     return Err(AgentisError::General(format!(
                         "agent '{}' not found. Available: {}",
                         name,
-                        agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ")
+                        agents
+                            .iter()
+                            .map(|a| a.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     )));
                 }
                 filtered
@@ -1322,10 +1362,23 @@ fn cmd_mutate(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             let new_instruction = if is_mock {
                 mutation::mock_mutate(&agent.instruction, i)
             } else {
-                mutation::llm_mutate(&agent.instruction, llm_backend.as_ref(), custom_template.as_deref())
-                    .map_err(|e| AgentisError::General(e))?
+                mutation::llm_mutate(
+                    &agent.instruction,
+                    llm_backend.as_ref(),
+                    custom_template.as_deref(),
+                )
+                .map_err(|e| AgentisError::General(e))?
             };
-            println!("{}", mutation::format_dry_run(i, count, &agent.name, &agent.instruction, &new_instruction));
+            println!(
+                "{}",
+                mutation::format_dry_run(
+                    i,
+                    count,
+                    &agent.name,
+                    &agent.instruction,
+                    &new_instruction
+                )
+            );
             if i + 1 < count {
                 println!();
             }
@@ -1346,7 +1399,8 @@ fn cmd_mutate(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         agent_filter.as_deref(),
         llm_backend.as_ref(),
         custom_template.as_deref(),
-    ).map_err(|e| AgentisError::General(e))?;
+    )
+    .map_err(|e| AgentisError::General(e))?;
 
     // Determine output directory
     let output_dir = match out_dir {
@@ -1388,22 +1442,20 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     let population: usize = parse_flag_value2(args, "-n", "--population")
         .and_then(|s| s.parse().ok())
         .unwrap_or(4);
-    let out_dir = parse_flag_value(args, "--out")
-        .unwrap_or_else(|| "evolved".to_string());
+    let out_dir = parse_flag_value(args, "--out").unwrap_or_else(|| "evolved".to_string());
     let agent_filter = parse_flag_value(args, "--agent");
     let custom_template = parse_flag_value(args, "--mutate-prompt")
         .map(|s| resolve_template(&s))
         .transpose()?;
     let weights_str = parse_flag_value(args, "--weights");
-    let budget_cap: Option<u64> = parse_flag_value(args, "--budget-cap")
-        .and_then(|s| s.parse().ok());
-    let stop_on_stall: Option<usize> = parse_flag_value(args, "--stop-on-stall")
-        .and_then(|s| s.parse().ok());
+    let budget_cap: Option<u64> =
+        parse_flag_value(args, "--budget-cap").and_then(|s| s.parse().ok());
+    let stop_on_stall: Option<usize> =
+        parse_flag_value(args, "--stop-on-stall").and_then(|s| s.parse().ok());
     let show_lineage = args.iter().any(|a| a == "--show-lineage");
     let dry_run = args.iter().any(|a| a == "--dry-run");
     let clean = args.iter().any(|a| a == "--clean");
-    let threads: Option<usize> = parse_flag_value(args, "--threads")
-        .and_then(|s| s.parse().ok());
+    let threads: Option<usize> = parse_flag_value(args, "--threads").and_then(|s| s.parse().ok());
     let workers_flag = parse_flag_value(args, "--workers");
     let secret_flag = parse_flag_value(args, "--secret");
 
@@ -1428,23 +1480,34 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             .map_err(|e| AgentisError::General(format!("weights: {e}")))?,
         None => fitness::FitnessWeights::default(),
     };
-    let llm_backend = llm::create_backend(&cfg)
-        .map_err(|e| AgentisError::General(format!("{e}")))?;
+    let llm_backend =
+        llm::create_backend(&cfg).map_err(|e| AgentisError::General(format!("{e}")))?;
 
     // Dry-run mode
     if dry_run {
-        let agents = mutation::extract_agents(&seed_source)
-            .map_err(|e| AgentisError::General(e))?;
+        let agents =
+            mutation::extract_agents(&seed_source).map_err(|e| AgentisError::General(e))?;
         let prompt_count = agents.len().max(1); // rough estimate: at least 1 prompt per agent
-        let avg_instruction_len = if agents.is_empty() { 30 } else {
+        let avg_instruction_len = if agents.is_empty() {
+            30
+        } else {
             agents.iter().map(|a| a.instruction.len()).sum::<usize>() / agents.len()
         };
-        let tps = cfg.get("ollama_tokens_per_second")
+        let tps = cfg
+            .get("ollama_tokens_per_second")
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(30.0);
-        print!("{}", evolve::format_dry_run(
-            generations, population, prompt_count, llm_backend.name(), avg_instruction_len, tps,
-        ));
+        print!(
+            "{}",
+            evolve::format_dry_run(
+                generations,
+                population,
+                prompt_count,
+                llm_backend.name(),
+                avg_instruction_len,
+                tps,
+            )
+        );
         return Ok(());
     }
 
@@ -1457,13 +1520,11 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     let grant_pii = cfg.get("pii_transmit").is_some_and(|v| v == "allow");
 
     // Resolve colony workers
-    let workers_str = workers_flag
-        .or_else(|| cfg.get("colony.workers").map(|s| s.to_string()));
+    let workers_str = workers_flag.or_else(|| cfg.get("colony.workers").map(|s| s.to_string()));
     let colony_workers: Vec<String> = workers_str
         .map(|s| colony::parse_workers(&s))
         .unwrap_or_default();
-    let colony_secret = secret_flag
-        .or_else(|| cfg.get("colony.secret").map(|s| s.to_string()));
+    let colony_secret = secret_flag.or_else(|| cfg.get("colony.secret").map(|s| s.to_string()));
     let use_colony = !colony_workers.is_empty();
 
     let colony_cfg = if use_colony {
@@ -1524,7 +1585,8 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             llm_backend.as_ref(),
             custom_template.as_deref(),
             mock_offset,
-        ).map_err(|e| AgentisError::General(e))?;
+        )
+        .map_err(|e| AgentisError::General(e))?;
 
         // Write variant files to temp for arena evaluation
         let gen_dir = out_path.join(format!("g{g:02}"));
@@ -1536,13 +1598,21 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         }
 
         // Arena: evaluate each variant (colony, parallel, or sequential)
-        let variant_files: Vec<String> = tracked_variants.iter()
+        let variant_files: Vec<String> = tracked_variants
+            .iter()
             .map(|v| gen_dir.join(&v.filename).to_string_lossy().to_string())
             .collect();
 
         let variant_entries = if let Some(ref cc) = colony_cfg {
-            colony::run_arena_colony(&variant_files, 1, cc, &root,
-                grant_pii, &fitness_weights, DEFAULT_BUDGET)
+            colony::run_arena_colony(
+                &variant_files,
+                1,
+                cc,
+                &root,
+                grant_pii,
+                &fitness_weights,
+                DEFAULT_BUDGET,
+            )
         } else if let Some(tc) = threads {
             run_arena_parallel(&variant_files, 1, &root, grant_pii, &fitness_weights, tc)
         } else {
@@ -1551,9 +1621,17 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
                 let path = gen_dir.join(&v.filename);
                 let entry = run_arena_variant(
                     &path.to_string_lossy(),
-                    &store, &refs, &root, &cfg, llm_backend.as_ref(),
-                    &io_ctx, &tracer, audit_log.as_ref(), max_agents,
-                    grant_pii, &fitness_weights,
+                    &store,
+                    &refs,
+                    &root,
+                    &cfg,
+                    llm_backend.as_ref(),
+                    &io_ctx,
+                    &tracer,
+                    audit_log.as_ref(),
+                    max_agents,
+                    grant_pii,
+                    &fitness_weights,
                 );
                 entries.push(entry);
             }
@@ -1571,19 +1649,32 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         }
 
         // Sort by score descending
-        scored.sort_by(|a, b| b.1.score.partial_cmp(&a.1.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.1.score
+                .partial_cmp(&a.1.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Compute generation stats
-        let successful: Vec<&arena::ArenaEntry> = scored.iter()
+        let successful: Vec<&arena::ArenaEntry> = scored
+            .iter()
             .map(|(_, e)| e)
             .filter(|e| e.error.is_none())
             .collect();
         let gen_best = scored.first().map(|(_, e)| e.score).unwrap_or(0.0);
-        let gen_avg = if successful.is_empty() { 0.0 } else {
+        let gen_avg = if successful.is_empty() {
+            0.0
+        } else {
             successful.iter().map(|e| e.score).sum::<f64>() / successful.len() as f64
         };
-        let gen_avg_prompts = if successful.is_empty() { 0.0 } else {
-            successful.iter().map(|e| e.prompt_count as f64).sum::<f64>() / successful.len() as f64
+        let gen_avg_prompts = if successful.is_empty() {
+            0.0
+        } else {
+            successful
+                .iter()
+                .map(|e| e.prompt_count as f64)
+                .sum::<f64>()
+                / successful.len() as f64
         };
 
         if g == 1 {
@@ -1592,7 +1683,9 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
 
         // CB-only warning (once)
         if !cb_only_warned {
-            let all_cb_only = scored.iter().all(|(_, e)| e.val_rate >= 1.0 && e.exp_rate >= 1.0 && e.error.is_none());
+            let all_cb_only = scored
+                .iter()
+                .all(|(_, e)| e.val_rate >= 1.0 && e.exp_rate >= 1.0 && e.error.is_none());
             if all_cb_only && !successful.is_empty() {
                 eprintln!("  Warning: No validate/explore blocks — fitness = CB efficiency only.");
                 cb_only_warned = true;
@@ -1600,8 +1693,14 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         }
 
         // Print generation summary
-        eprintln!("Gen {:>2}: best={:.3}  avg={:.3}  prompts={:.1}  ({} variants)",
-            g, gen_best, gen_avg, gen_avg_prompts, tracked_variants.len());
+        eprintln!(
+            "Gen {:>2}: best={:.3}  avg={:.3}  prompts={:.1}  ({} variants)",
+            g,
+            gen_best,
+            gen_avg,
+            gen_avg_prompts,
+            tracked_variants.len()
+        );
 
         // Save generation best
         let best_variant = &scored[0].0;
@@ -1635,13 +1734,19 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
 
         // Convergence warning
         if stall_count >= 3 && (stop_on_stall.is_none() || stall_count < stop_on_stall.unwrap()) {
-            eprintln!("  Warning: Evolution stalled at generation {} (score: {:.3})", g, best_ever_score);
+            eprintln!(
+                "  Warning: Evolution stalled at generation {} (score: {:.3})",
+                g, best_ever_score
+            );
         }
 
         // Stop-on-stall
         if let Some(stall_limit) = stop_on_stall {
             if stall_count >= stall_limit {
-                eprintln!("\nStopped: no improvement for {} generations (score: {:.3})", stall_limit, best_ever_score);
+                eprintln!(
+                    "\nStopped: no improvement for {} generations (score: {:.3})",
+                    stall_limit, best_ever_score
+                );
                 break;
             }
         }
@@ -1649,14 +1754,18 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         // Budget cap
         if let Some(cap) = budget_cap {
             if cumulative_cb >= cap {
-                eprintln!("\nBudget cap reached at generation {} ({}/{} CB spent)", g, cumulative_cb, cap);
+                eprintln!(
+                    "\nBudget cap reached at generation {} ({}/{} CB spent)",
+                    g, cumulative_cb, cap
+                );
                 break;
             }
         }
 
         // Select top K = N/2 as parents for next generation
         let k = (population / 2).max(1);
-        parents = scored.iter()
+        parents = scored
+            .iter()
             .take(k)
             .map(|(v, _)| (v.source.clone(), v.source_hash.clone()))
             .collect();
@@ -1668,7 +1777,11 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     std::fs::write(&best_path, &best_ever_source)?;
 
     eprintln!();
-    eprintln!("Best agent: {} (score: {:.3})", best_path.display(), best_ever_score);
+    eprintln!(
+        "Best agent: {} (score: {:.3})",
+        best_path.display(),
+        best_ever_score
+    );
 
     // Show lineage if requested
     if show_lineage {
@@ -1685,11 +1798,15 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         if last_avg_prompts != first_gen_avg_prompts {
             let pct = ((last_avg_prompts - first_gen_avg_prompts) / first_gen_avg_prompts) * 100.0;
             if pct < 0.0 {
-                eprintln!("  Efficiency: prompt calls {:.0}% ({:.1} → {:.1} avg)",
-                    pct, first_gen_avg_prompts, last_avg_prompts);
+                eprintln!(
+                    "  Efficiency: prompt calls {:.0}% ({:.1} → {:.1} avg)",
+                    pct, first_gen_avg_prompts, last_avg_prompts
+                );
             } else {
-                eprintln!("  Efficiency: prompt calls +{:.0}% ({:.1} → {:.1} avg)",
-                    pct, first_gen_avg_prompts, last_avg_prompts);
+                eprintln!(
+                    "  Efficiency: prompt calls +{:.0}% ({:.1} → {:.1} avg)",
+                    pct, first_gen_avg_prompts, last_avg_prompts
+                );
             }
         }
     }
@@ -1727,7 +1844,10 @@ fn cmd_lineage(source_file: &str) -> Result<(), AgentisError> {
     let chain = evolve::trace_lineage(&lineage, &source_hash, &seed_name);
 
     if chain.is_empty() {
-        eprintln!("Source hash {} not found in lineage data.", &source_hash[..12]);
+        eprintln!(
+            "Source hash {} not found in lineage data.",
+            &source_hash[..12]
+        );
         return Ok(());
     }
 
@@ -1737,7 +1857,14 @@ fn cmd_lineage(source_file: &str) -> Result<(), AgentisError> {
 
 /// Collect .ag files from CLI args, expanding directories and skipping flags.
 fn collect_ag_files(args: &[String]) -> Vec<String> {
-    let flags_with_values = ["--rounds", "--top", "--weights", "--threads", "--workers", "--secret"];
+    let flags_with_values = [
+        "--rounds",
+        "--top",
+        "--weights",
+        "--threads",
+        "--workers",
+        "--secret",
+    ];
     let mut files = Vec::new();
     for (i, arg) in args.iter().enumerate() {
         if arg.starts_with('-') {
@@ -1770,13 +1897,11 @@ fn cmd_arena(args: &[String]) -> Result<(), AgentisError> {
     let rounds: usize = parse_flag_value(args, "--rounds")
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
-    let top_n: Option<usize> = parse_flag_value(args, "--top")
-        .and_then(|s| s.parse().ok());
+    let top_n: Option<usize> = parse_flag_value(args, "--top").and_then(|s| s.parse().ok());
     let json_output = args.iter().any(|a| a == "--json");
     let weights_str = parse_flag_value(args, "--weights");
     let parallel = args.iter().any(|a| a == "--parallel");
-    let threads: Option<usize> = parse_flag_value(args, "--threads")
-        .and_then(|s| s.parse().ok());
+    let threads: Option<usize> = parse_flag_value(args, "--threads").and_then(|s| s.parse().ok());
     let workers_flag = parse_flag_value(args, "--workers");
     let secret_flag = parse_flag_value(args, "--secret");
 
@@ -1801,13 +1926,11 @@ fn cmd_arena(args: &[String]) -> Result<(), AgentisError> {
     let grant_pii = cfg.get("pii_transmit").is_some_and(|v| v == "allow");
 
     // Resolve workers: CLI flag > config
-    let workers_str = workers_flag
-        .or_else(|| cfg.get("colony.workers").map(|s| s.to_string()));
+    let workers_str = workers_flag.or_else(|| cfg.get("colony.workers").map(|s| s.to_string()));
     let workers: Vec<String> = workers_str
         .map(|s| colony::parse_workers(&s))
         .unwrap_or_default();
-    let secret = secret_flag
-        .or_else(|| cfg.get("colony.secret").map(|s| s.to_string()));
+    let secret = secret_flag.or_else(|| cfg.get("colony.secret").map(|s| s.to_string()));
 
     let use_colony = !workers.is_empty();
     let use_parallel = parallel || threads.is_some();
@@ -1820,17 +1943,36 @@ fn cmd_arena(args: &[String]) -> Result<(), AgentisError> {
             connect_timeout_ms: cfg.get_u64("colony.connect_timeout", 5) * 1000,
             eval_timeout_ms: cfg.get_u64("colony.eval_timeout", 120) * 1000,
         };
-        colony::run_arena_colony(&files, rounds, &colony_cfg, &root,
-            grant_pii, &fitness_weights, DEFAULT_BUDGET)
+        colony::run_arena_colony(
+            &files,
+            rounds,
+            &colony_cfg,
+            &root,
+            grant_pii,
+            &fitness_weights,
+            DEFAULT_BUDGET,
+        )
     } else if use_parallel {
         let thread_count = threads.unwrap_or_else(colony::detect_threads);
-        eprintln!("Parallel arena: {} variants, {} threads, {} round{} each",
-            files.len(), thread_count, rounds, if rounds == 1 { "" } else { "s" });
-        run_arena_parallel(&files, rounds, &root, grant_pii, &fitness_weights, thread_count)
+        eprintln!(
+            "Parallel arena: {} variants, {} threads, {} round{} each",
+            files.len(),
+            thread_count,
+            rounds,
+            if rounds == 1 { "" } else { "s" }
+        );
+        run_arena_parallel(
+            &files,
+            rounds,
+            &root,
+            grant_pii,
+            &fitness_weights,
+            thread_count,
+        )
     } else {
         // Sequential (original behavior)
-        let llm_backend = llm::create_backend(&cfg)
-            .map_err(|e| AgentisError::General(format!("{e}")))?;
+        let llm_backend =
+            llm::create_backend(&cfg).map_err(|e| AgentisError::General(format!("{e}")))?;
         let io_ctx = io::IoContext::new(&root, &cfg);
         let tracer = trace::Tracer::new(trace::TraceLevel::Quiet);
         let audit_log = audit::AuditLog::open(&root);
@@ -1841,9 +1983,18 @@ fn cmd_arena(args: &[String]) -> Result<(), AgentisError> {
             let mut round_entries = Vec::new();
             for _ in 0..rounds {
                 let entry = run_arena_variant(
-                    file, &store, &refs, &root, &cfg, llm_backend.as_ref(),
-                    &io_ctx, &tracer, audit_log.as_ref(), max_agents,
-                    grant_pii, &fitness_weights,
+                    file,
+                    &store,
+                    &refs,
+                    &root,
+                    &cfg,
+                    llm_backend.as_ref(),
+                    &io_ctx,
+                    &tracer,
+                    audit_log.as_ref(),
+                    max_agents,
+                    grant_pii,
+                    &fitness_weights,
                 );
                 round_entries.push(entry);
             }
@@ -1859,7 +2010,8 @@ fn cmd_arena(args: &[String]) -> Result<(), AgentisError> {
 
     // Sort by score descending, then by filename for tie-breaking
     all_entries.sort_by(|a, b| {
-        b.score.partial_cmp(&a.score)
+        b.score
+            .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.file.cmp(&b.file))
     });
@@ -1878,7 +2030,10 @@ fn cmd_arena(args: &[String]) -> Result<(), AgentisError> {
 
     // Colony stats
     if use_colony {
-        eprintln!("{}", arena::format_colony_stats(&all_entries, workers.len()));
+        eprintln!(
+            "{}",
+            arena::format_colony_stats(&all_entries, workers.len())
+        );
     }
 
     Ok(())
@@ -1938,7 +2093,11 @@ fn run_arena_variant(
             let mut report = evaluator.fitness_report();
             report.error = true;
             let mut entry = arena::ArenaEntry::from_report(file, &report, weights);
-            entry.error = Some(arena::ArenaEntry::from_error(file, &format!("{e}")).error.unwrap());
+            entry.error = Some(
+                arena::ArenaEntry::from_error(file, &format!("{e}"))
+                    .error
+                    .unwrap(),
+            );
             entry
         }
     }
@@ -2052,7 +2211,11 @@ fn run_arena_variant_standalone(
             let mut report = evaluator.fitness_report();
             report.error = true;
             let mut entry = arena::ArenaEntry::from_report(file, &report, weights);
-            entry.error = Some(arena::ArenaEntry::from_error(file, &format!("{e}")).error.unwrap());
+            entry.error = Some(
+                arena::ArenaEntry::from_error(file, &format!("{e}"))
+                    .error
+                    .unwrap(),
+            );
             entry
         }
     }
@@ -2145,7 +2308,11 @@ fn cmd_audit(args: &[String]) -> Result<(), AgentisError> {
     }
 
     // Take last N
-    let start = if entries.len() > last_n { entries.len() - last_n } else { 0 };
+    let start = if entries.len() > last_n {
+        entries.len() - last_n
+    } else {
+        0
+    };
     let entries = &entries[start..];
 
     if entries.is_empty() {
@@ -2154,8 +2321,10 @@ fn cmd_audit(args: &[String]) -> Result<(), AgentisError> {
     }
 
     // Print table header
-    println!("{:<12} {:<16} {:<18} {:<10} {}",
-        "TIME", "AGENT", "PII", "STATUS", "BACKEND");
+    println!(
+        "{:<12} {:<16} {:<18} {:<10} {}",
+        "TIME", "AGENT", "PII", "STATUS", "BACKEND"
+    );
 
     for entry in entries {
         let time_str = format_unix_time(entry.ts);
@@ -2189,8 +2358,10 @@ fn cmd_audit(args: &[String]) -> Result<(), AgentisError> {
             format!("{}/{}", entry.backend, entry.model)
         };
 
-        println!("{:<12} {:<16} {:<18} {:<10} {}",
-            time_str, agent, pii_display, status, backend);
+        println!(
+            "{:<12} {:<16} {:<18} {:<10} {}",
+            time_str, agent, pii_display, status, backend
+        );
     }
 
     println!("\n({} entries shown)", entries.len());
@@ -2211,19 +2382,39 @@ impl AuditEntry {
     fn from_json(val: &json::JsonValue) -> Self {
         Self {
             ts: val.get("ts").and_then(|v| v.as_i64()).unwrap_or(0),
-            agent: val.get("agent").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
-            pii_scan: val.get("pii_scan").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
-            pii_types: val.get("pii_types")
+            agent: val
+                .get("agent")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string(),
+            pii_scan: val
+                .get("pii_scan")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string(),
+            pii_types: val
+                .get("pii_types")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default(),
-            pii_transmit_granted: val.get("pii_transmit_granted")
+            pii_transmit_granted: val
+                .get("pii_transmit_granted")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
-            backend: val.get("backend").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            model: val.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            backend: val
+                .get("backend")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            model: val
+                .get("model")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
         }
     }
 }

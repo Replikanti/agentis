@@ -111,7 +111,11 @@ impl Commit {
         }
         let timestamp = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
 
-        Ok(Commit { tree_hash, parent, timestamp })
+        Ok(Commit {
+            tree_hash,
+            parent,
+            timestamp,
+        })
     }
 }
 
@@ -226,8 +230,7 @@ impl Refs {
             Some(h) => h.to_string(),
             None => {
                 let current = self.current_branch()?;
-                self.get_branch_hash(&current)?
-                    .unwrap_or_default()
+                self.get_branch_hash(&current)?.unwrap_or_default()
             }
         };
         fs::write(&path, &hash)?;
@@ -274,8 +277,9 @@ impl Refs {
 
         loop {
             let data = store.load_raw(&current_hash)?;
-            let commit = Commit::from_bytes(&data)
-                .map_err(|e| RefsError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
+            let commit = Commit::from_bytes(&data).map_err(|e| {
+                RefsError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            })?;
             let parent = commit.parent.clone();
             commits.push(commit);
             match parent {
@@ -430,7 +434,10 @@ mod tests {
     fn create_branch_with_hash() {
         let (refs, _, _dir) = temp_env();
         refs.create_branch("custom", Some("custom_hash")).unwrap();
-        assert_eq!(refs.get_branch_hash("custom").unwrap(), Some("custom_hash".to_string()));
+        assert_eq!(
+            refs.get_branch_hash("custom").unwrap(),
+            Some("custom_hash".to_string())
+        );
     }
 
     #[test]
@@ -472,7 +479,8 @@ mod tests {
         assert!(names.contains(&"alpha"));
         assert!(names.contains(&"beta"));
 
-        let current: Vec<&str> = branches.iter()
+        let current: Vec<&str> = branches
+            .iter()
             .filter(|(_, is_current)| *is_current)
             .map(|(n, _)| n.as_str())
             .collect();

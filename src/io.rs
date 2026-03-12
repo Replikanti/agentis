@@ -70,41 +70,41 @@ impl IoContext {
         let candidate = self.sandbox_dir.join(path);
 
         // Canonicalize the sandbox root
-        let canon_sandbox = self.sandbox_dir.canonicalize().map_err(|e| {
-            IoError::FileError(format!("cannot canonicalize sandbox: {e}"))
-        })?;
+        let canon_sandbox = self
+            .sandbox_dir
+            .canonicalize()
+            .map_err(|e| IoError::FileError(format!("cannot canonicalize sandbox: {e}")))?;
 
         // For reads, the file must exist to canonicalize.
         // For writes, we canonicalize the parent directory.
         if candidate.exists() {
-            let canon_path = candidate.canonicalize().map_err(|e| {
-                IoError::FileError(format!("cannot canonicalize path: {e}"))
-            })?;
+            let canon_path = candidate
+                .canonicalize()
+                .map_err(|e| IoError::FileError(format!("cannot canonicalize path: {e}")))?;
             if !canon_path.starts_with(&canon_sandbox) {
                 return Err(IoError::PathOutsideSandbox(path.to_string()));
             }
             Ok(canon_path)
         } else {
             // File doesn't exist yet (write case) — canonicalize parent
-            let parent = candidate.parent().ok_or_else(|| {
-                IoError::PathOutsideSandbox(path.to_string())
-            })?;
+            let parent = candidate
+                .parent()
+                .ok_or_else(|| IoError::PathOutsideSandbox(path.to_string()))?;
             // Create parent dirs if needed (still within sandbox)
             if !parent.exists() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    IoError::FileError(format!("cannot create directory: {e}"))
-                })?;
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| IoError::FileError(format!("cannot create directory: {e}")))?;
             }
-            let canon_parent = parent.canonicalize().map_err(|e| {
-                IoError::FileError(format!("cannot canonicalize parent: {e}"))
-            })?;
+            let canon_parent = parent
+                .canonicalize()
+                .map_err(|e| IoError::FileError(format!("cannot canonicalize parent: {e}")))?;
             if !canon_parent.starts_with(&canon_sandbox) {
                 return Err(IoError::PathOutsideSandbox(path.to_string()));
             }
             // Return the intended path (parent is validated)
-            let file_name = candidate.file_name().ok_or_else(|| {
-                IoError::PathOutsideSandbox(path.to_string())
-            })?;
+            let file_name = candidate
+                .file_name()
+                .ok_or_else(|| IoError::PathOutsideSandbox(path.to_string()))?;
             Ok(canon_parent.join(file_name))
         }
     }
@@ -118,9 +118,8 @@ impl IoContext {
         }
 
         // Extract domain from URL
-        let domain = extract_domain(url).ok_or_else(|| {
-            IoError::NetworkError(format!("cannot parse domain from URL: {url}"))
-        })?;
+        let domain = extract_domain(url)
+            .ok_or_else(|| IoError::NetworkError(format!("cannot parse domain from URL: {url}")))?;
 
         if self.domain_whitelist.iter().any(|d| d == &domain) {
             Ok(())
@@ -132,17 +131,15 @@ impl IoContext {
     /// Read a file from the sandbox. Returns its content as a string.
     pub fn file_read(&self, path: &str) -> Result<String, IoError> {
         let resolved = self.resolve_sandbox_path(path)?;
-        std::fs::read_to_string(&resolved).map_err(|e| {
-            IoError::FileError(format!("{}: {e}", resolved.display()))
-        })
+        std::fs::read_to_string(&resolved)
+            .map_err(|e| IoError::FileError(format!("{}: {e}", resolved.display())))
     }
 
     /// Write content to a file in the sandbox.
     pub fn file_write(&self, path: &str, content: &str) -> Result<(), IoError> {
         let resolved = self.resolve_sandbox_path(path)?;
-        std::fs::write(&resolved, content).map_err(|e| {
-            IoError::FileError(format!("{}: {e}", resolved.display()))
-        })
+        std::fs::write(&resolved, content)
+            .map_err(|e| IoError::FileError(format!("{}: {e}", resolved.display())))
     }
 
     /// HTTP GET request to a whitelisted domain.
@@ -182,9 +179,7 @@ fn extract_domain(url: &str) -> Option<String> {
         return None;
     };
     // Take until / or : (port)
-    let domain = after_scheme
-        .split(['/', ':'])
-        .next()?;
+    let domain = after_scheme.split(['/', ':']).next()?;
     if domain.is_empty() {
         None
     } else {
@@ -195,8 +190,8 @@ fn extract_domain(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use crate::storage::tempfile;
+    use std::fs;
 
     fn temp_sandbox() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -219,12 +214,18 @@ mod tests {
 
     #[test]
     fn domain_https() {
-        assert_eq!(extract_domain("https://example.com/path"), Some("example.com".into()));
+        assert_eq!(
+            extract_domain("https://example.com/path"),
+            Some("example.com".into())
+        );
     }
 
     #[test]
     fn domain_http_with_port() {
-        assert_eq!(extract_domain("http://localhost:8080/api"), Some("localhost".into()));
+        assert_eq!(
+            extract_domain("http://localhost:8080/api"),
+            Some("localhost".into())
+        );
     }
 
     #[test]

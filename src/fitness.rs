@@ -27,11 +27,23 @@ impl FitnessWeights {
     pub fn parse(s: &str) -> Result<Self, String> {
         let parts: Vec<&str> = s.split(',').collect();
         if parts.len() != 3 {
-            return Err(format!("expected 3 comma-separated weights, got {}", parts.len()));
+            return Err(format!(
+                "expected 3 comma-separated weights, got {}",
+                parts.len()
+            ));
         }
-        let w_cb: f64 = parts[0].trim().parse().map_err(|_| format!("invalid cb weight: '{}'", parts[0].trim()))?;
-        let w_val: f64 = parts[1].trim().parse().map_err(|_| format!("invalid val weight: '{}'", parts[1].trim()))?;
-        let w_exp: f64 = parts[2].trim().parse().map_err(|_| format!("invalid exp weight: '{}'", parts[2].trim()))?;
+        let w_cb: f64 = parts[0]
+            .trim()
+            .parse()
+            .map_err(|_| format!("invalid cb weight: '{}'", parts[0].trim()))?;
+        let w_val: f64 = parts[1]
+            .trim()
+            .parse()
+            .map_err(|_| format!("invalid val weight: '{}'", parts[1].trim()))?;
+        let w_exp: f64 = parts[2]
+            .trim()
+            .parse()
+            .map_err(|_| format!("invalid exp weight: '{}'", parts[2].trim()))?;
         let sum = w_cb + w_val + w_exp;
         if (sum - 1.0).abs() > 0.001 {
             return Err(format!("weights must sum to 1.0, got {sum:.3}"));
@@ -49,7 +61,11 @@ impl FitnessWeights {
 
 impl Default for FitnessWeights {
     fn default() -> Self {
-        Self { w_cb: 0.3, w_val: 0.5, w_exp: 0.2 }
+        Self {
+            w_cb: 0.3,
+            w_val: 0.5,
+            w_exp: 0.2,
+        }
     }
 }
 
@@ -94,13 +110,17 @@ impl FitnessReport {
             (true, false) => {
                 // No explores: redistribute w_exp proportionally to cb + val
                 let total = w.w_cb + w.w_val;
-                if total == 0.0 { return cb_eff; }
+                if total == 0.0 {
+                    return cb_eff;
+                }
                 (w.w_cb / total) * cb_eff + (w.w_val / total) * val_rate
             }
             (false, true) => {
                 // No validates: redistribute w_val proportionally to cb + exp
                 let total = w.w_cb + w.w_exp;
-                if total == 0.0 { return cb_eff; }
+                if total == 0.0 {
+                    return cb_eff;
+                }
                 (w.w_cb / total) * cb_eff + (w.w_exp / total) * exp_rate
             }
             (false, false) => {
@@ -142,12 +162,16 @@ impl FitnessReport {
         out.push_str("Fitness Report:\n");
         out.push_str(&format!(
             "  CB efficiency:   {:.2} ({}/{})\n",
-            self.cb_efficiency(), self.cb_remaining, self.cb_initial
+            self.cb_efficiency(),
+            self.cb_remaining,
+            self.cb_initial
         ));
         if self.validates_total > 0 {
             out.push_str(&format!(
                 "  Validate rate:   {:.2} ({}/{} passed)\n",
-                self.validate_rate(), self.validates_passed, self.validates_total
+                self.validate_rate(),
+                self.validates_passed,
+                self.validates_total
             ));
         } else {
             out.push_str("  Validate rate:   — (no validates)\n");
@@ -155,13 +179,18 @@ impl FitnessReport {
         if self.explores_total > 0 {
             out.push_str(&format!(
                 "  Explore rate:    {:.2} ({}/{} passed)\n",
-                self.explore_rate(), self.explores_passed, self.explores_total
+                self.explore_rate(),
+                self.explores_passed,
+                self.explores_total
             ));
         } else {
             out.push_str("  Explore rate:    — (no explores)\n");
         }
         out.push_str(&format!("  Prompt calls:    {}\n", self.prompt_count));
-        out.push_str(&format!("  Fitness score:   {:.3}\n", self.score_with(weights)));
+        out.push_str(&format!(
+            "  Fitness score:   {:.3}\n",
+            self.score_with(weights)
+        ));
         if self.is_cb_only() {
             out.push_str("  Warning: No validate/explore blocks — fitness = CB efficiency only.\n");
         }
@@ -177,12 +206,18 @@ impl FitnessReport {
 
         let obj = json::object(vec![
             ("ts", json::JsonValue::Int(ts as i64)),
-            ("source_hash", json::JsonValue::String(source_hash.to_string())),
+            (
+                "source_hash",
+                json::JsonValue::String(source_hash.to_string()),
+            ),
             ("score", json::JsonValue::Float(self.score_with(weights))),
             ("cb_eff", json::JsonValue::Float(self.cb_efficiency())),
             ("val_rate", json::JsonValue::Float(self.validate_rate())),
             ("exp_rate", json::JsonValue::Float(self.explore_rate())),
-            ("prompt_count", json::JsonValue::Int(self.prompt_count as i64)),
+            (
+                "prompt_count",
+                json::JsonValue::Int(self.prompt_count as i64),
+            ),
             ("weights", json::JsonValue::String(weights.to_string())),
         ]);
         format!("{obj}")
@@ -207,12 +242,17 @@ pub fn registry_path(agentis_root: &Path) -> PathBuf {
     agentis_root.join("fitness.jsonl")
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn report(cb_remaining: u64, val_passed: usize, val_total: usize, exp_passed: usize, exp_total: usize) -> FitnessReport {
+    fn report(
+        cb_remaining: u64,
+        val_passed: usize,
+        val_total: usize,
+        exp_passed: usize,
+        exp_total: usize,
+    ) -> FitnessReport {
         FitnessReport {
             cb_initial: 10000,
             cb_remaining,
