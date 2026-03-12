@@ -212,7 +212,7 @@ impl EvalError {
         }
     }
 
-    /// Unwrap through Detailed/InContext wrappers to get the root error.
+    #[allow(dead_code)]
     pub fn root_cause(&self) -> &EvalError {
         match self {
             EvalError::Detailed { inner, .. } => inner.root_cause(),
@@ -493,6 +493,7 @@ impl<'a> Evaluator<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn revoke(&mut self, kind: CapKind) {
         if let Some(handles) = self.caps.remove(&kind) {
             for h in &handles {
@@ -527,6 +528,7 @@ impl<'a> Evaluator<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn restore_snapshot(&mut self, snapshot: &MemorySnapshot) {
         self.env.restore_scopes(snapshot.scopes.clone());
         self.budget = snapshot.budget_remaining;
@@ -553,6 +555,7 @@ impl<'a> Evaluator<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn snapshot_history(&self) -> &[crate::storage::Hash] {
         match &self.snapshot_mgr {
             Some(mgr) => mgr.history(),
@@ -641,40 +644,33 @@ impl<'a> Evaluator<'a> {
                     Ok(val) => {
                         // In test mode, record validate successes for
                         // top-level validate expressions.
-                        if self.test_outcomes.is_some() {
-                            if let Statement::Expression(expr_stmt) = stmt {
-                                if let Expr::Validate(v) = &expr_stmt.expr {
-                                    self.test_outcomes.as_mut().unwrap().push(TestOutcome {
-                                        name: format!(
-                                            "validate ({} predicates)",
-                                            v.predicates.len()
-                                        ),
-                                        kind: TestKind::Validate,
-                                        passed: true,
-                                        detail: None,
-                                    });
-                                }
-                            }
+                        if self.test_outcomes.is_some()
+                            && let Statement::Expression(expr_stmt) = stmt
+                            && let Expr::Validate(v) = &expr_stmt.expr
+                        {
+                            self.test_outcomes.as_mut().unwrap().push(TestOutcome {
+                                name: format!("validate ({} predicates)", v.predicates.len()),
+                                kind: TestKind::Validate,
+                                passed: true,
+                                detail: None,
+                            });
                         }
                         last = val;
                         self.persist_snapshot();
                     }
                     Err(e) => {
-                        if self.test_outcomes.is_some() {
+                        if let Some(outcomes) = &mut self.test_outcomes {
                             // In test mode: record the failure, continue
-                            if let Statement::Expression(expr_stmt) = stmt {
-                                if let Expr::Validate(v) = &expr_stmt.expr {
-                                    self.test_outcomes.as_mut().unwrap().push(TestOutcome {
-                                        name: format!(
-                                            "validate ({} predicates)",
-                                            v.predicates.len()
-                                        ),
-                                        kind: TestKind::Validate,
-                                        passed: false,
-                                        detail: Some(format!("{e}")),
-                                    });
-                                    continue;
-                                }
+                            if let Statement::Expression(expr_stmt) = stmt
+                                && let Expr::Validate(v) = &expr_stmt.expr
+                            {
+                                outcomes.push(TestOutcome {
+                                    name: format!("validate ({} predicates)", v.predicates.len()),
+                                    kind: TestKind::Validate,
+                                    passed: false,
+                                    detail: Some(format!("{e}")),
+                                });
+                                continue;
                             }
                             // Non-validate error in test mode: still abort
                             return Err(e);
@@ -1083,7 +1079,7 @@ impl<'a> Evaluator<'a> {
                                 return Ok(v.clone());
                             }
                         }
-                        Err(EvalError::General(format!("key not found in map")))
+                        Err(EvalError::General("key not found in map".to_string()))
                     }
                     _ => Err(EvalError::TypeError {
                         expected: "list or map".into(),
@@ -1092,7 +1088,7 @@ impl<'a> Evaluator<'a> {
                 };
             }
             "map_of" => {
-                if expr.args.len() % 2 != 0 {
+                if !expr.args.len().is_multiple_of(2) {
                     return Err(EvalError::General(
                         "map_of requires an even number of arguments (key, value pairs)".into(),
                     ));
@@ -1332,10 +1328,8 @@ impl<'a> Evaluator<'a> {
         }
 
         // Trace agent entry
-        if is_agent {
-            if let Some(t) = &self.tracer {
-                t.agent_entered(&expr.callee, self.budget);
-            }
+        if is_agent && let Some(t) = &self.tracer {
+            t.agent_entered(&expr.callee, self.budget);
         }
 
         // Save state for agents (isolated scope)
@@ -1624,20 +1618,20 @@ impl<'a> Evaluator<'a> {
     }
 
     fn collect_type_fields(&self, type_ann: &TypeAnnotation) -> Vec<(String, String)> {
-        if let TypeAnnotation::Named(name) = type_ann {
-            if let Some(type_decl) = self.types.get(name) {
-                return type_decl
-                    .fields
-                    .iter()
-                    .map(|f| {
-                        let type_name = match &f.type_annotation {
-                            TypeAnnotation::Named(n) => n.clone(),
-                            TypeAnnotation::Generic(n, _) => n.clone(),
-                        };
-                        (f.name.clone(), type_name)
-                    })
-                    .collect();
-            }
+        if let TypeAnnotation::Named(name) = type_ann
+            && let Some(type_decl) = self.types.get(name)
+        {
+            return type_decl
+                .fields
+                .iter()
+                .map(|f| {
+                    let type_name = match &f.type_annotation {
+                        TypeAnnotation::Named(n) => n.clone(),
+                        TypeAnnotation::Generic(n, _) => n.clone(),
+                    };
+                    (f.name.clone(), type_name)
+                })
+                .collect();
         }
         Vec::new()
     }
@@ -1911,8 +1905,8 @@ impl<'a> Evaluator<'a> {
                 if let Some(t) = &self.tracer {
                     t.explore_outcome(&expr.name, true);
                 }
-                if self.test_outcomes.is_some() {
-                    self.test_outcomes.as_mut().unwrap().push(TestOutcome {
+                if let Some(outcomes) = &mut self.test_outcomes {
+                    outcomes.push(TestOutcome {
                         name: expr.name.clone(),
                         kind: TestKind::Explore,
                         passed: true,
@@ -1931,8 +1925,8 @@ impl<'a> Evaluator<'a> {
                 self.env = saved_env;
                 self.budget = saved_budget;
                 // In test mode: record failure, continue
-                if self.test_outcomes.is_some() {
-                    self.test_outcomes.as_mut().unwrap().push(TestOutcome {
+                if let Some(outcomes) = &mut self.test_outcomes {
+                    outcomes.push(TestOutcome {
                         name: expr.name.clone(),
                         kind: TestKind::Explore,
                         passed: false,

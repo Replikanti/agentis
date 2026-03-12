@@ -343,6 +343,7 @@ pub fn decode_pong(payload: &[u8]) -> Result<PongData, NetworkError> {
 /// Decoded PONG data.
 #[derive(Debug)]
 pub struct PongData {
+    #[allow(dead_code)]
     pub echo_ts: u64,
     pub evals_completed: u32,
     pub evals_failed: u32,
@@ -524,12 +525,7 @@ fn handle_worker_connection(
         .map(|a| a.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
 
-    loop {
-        let (msg_type, payload) = match network::read_msg(stream) {
-            Ok(r) => r,
-            Err(_) => break, // connection closed
-        };
-
+    while let Ok((msg_type, payload)) = network::read_msg(stream) {
         match msg_type {
             MSG_EVAL => {
                 let req = match decode_eval_request(&payload) {
@@ -765,15 +761,15 @@ pub struct ColonyConfig {
 /// Otherwise split by comma.
 pub fn parse_workers(value: &str) -> Vec<String> {
     let path = std::path::Path::new(value);
-    if path.is_file() {
-        if let Ok(contents) = std::fs::read_to_string(path) {
-            return contents
-                .lines()
-                .map(|l| l.trim())
-                .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                .map(|l| l.to_string())
-                .collect();
-        }
+    if path.is_file()
+        && let Ok(contents) = std::fs::read_to_string(path)
+    {
+        return contents
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| l.to_string())
+            .collect();
     }
     value
         .split(',')
@@ -784,6 +780,7 @@ pub fn parse_workers(value: &str) -> Vec<String> {
 
 /// Evaluate a single variant on a remote worker. Returns an ArenaEntry.
 /// On failure, logs a warning and returns None (caller should fall back to local).
+#[allow(clippy::too_many_arguments)]
 pub fn evaluate_on_worker(
     worker_addr: &str,
     file: &str,
@@ -800,8 +797,8 @@ pub fn evaluate_on_worker(
         .parse()
         .map_err(|e| format!("invalid address: {e}"))?;
     let connect_timeout = std::time::Duration::from_millis(connect_timeout_ms);
-    let mut stream = TcpStream::connect_timeout(&addr, connect_timeout)
-        .map_err(|e| categorize_connect_error(e))?;
+    let mut stream =
+        TcpStream::connect_timeout(&addr, connect_timeout).map_err(categorize_connect_error)?;
 
     // Set read/write timeouts for eval
     let eval_timeout = std::time::Duration::from_millis(eval_timeout_ms);
@@ -813,7 +810,7 @@ pub fn evaluate_on_worker(
         .map_err(|e| format!("failed to set write timeout: {e}"))?;
 
     // Auth handshake
-    client_auth(&mut stream, secret).map_err(|e| categorize_auth_error(e))?;
+    client_auth(&mut stream, secret).map_err(categorize_auth_error)?;
 
     // Send EVAL
     let request_id = 1; // single eval per connection for now
@@ -827,12 +824,11 @@ pub fn evaluate_on_worker(
         timeout_ms: eval_timeout_ms,
     };
     let payload = encode_eval_request(&req);
-    network::write_msg(&mut stream, MSG_EVAL, &payload)
-        .map_err(|e| categorize_protocol_error(e))?;
+    network::write_msg(&mut stream, MSG_EVAL, &payload).map_err(categorize_protocol_error)?;
 
     // Read RESULT
     let (msg_type, result_payload) =
-        network::read_msg(&mut stream).map_err(|e| categorize_protocol_error(e))?;
+        network::read_msg(&mut stream).map_err(categorize_protocol_error)?;
     if msg_type != MSG_RESULT {
         return Err(format!(
             "protocol error (expected RESULT 0x06, got 0x{msg_type:02x})"
@@ -1093,7 +1089,7 @@ pub fn ping_worker(addr: &str, secret: Option<&str>, connect_timeout_ms: u64) ->
 
     // PING/PONG
     let ping_payload = encode_ping();
-    if let Err(_) = network::write_msg(&mut stream, MSG_PING, &ping_payload) {
+    if network::write_msg(&mut stream, MSG_PING, &ping_payload).is_err() {
         return WorkerStatus {
             addr: addr.to_string(),
             status: "offline (write error)".to_string(),

@@ -493,19 +493,14 @@ impl Compiler {
                 // WASM if expects i32 on stack
                 instrs.push(Instruction::I32WrapI64);
 
-                if i.else_block.is_some() {
+                if let Some(else_block) = &i.else_block {
                     // If/else as expression producing i64
                     instrs.push(Instruction::If(wasm_encoder::BlockType::Result(
                         ValType::I64,
                     )));
                     self.compile_block_stmts(instrs, ctx, &i.then_block.statements, true)?;
                     instrs.push(Instruction::Else);
-                    self.compile_block_stmts(
-                        instrs,
-                        ctx,
-                        &i.else_block.as_ref().unwrap().statements,
-                        true,
-                    )?;
+                    self.compile_block_stmts(instrs, ctx, &else_block.statements, true)?;
                     instrs.push(Instruction::End);
                 } else {
                     // If without else — void

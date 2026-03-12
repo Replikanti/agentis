@@ -124,7 +124,7 @@ impl ObjectStore {
         T::from_bytes(&data).map_err(|e| StorageError::DeserializeError(e.0))
     }
 
-    /// Check if an object with the given hash exists.
+    #[allow(dead_code)]
     pub fn exists(&self, hash: &str) -> bool {
         self.object_path(hash).exists()
     }
@@ -411,11 +411,13 @@ mod tests {
 pub(crate) mod tempfile {
     use std::path::{Path, PathBuf};
 
+    #[allow(dead_code)]
     pub struct TempDir {
         path: PathBuf,
     }
 
     impl TempDir {
+        #[allow(dead_code)]
         pub fn path(&self) -> &Path {
             &self.path
         }
@@ -427,6 +429,7 @@ pub(crate) mod tempfile {
         }
     }
 
+    #[allow(dead_code)]
     pub fn tempdir() -> Result<TempDir, std::io::Error> {
         let mut path = std::env::temp_dir();
         path.push(format!("agentis-test-{}", std::process::id()));
@@ -435,6 +438,7 @@ pub(crate) mod tempfile {
         Ok(TempDir { path })
     }
 
+    #[allow(dead_code)]
     fn rand_u64() -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};

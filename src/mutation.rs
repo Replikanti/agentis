@@ -22,13 +22,13 @@ pub fn extract_agents(source: &str) -> Result<Vec<AgentInfo>, String> {
     let program = Parser::parse_source(source).map_err(|e| format!("parse error: {e}"))?;
     let mut agents = Vec::new();
     for decl in &program.declarations {
-        if let Declaration::Agent(agent) = decl {
-            if let Some(instruction) = find_prompt_instruction_in_agent(agent) {
-                agents.push(AgentInfo {
-                    name: agent.name.clone(),
-                    instruction,
-                });
-            }
+        if let Declaration::Agent(agent) = decl
+            && let Some(instruction) = find_prompt_instruction_in_agent(agent)
+        {
+            agents.push(AgentInfo {
+                name: agent.name.clone(),
+                instruction,
+            });
         }
     }
     Ok(agents)

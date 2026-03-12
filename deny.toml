@@ -1,0 +1,31 @@
+[graph]
+# Exclude dev-dependencies from all checks (wasmparser pulls serde transitively).
+no-default-features = false
+all-features = false
+exclude-dev = true
+
+[advisories]
+# Handled by cargo audit separately.
+ignore = []
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+]
+
+[bans]
+multiple-versions = "warn"
+deny = [
+    { crate = "tokio", wrappers = [] },
+    { crate = "serde", wrappers = [] },
+    { crate = "serde_derive", wrappers = [] },
+]
+
+[sources]
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

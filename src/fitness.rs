@@ -19,6 +19,7 @@ pub struct FitnessWeights {
 }
 
 impl FitnessWeights {
+    #[allow(dead_code)]
     pub fn new(w_cb: f64, w_val: f64, w_exp: f64) -> Self {
         Self { w_cb, w_val, w_exp }
     }
@@ -53,9 +54,11 @@ impl FitnessWeights {
         }
         Ok(Self { w_cb, w_val, w_exp })
     }
+}
 
-    pub fn to_string(&self) -> String {
-        format!("{},{},{}", self.w_cb, self.w_val, self.w_exp)
+impl std::fmt::Display for FitnessWeights {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{},{},{}", self.w_cb, self.w_val, self.w_exp)
     }
 }
 
@@ -84,7 +87,7 @@ pub struct FitnessReport {
 }
 
 impl FitnessReport {
-    /// Compute fitness with default weights.
+    #[allow(dead_code)]
     pub fn score(&self) -> f64 {
         self.score_with(&FitnessWeights::default())
     }
@@ -238,6 +241,7 @@ pub fn append_to_registry(agentis_root: &Path, entry: &str) -> std::io::Result<(
 }
 
 /// Return the path to the fitness registry.
+#[allow(dead_code)]
 pub fn registry_path(agentis_root: &Path) -> PathBuf {
     agentis_root.join("fitness.jsonl")
 }

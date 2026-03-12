@@ -17,6 +17,7 @@ impl std::fmt::Display for ParseError {
 pub struct Parser {
     tokens: Vec<SpannedToken>,
     pos: usize,
+    #[allow(dead_code)]
     errors: Vec<ParseError>,
 }
 
@@ -39,7 +40,7 @@ impl Parser {
         parser.parse_program()
     }
 
-    /// Parse and return all collected errors (for multi-error reporting).
+    #[allow(dead_code)]
     pub fn parse_source_multi(source: &str) -> Result<Program, Vec<ParseError>> {
         let tokens = Lexer::new(source).tokenize().map_err(|e| {
             vec![ParseError {
@@ -65,6 +66,7 @@ impl Parser {
         Ok(Program { declarations })
     }
 
+    #[allow(dead_code)]
     fn parse_program_recovering(&mut self) -> Program {
         let mut declarations = Vec::new();
         while !self.is_at_end() {
@@ -79,6 +81,7 @@ impl Parser {
         Program { declarations }
     }
 
+    #[allow(dead_code)]
     fn synchronize(&mut self) {
         self.advance();
         while !self.is_at_end() {
