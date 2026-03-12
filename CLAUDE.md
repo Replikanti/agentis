@@ -58,7 +58,7 @@ Storage: AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (614)
+cargo test                     # Run all tests (626)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
@@ -96,6 +96,11 @@ cargo run -- arena dir/ --workers workers.txt --secret S
 cargo run -- colony status --workers h1:9462,h2:9462  # Worker health
 cargo run -- colony status --workers workers.txt --json
 cargo run -- colony ping 10.0.0.1:9462                # Single ping
+cargo run -- colony history                            # Show checkpoint chain
+cargo run -- colony history --limit 10                # Last 10 checkpoints
+cargo run -- colony trace <hash-or-tag>               # Show checkpoint details
+cargo run -- colony best                              # Find best checkpoint
+cargo run -- colony best --min-score 0.9              # Filter by score
 cargo run -- colony tags                              # List checkpoint tags
 cargo run -- colony tag <hash> <name>                 # Tag a checkpoint
 cargo run -- evolve file.ag -g 10 -n 8      # Evolution: 10 gens, pop 8
@@ -160,3 +165,4 @@ cargo run -- lineage evolved/variant.ag     # Trace ancestry to seed
 
 - **Checkpoint Store (M35):** Content-addressed checkpoint storage in `.agentis/colony/`. `GenerationCheckpoint` with binary serialization (magic `AGCK`, version 1). `CheckpointStore` with store/load, HEAD pointer, named tags, prefix matching, chain walking. Same SHA-256 fan-out layout as ObjectStore.
 - **Auto-Checkpoint + Resume (M36):** `agentis evolve` auto-checkpoints after each generation (configurable via `--checkpoint-interval N`, 0 disables). `--resume <hash-or-tag>` restores evolution state (parents, best_ever_*, stall_count, cumulative_cb) and continues from checkpoint.generation + 1. `--tag <name>` tags the final checkpoint. Always checkpoints on last generation (including early stops). Generation summary shows `ckpt=<hash_prefix>`.
+- **Colony History CLI (M37):** `agentis colony history [--limit N]` walks checkpoint chain from HEAD with tabular output. `agentis colony trace <hash-or-tag>` shows detailed checkpoint info (scores, stall count, parents, previous). `agentis colony best [--min-score N]` finds highest-scoring checkpoint. Tags resolved and displayed in all views.
