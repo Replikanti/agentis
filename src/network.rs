@@ -50,6 +50,15 @@ const MSG_WANT: u8 = 0x02;
 const MSG_DATA: u8 = 0x03;
 const MSG_DONE: u8 = 0x04;
 
+// Colony protocol extensions (Phase 8)
+pub const MSG_EVAL: u8 = 0x05;
+pub const MSG_RESULT: u8 = 0x06;
+pub const MSG_PING: u8 = 0x07;
+pub const MSG_PONG: u8 = 0x08;
+pub const MSG_AUTH: u8 = 0x09;
+pub const MSG_AUTH_OK: u8 = 0x0A;
+pub const MSG_AUTH_FAIL: u8 = 0x0B;
+
 const HASH_LEN: usize = 64; // SHA-256 hex string length
 
 // --- Message encoding/decoding ---

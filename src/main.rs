@@ -144,6 +144,9 @@ fn main() {
             }
             cmd_evolve(&args[2], &args[3..])
         }
+        "worker" => {
+            cmd_worker(&args[2..])
+        }
         "lineage" => {
             if args.len() < 3 {
                 eprintln!("Usage: agentis lineage <source_file>");
@@ -188,6 +191,7 @@ fn print_usage() {
     eprintln!("  compile <branch> [o] Compile branch to WASM binary");
     eprintln!("  sync <host:port>     Sync objects with a remote peer");
     eprintln!("  serve [addr:port]    Listen for incoming sync connections");
+    eprintln!("  worker [addr:port]   Start colony worker (--secret S --max-concurrent N)");
     eprintln!("  log [branch]         Show commit log for a branch");
     eprintln!("  snapshot list|show   List or inspect snapshots");
     eprintln!("  arena <files|dir>    Rank variants by fitness (--rounds --top --json --parallel)");
@@ -671,6 +675,36 @@ fn cmd_serve(addr: &str) -> Result<(), AgentisError> {
         .map_err(|e| AgentisError::General(format!("{e}")))?;
     println!("Sync complete: sent {}, received {}", result.sent, result.received);
     Ok(())
+}
+
+fn cmd_worker(args: &[String]) -> Result<(), AgentisError> {
+    let addr = args.iter()
+        .find(|a| !a.starts_with("--"))
+        .map(|s| s.as_str())
+        .unwrap_or("0.0.0.0:9462");
+
+    let secret = parse_flag_value(args, "--secret");
+    let max_concurrent: usize = parse_flag_value(args, "--max-concurrent")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(colony::detect_threads);
+    let max_connections: usize = parse_flag_value(args, "--max-connections")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(64);
+
+    // Also check config for colony.secret
+    let root = agentis_root();
+    let cfg = config::Config::load(&root);
+    let secret = secret.or_else(|| cfg.get("colony.secret").map(|s| s.to_string()));
+
+    let config = colony::WorkerConfig {
+        addr: addr.to_string(),
+        secret,
+        max_concurrent,
+        max_connections,
+    };
+
+    colony::run_worker(config)
+        .map_err(|e| AgentisError::General(format!("{e}")))
 }
 
 fn cmd_log(branch: Option<&str>) -> Result<(), AgentisError> {
