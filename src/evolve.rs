@@ -15,6 +15,7 @@ use crate::storage::ObjectStore;
 
 // --- Evolution config ---
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EvolveConfig {
     pub generations: usize,
@@ -32,10 +33,12 @@ pub struct EvolveConfig {
 
 #[derive(Debug, Clone)]
 pub struct LineageEntry {
+    #[allow(dead_code)]
     pub source_hash: String,
     pub parent_hash: String,
     pub generation: usize,
     pub score: f64,
+    #[allow(dead_code)]
     pub prompt_count: usize,
     pub mutations: Vec<String>,
 }
@@ -44,12 +47,18 @@ pub struct LineageEntry {
 
 #[derive(Debug, Clone)]
 pub struct GenResult {
+    #[allow(dead_code)]
     pub generation: usize,
+    #[allow(dead_code)]
     pub best_score: f64,
+    #[allow(dead_code)]
     pub avg_score: f64,
     pub avg_prompts: f64,
+    #[allow(dead_code)]
     pub variant_count: usize,
+    #[allow(dead_code)]
     pub best_source: String,
+    #[allow(dead_code)]
     pub best_hash: String,
 }
 
@@ -69,8 +78,7 @@ pub fn hash_source(source: &str) -> String {
     ObjectStore::hash_bytes(source.as_bytes())
 }
 
-/// Generate tracked variants from a set of parent sources.
-/// Distributes mutations round-robin across parents.
+#[allow(clippy::too_many_arguments)]
 pub fn generate_tracked_variants(
     parents: &[(String, String)], // (source, source_hash) pairs
     population: usize,

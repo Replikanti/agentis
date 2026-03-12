@@ -159,7 +159,7 @@ fn has_phone(text: &str) -> bool {
                 }
             }
             // Phone: 8-15 digits
-            if digit_count >= 8 && digit_count <= 15 {
+            if (8..=15).contains(&digit_count) {
                 // Check it's not part of a hash or UUID (no hex letters adjacent)
                 let before_ok = start == 0 || !chars[start - 1].is_ascii_alphanumeric();
                 let after_ok = i >= chars.len() || !chars[i].is_ascii_alphanumeric();
@@ -176,7 +176,7 @@ fn has_phone(text: &str) -> bool {
 
 fn has_credit_card(text: &str) -> bool {
     // 4 groups of 4 digits, separated by spaces or dashes (or no separator)
-    let digits_and_seps: Vec<(usize, char)> = text
+    let _digits_and_seps: Vec<(usize, char)> = text
         .char_indices()
         .filter(|(_, c)| c.is_ascii_digit() || *c == ' ' || *c == '-')
         .collect();
@@ -229,7 +229,7 @@ fn luhn_check(digits: &[char]) -> bool {
         sum += d;
         double = !double;
     }
-    sum % 10 == 0
+    sum.is_multiple_of(10)
 }
 
 fn has_czech_birth_number(text: &str) -> bool {
@@ -250,14 +250,14 @@ fn has_czech_birth_number(text: &str) -> bool {
             };
 
             // Parse YYMMDD
-            if let (Some(y1), Some(y2), Some(m1), Some(m2), Some(d1), Some(d2)) =
+            if let (Some(_y1), Some(_y2), Some(m1), Some(m2), Some(d1), Some(d2)) =
                 (d(i), d(i + 1), d(i + 2), d(i + 3), d(i + 4), d(i + 5))
             {
                 let month = m1 * 10 + m2;
                 let day = d1 * 10 + d2;
                 // Month: 01-12 or 51-62 (female)
-                let month_ok = (month >= 1 && month <= 12) || (month >= 51 && month <= 62);
-                let day_ok = day >= 1 && day <= 31;
+                let month_ok = (1..=12).contains(&month) || (51..=62).contains(&month);
+                let day_ok = (1..=31).contains(&day);
 
                 if month_ok && day_ok {
                     let after6 = i + 6;
@@ -321,7 +321,7 @@ fn has_iban(text: &str) -> bool {
                     break;
                 }
             }
-            if alnum_count >= 8 && alnum_count <= 30 {
+            if (8..=30).contains(&alnum_count) {
                 return true;
             }
         }
@@ -417,19 +417,17 @@ fn has_ssn(text: &str) -> bool {
             && bytes[i + 9].is_ascii_digit()
             && i + 10 < len
             && bytes[i + 10].is_ascii_digit()
+            && is_word_boundary(bytes, i, i + 11, len)
         {
-            if is_word_boundary(bytes, i, i + 11, len) {
-                // Reject known invalid: 000-xx-xxxx, xxx-00-xxxx, xxx-xx-0000
-                let area =
-                    (bytes[i] - b'0') * 100 + (bytes[i + 1] - b'0') * 10 + (bytes[i + 2] - b'0');
-                let group = (bytes[i + 4] - b'0') * 10 + (bytes[i + 5] - b'0');
-                let serial = (bytes[i + 7] - b'0') as u32 * 1000
-                    + (bytes[i + 8] - b'0') as u32 * 100
-                    + (bytes[i + 9] - b'0') as u32 * 10
-                    + (bytes[i + 10] - b'0') as u32;
-                if area != 0 && group != 0 && serial != 0 {
-                    return true;
-                }
+            // Reject known invalid: 000-xx-xxxx, xxx-00-xxxx, xxx-xx-0000
+            let area = (bytes[i] - b'0') * 100 + (bytes[i + 1] - b'0') * 10 + (bytes[i + 2] - b'0');
+            let group = (bytes[i + 4] - b'0') * 10 + (bytes[i + 5] - b'0');
+            let serial = (bytes[i + 7] - b'0') as u32 * 1000
+                + (bytes[i + 8] - b'0') as u32 * 100
+                + (bytes[i + 9] - b'0') as u32 * 10
+                + (bytes[i + 10] - b'0') as u32;
+            if area != 0 && group != 0 && serial != 0 {
+                return true;
             }
         }
         i += 1;

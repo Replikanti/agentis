@@ -134,6 +134,7 @@ impl CapabilityRegistry {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn revoke(&mut self, handle: &CapHandle) {
         self.revoked.insert(handle.token);
     }

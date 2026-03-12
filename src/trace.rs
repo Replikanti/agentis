@@ -84,6 +84,7 @@ impl Tracer {
         Self { level, output }
     }
 
+    #[allow(dead_code)]
     pub fn level(&self) -> TraceLevel {
         self.level
     }
@@ -95,6 +96,7 @@ impl Tracer {
             .write_trace(&format!("[llm] requesting {backend} {model} ..."));
     }
 
+    #[allow(dead_code)]
     pub fn llm_still_waiting(&self, elapsed_secs: f64) {
         self.output
             .write_trace(&format!("[llm] still waiting ... ({elapsed_secs:.1}s)"));

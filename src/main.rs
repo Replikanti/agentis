@@ -953,15 +953,14 @@ fn cmd_test(args: &[String]) -> Result<(), AgentisError> {
                 evaluator::TestKind::Validate => outcome.name.clone(),
             };
             let dots = 40usize.saturating_sub(kind_label.len() + 2);
-            let dot_str: String = std::iter::repeat('.').take(dots).collect();
+            let dot_str: String = std::iter::repeat_n('.', dots).collect();
             println!("  {kind_label} {dot_str} {status}");
 
-            if !outcome.passed {
-                if let Some(ref detail) = outcome.detail {
-                    if verbose {
-                        println!("    {detail}");
-                    }
-                }
+            if !outcome.passed
+                && let Some(ref detail) = outcome.detail
+                && verbose
+            {
+                println!("    {detail}");
             }
 
             if outcome.passed {
@@ -1031,23 +1030,21 @@ fn cmd_repl(args: &[String]) -> Result<(), AgentisError> {
     let branch_name = refs
         .current_branch()
         .unwrap_or_else(|_| "genesis".to_string());
-    if let Ok(Some(tree_hash)) = refs.resolve_tree(&branch_name, &store) {
-        if let Ok(program) = store.load::<ast::Program>(&tree_hash) {
-            for decl in &program.declarations {
-                match decl {
-                    ast::Declaration::Function(f) => {
-                        let _ =
-                            evaluator.eval_repl_declaration(&ast::Declaration::Function(f.clone()));
-                    }
-                    ast::Declaration::Agent(a) => {
-                        let _ =
-                            evaluator.eval_repl_declaration(&ast::Declaration::Agent(a.clone()));
-                    }
-                    ast::Declaration::Type(t) => {
-                        let _ = evaluator.eval_repl_declaration(&ast::Declaration::Type(t.clone()));
-                    }
-                    _ => {}
+    if let Ok(Some(tree_hash)) = refs.resolve_tree(&branch_name, &store)
+        && let Ok(program) = store.load::<ast::Program>(&tree_hash)
+    {
+        for decl in &program.declarations {
+            match decl {
+                ast::Declaration::Function(f) => {
+                    let _ = evaluator.eval_repl_declaration(&ast::Declaration::Function(f.clone()));
                 }
+                ast::Declaration::Agent(a) => {
+                    let _ = evaluator.eval_repl_declaration(&ast::Declaration::Agent(a.clone()));
+                }
+                ast::Declaration::Type(t) => {
+                    let _ = evaluator.eval_repl_declaration(&ast::Declaration::Type(t.clone()));
+                }
+                _ => {}
             }
         }
     }
@@ -1171,10 +1168,10 @@ fn cmd_repl(args: &[String]) -> Result<(), AgentisError> {
                         output_shown = current_output.len();
 
                         if is_let {
-                            if let ast::Declaration::Statement(ast::Statement::Let(l)) = &decl {
-                                if let Some(v) = evaluator.lookup_var(&l.name) {
-                                    println!("{v}");
-                                }
+                            if let ast::Declaration::Statement(ast::Statement::Let(l)) = &decl
+                                && let Some(v) = evaluator.lookup_var(&l.name)
+                            {
+                                println!("{v}");
                             }
                         } else if val != evaluator::Value::Void {
                             println!("{val}");
@@ -1208,7 +1205,7 @@ fn cmd_snapshot(args: &[String]) -> Result<(), AgentisError> {
                 println!("No snapshots found.");
                 return Ok(());
             }
-            println!("{:<14} {:<12} {:<9} {}", "HASH", "CB", "OUTPUT", "SCOPES");
+            println!("{:<14} {:<12} {:<9} SCOPES", "HASH", "CB", "OUTPUT");
             for info in &snapshots {
                 let short_hash = if info.hash.len() >= 12 {
                     &info.hash[..12]
@@ -1264,7 +1261,7 @@ fn cmd_snapshot(args: &[String]) -> Result<(), AgentisError> {
                 }
             }
         }
-        "--help" | "help" | _ => {
+        _ => {
             eprintln!("Usage: agentis snapshot <command>");
             eprintln!();
             eprintln!("Commands:");
@@ -1300,7 +1297,7 @@ fn cmd_mutate(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
 
     // --list-agents: just print agent names and instructions, then exit
     if args.iter().any(|a| a == "--list-agents") {
-        let agents = mutation::extract_agents(&source).map_err(|e| AgentisError::General(e))?;
+        let agents = mutation::extract_agents(&source).map_err(AgentisError::General)?;
         if agents.is_empty() {
             println!("No agents with prompt instructions found.");
         } else {
@@ -1330,7 +1327,7 @@ fn cmd_mutate(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
 
     if dry_run {
         // Dry-run: show what would be generated without writing files
-        let agents = mutation::extract_agents(&source).map_err(|e| AgentisError::General(e))?;
+        let agents = mutation::extract_agents(&source).map_err(AgentisError::General)?;
         if agents.is_empty() {
             return Err(AgentisError::General(
                 "no agents with prompt instructions found in source".to_string(),
@@ -1367,7 +1364,7 @@ fn cmd_mutate(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
                     llm_backend.as_ref(),
                     custom_template.as_deref(),
                 )
-                .map_err(|e| AgentisError::General(e))?
+                .map_err(AgentisError::General)?
             };
             println!(
                 "{}",
@@ -1400,7 +1397,7 @@ fn cmd_mutate(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         llm_backend.as_ref(),
         custom_template.as_deref(),
     )
-    .map_err(|e| AgentisError::General(e))?;
+    .map_err(AgentisError::General)?;
 
     // Determine output directory
     let output_dir = match out_dir {
@@ -1485,8 +1482,7 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
 
     // Dry-run mode
     if dry_run {
-        let agents =
-            mutation::extract_agents(&seed_source).map_err(|e| AgentisError::General(e))?;
+        let agents = mutation::extract_agents(&seed_source).map_err(AgentisError::General)?;
         let prompt_count = agents.len().max(1); // rough estimate: at least 1 prompt per agent
         let avg_instruction_len = if agents.is_empty() {
             30
@@ -1586,7 +1582,7 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             custom_template.as_deref(),
             mock_offset,
         )
-        .map_err(|e| AgentisError::General(e))?;
+        .map_err(AgentisError::General)?;
 
         // Write variant files to temp for arena evaluation
         let gen_dir = out_path.join(format!("g{g:02}"));
@@ -1741,25 +1737,25 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         }
 
         // Stop-on-stall
-        if let Some(stall_limit) = stop_on_stall {
-            if stall_count >= stall_limit {
-                eprintln!(
-                    "\nStopped: no improvement for {} generations (score: {:.3})",
-                    stall_limit, best_ever_score
-                );
-                break;
-            }
+        if let Some(stall_limit) = stop_on_stall
+            && stall_count >= stall_limit
+        {
+            eprintln!(
+                "\nStopped: no improvement for {} generations (score: {:.3})",
+                stall_limit, best_ever_score
+            );
+            break;
         }
 
         // Budget cap
-        if let Some(cap) = budget_cap {
-            if cumulative_cb >= cap {
-                eprintln!(
-                    "\nBudget cap reached at generation {} ({}/{} CB spent)",
-                    g, cumulative_cb, cap
-                );
-                break;
-            }
+        if let Some(cap) = budget_cap
+            && cumulative_cb >= cap
+        {
+            eprintln!(
+                "\nBudget cap reached at generation {} ({}/{} CB spent)",
+                g, cumulative_cb, cap
+            );
+            break;
         }
 
         // Select top K = N/2 as parents for next generation
@@ -2039,7 +2035,7 @@ fn cmd_arena(args: &[String]) -> Result<(), AgentisError> {
     Ok(())
 }
 
-/// Run a single variant and return its arena entry.
+#[allow(clippy::too_many_arguments)]
 fn run_arena_variant(
     file: &str,
     store: &ObjectStore,
@@ -2144,12 +2140,12 @@ fn run_arena_parallel(
 
     // Build final entries in original file order, averaging rounds
     let mut results = Vec::with_capacity(files.len());
-    for idx in 0..files.len() {
+    for (idx, file) in files.iter().enumerate() {
         let entries = grouped.remove(&idx).unwrap_or_default();
         let entry = if entries.len() == 1 {
             entries.into_iter().next().unwrap()
         } else if entries.is_empty() {
-            arena::ArenaEntry::from_error(&files[idx], "no results")
+            arena::ArenaEntry::from_error(file, "no results")
         } else {
             arena::ArenaEntry::average(&entries)
         };
@@ -2297,10 +2293,10 @@ fn cmd_audit(args: &[String]) -> Result<(), AgentisError> {
             if blocked_only && entry.pii_scan == "clean" {
                 continue;
             }
-            if let Some(ref agent) = agent_filter {
-                if entry.agent != *agent {
-                    continue;
-                }
+            if let Some(ref agent) = agent_filter
+                && entry.agent != *agent
+            {
+                continue;
             }
 
             entries.push(entry);
@@ -2322,8 +2318,8 @@ fn cmd_audit(args: &[String]) -> Result<(), AgentisError> {
 
     // Print table header
     println!(
-        "{:<12} {:<16} {:<18} {:<10} {}",
-        "TIME", "AGENT", "PII", "STATUS", "BACKEND"
+        "{:<12} {:<16} {:<18} {:<10} BACKEND",
+        "TIME", "AGENT", "PII", "STATUS"
     );
 
     for entry in entries {

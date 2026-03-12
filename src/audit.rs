@@ -10,7 +10,7 @@
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -31,7 +31,6 @@ pub struct PromptAuditEntry<'a> {
 /// JSONL audit logger. Thread-safe via Mutex around file handle.
 pub struct AuditLog {
     file: Mutex<File>,
-    path: PathBuf,
 }
 
 impl AuditLog {
@@ -50,7 +49,6 @@ impl AuditLog {
             .ok()?;
         Some(Self {
             file: Mutex::new(file),
-            path,
         })
     }
 
@@ -107,11 +105,6 @@ impl AuditLog {
             let _ = f.write_all(line.as_bytes());
         }
     }
-
-    /// Path to the audit file (for testing / CLI display).
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
 fn sha256_short(data: &str) -> String {
@@ -126,6 +119,7 @@ fn sha256_short(data: &str) -> String {
 mod tests {
     use super::*;
     use crate::pii;
+    use std::path::PathBuf;
 
     fn temp_audit_dir() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();

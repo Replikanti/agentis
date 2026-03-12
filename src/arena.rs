@@ -17,6 +17,7 @@ pub struct ArenaEntry {
     pub exp_rate: f64,
     pub prompt_count: usize,
     pub error: Option<String>,
+    #[allow(dead_code)]
     pub rounds: usize,
     /// Which worker evaluated this variant (None = local).
     pub worker: Option<String>,
@@ -64,7 +65,7 @@ impl ArenaEntry {
     /// Average multiple entries for the same file (multi-round).
     pub fn average(entries: &[ArenaEntry]) -> ArenaEntry {
         assert!(!entries.is_empty());
-        let n = entries.len() as f64;
+        let _n = entries.len() as f64;
         let errors: Vec<_> = entries.iter().filter_map(|e| e.error.as_ref()).collect();
         let has_error = !errors.is_empty();
 
@@ -134,8 +135,7 @@ pub fn format_table(entries: &[ArenaEntry], rounds: usize) -> String {
         .map(|e| e.file.len())
         .max()
         .unwrap_or(4)
-        .max(4)
-        .min(30);
+        .clamp(4, 30);
 
     out.push_str(&format!(
         "{:<6}{:<width$}  {:<8}{:<8}{:<7}{}\n",
@@ -178,13 +178,13 @@ pub fn format_table(entries: &[ArenaEntry], rounds: usize) -> String {
         }
     }
 
-    if let Some(winner) = entries.first() {
-        if winner.error.is_none() {
-            out.push_str(&format!(
-                "\nWinner: {} (score: {:.3})\n",
-                winner.file, winner.score
-            ));
-        }
+    if let Some(winner) = entries.first()
+        && winner.error.is_none()
+    {
+        out.push_str(&format!(
+            "\nWinner: {} (score: {:.3})\n",
+            winner.file, winner.score
+        ));
     }
 
     out

@@ -74,7 +74,7 @@ impl MemorySnapshot {
             write_u32(&mut buf, scope.len() as u32);
             // Sort keys for deterministic serialization
             let mut entries: Vec<_> = scope.iter().collect();
-            entries.sort_by_key(|(k, _)| k.clone());
+            entries.sort_by_key(|(k, _)| k.to_string());
             for (name, value) in entries {
                 write_string(&mut buf, name);
                 write_value(&mut buf, value);
@@ -195,14 +195,17 @@ impl<'a> SnapshotManager<'a> {
         MemorySnapshot::from_bytes(&bytes)
     }
 
+    #[allow(dead_code)]
     pub fn latest(&self) -> Option<&Hash> {
         self.history.last()
     }
 
+    #[allow(dead_code)]
     pub fn history(&self) -> &[Hash] {
         &self.history
     }
 
+    #[allow(dead_code)]
     pub fn rollback_to(&self, hash: &str) -> Result<MemorySnapshot, SnapshotError> {
         self.load(hash)
     }
@@ -295,7 +298,7 @@ fn write_value(buf: &mut Vec<u8>, val: &Value) {
             write_string(buf, name);
             write_u32(buf, fields.len() as u32);
             let mut entries: Vec<_> = fields.iter().collect();
-            entries.sort_by_key(|(k, _)| k.clone());
+            entries.sort_by_key(|(k, _)| k.to_string());
             for (k, v) in entries {
                 write_string(buf, k);
                 write_value(buf, v);

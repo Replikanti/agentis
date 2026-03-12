@@ -472,7 +472,7 @@ fn extract_json_from_text(text: &str) -> &str {
         || trimmed
             .bytes()
             .next()
-            .map_or(false, |b| b.is_ascii_digit() || b == b'-')
+            .is_some_and(|b| b.is_ascii_digit() || b == b'-')
     {
         return trimmed;
     }

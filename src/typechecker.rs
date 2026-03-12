@@ -269,7 +269,7 @@ impl TypeChecker {
             Expr::StringLiteral(_) => Type::String,
             Expr::BoolLiteral(_) => Type::Bool,
             Expr::Identifier(name) => {
-                self.env.lookup(name).cloned().unwrap_or_else(|| {
+                self.env.lookup(name).cloned().unwrap_or({
                     // Don't error here — evaluator catches undefined vars
                     Type::Any
                 })
