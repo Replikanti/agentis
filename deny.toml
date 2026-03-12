@@ -2,7 +2,7 @@
 # Exclude dev-dependencies from all checks (wasmparser pulls serde transitively).
 no-default-features = false
 all-features = false
-no-dev-deps = true
+exclude-dev = true
 
 [advisories]
 # Handled by cargo audit separately.
