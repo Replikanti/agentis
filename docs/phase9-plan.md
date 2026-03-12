@@ -179,7 +179,7 @@ more workers).
 - [x] M35: Checkpoint Store
 - [x] M36: Auto-Checkpoint + Resume
 - [x] M37: Colony History CLI
-- [ ] M38: Garbage Collection
+- [x] M38: Garbage Collection
 
 ### M35: Checkpoint Store
 
