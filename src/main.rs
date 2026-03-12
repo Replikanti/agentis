@@ -2,6 +2,7 @@ mod arena;
 mod ast;
 mod audit;
 mod capabilities;
+mod colony;
 mod compiler;
 mod config;
 mod error;
@@ -111,6 +112,7 @@ fn main() {
         "arena" => {
             if args.len() < 3 {
                 eprintln!("Usage: agentis arena <files|dir> [--rounds N] [--top N] [--json] [--weights W]");
+                eprintln!("       agentis arena <files|dir> --parallel [--threads N]");
                 process::exit(1);
             }
             cmd_arena(&args[2..])
@@ -137,6 +139,7 @@ fn main() {
                 eprintln!("  --show-lineage      Show best agent's lineage");
                 eprintln!("  --clean             Remove old fitness data before running");
                 eprintln!("  --dry-run           Estimate cost without running");
+                eprintln!("  --threads N         Parallel arena evaluation (default: auto-detect)");
                 process::exit(1);
             }
             cmd_evolve(&args[2], &args[3..])
@@ -187,9 +190,9 @@ fn print_usage() {
     eprintln!("  serve [addr:port]    Listen for incoming sync connections");
     eprintln!("  log [branch]         Show commit log for a branch");
     eprintln!("  snapshot list|show   List or inspect snapshots");
-    eprintln!("  arena <files|dir>    Rank variants by fitness (--rounds --top --json)");
+    eprintln!("  arena <files|dir>    Rank variants by fitness (--rounds --top --json --parallel)");
     eprintln!("  mutate <file> [flags] Generate mutated agent variants");
-    eprintln!("  evolve <file> [flags] Evolutionary loop (-g N -n N --out dir)");
+    eprintln!("  evolve <file> [flags] Evolutionary loop (-g N -n N --out dir --threads N)");
     eprintln!("  lineage <file>       Trace variant ancestry back to seed");
     eprintln!("  audit [flags]        Show prompt audit log");
     eprintln!("  version              Show version");
@@ -1291,6 +1294,8 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     let show_lineage = args.iter().any(|a| a == "--show-lineage");
     let dry_run = args.iter().any(|a| a == "--dry-run");
     let clean = args.iter().any(|a| a == "--clean");
+    let threads: Option<usize> = parse_flag_value(args, "--threads")
+        .and_then(|s| s.parse().ok());
 
     // Read seed source
     let seed_source = std::fs::read_to_string(source_file)?;
@@ -1399,23 +1404,34 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             std::fs::write(&path, &v.source)?;
         }
 
-        // Arena: evaluate each variant
-        let mut scored: Vec<(evolve::TrackedVariant, arena::ArenaEntry)> = Vec::new();
-        for v in &tracked_variants {
-            let path = gen_dir.join(&v.filename);
-            let entry = run_arena_variant(
-                &path.to_string_lossy(),
-                &store, &refs, &root, &cfg, llm_backend.as_ref(),
-                &io_ctx, &tracer, audit_log.as_ref(), max_agents,
-                grant_pii, &fitness_weights,
-            );
+        // Arena: evaluate each variant (sequential or parallel)
+        let variant_entries = if let Some(tc) = threads {
+            let variant_files: Vec<String> = tracked_variants.iter()
+                .map(|v| gen_dir.join(&v.filename).to_string_lossy().to_string())
+                .collect();
+            run_arena_parallel(&variant_files, 1, &root, grant_pii, &fitness_weights, tc)
+        } else {
+            let mut entries = Vec::new();
+            for v in &tracked_variants {
+                let path = gen_dir.join(&v.filename);
+                let entry = run_arena_variant(
+                    &path.to_string_lossy(),
+                    &store, &refs, &root, &cfg, llm_backend.as_ref(),
+                    &io_ctx, &tracer, audit_log.as_ref(), max_agents,
+                    grant_pii, &fitness_weights,
+                );
+                entries.push(entry);
+            }
+            entries
+        };
 
+        let mut scored: Vec<(evolve::TrackedVariant, arena::ArenaEntry)> = Vec::new();
+        for (v, entry) in tracked_variants.iter().zip(variant_entries.into_iter()) {
             // Track CB usage
             if entry.error.is_none() {
                 let cb_spent = ((1.0 - entry.cb_eff) * DEFAULT_BUDGET as f64) as u64;
                 cumulative_cb += cb_spent;
             }
-
             scored.push((v.clone(), entry));
         }
 
@@ -1584,31 +1600,17 @@ fn cmd_lineage(source_file: &str) -> Result<(), AgentisError> {
     Ok(())
 }
 
-fn cmd_arena(args: &[String]) -> Result<(), AgentisError> {
-    // Parse flags
-    let rounds: usize = parse_flag_value(args, "--rounds")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1);
-    let top_n: Option<usize> = parse_flag_value(args, "--top")
-        .and_then(|s| s.parse().ok());
-    let json_output = args.iter().any(|a| a == "--json");
-    let weights_str = parse_flag_value(args, "--weights");
-
-    // Collect .ag files from args (expand directories)
+/// Collect .ag files from CLI args, expanding directories and skipping flags.
+fn collect_ag_files(args: &[String]) -> Vec<String> {
+    let flags_with_values = ["--rounds", "--top", "--weights", "--threads"];
     let mut files = Vec::new();
-    for arg in args {
+    for (i, arg) in args.iter().enumerate() {
         if arg.starts_with('-') {
-            // Skip flags and their values
             continue;
         }
-        // Skip values that follow flags
-        if let Some(pos) = args.iter().position(|a| a == arg) {
-            if pos > 0 {
-                let prev = &args[pos - 1];
-                if prev == "--rounds" || prev == "--top" || prev == "--weights" {
-                    continue;
-                }
-            }
+        // Skip values that follow flags with arguments
+        if i > 0 && flags_with_values.contains(&args[i - 1].as_str()) {
+            continue;
         }
         let path = std::path::Path::new(arg);
         if path.is_dir() {
@@ -1625,7 +1627,23 @@ fn cmd_arena(args: &[String]) -> Result<(), AgentisError> {
             files.push(arg.clone());
         }
     }
+    files
+}
 
+fn cmd_arena(args: &[String]) -> Result<(), AgentisError> {
+    // Parse flags
+    let rounds: usize = parse_flag_value(args, "--rounds")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    let top_n: Option<usize> = parse_flag_value(args, "--top")
+        .and_then(|s| s.parse().ok());
+    let json_output = args.iter().any(|a| a == "--json");
+    let weights_str = parse_flag_value(args, "--weights");
+    let parallel = args.iter().any(|a| a == "--parallel");
+    let threads: Option<usize> = parse_flag_value(args, "--threads")
+        .and_then(|s| s.parse().ok());
+
+    let files = collect_ag_files(args);
     if files.is_empty() {
         return Err(AgentisError::General("no .ag files found".to_string()));
     }
@@ -1643,39 +1661,52 @@ fn cmd_arena(args: &[String]) -> Result<(), AgentisError> {
         None => fitness::FitnessWeights::default(),
     };
 
-    let llm_backend = llm::create_backend(&cfg)
-        .map_err(|e| AgentisError::General(format!("{e}")))?;
-    let io_ctx = io::IoContext::new(&root, &cfg);
-    let tracer = trace::Tracer::new(trace::TraceLevel::Quiet);
-    let audit_log = audit::AuditLog::open(&root);
-    let max_agents = cfg.get_u64("max_concurrent_agents", 16) as u32;
     let grant_pii = cfg.get("pii_transmit").is_some_and(|v| v == "allow");
 
-    // Run each variant
-    let mut all_entries: Vec<arena::ArenaEntry> = Vec::new();
+    // Determine evaluation mode: --parallel or --threads implies parallel
+    let use_parallel = parallel || threads.is_some();
 
-    for file in &files {
-        let mut round_entries = Vec::new();
+    let mut all_entries: Vec<arena::ArenaEntry> = if use_parallel {
+        let thread_count = threads.unwrap_or_else(colony::detect_threads);
+        eprintln!("Parallel arena: {} variants, {} threads, {} round{} each",
+            files.len(), thread_count, rounds, if rounds == 1 { "" } else { "s" });
+        run_arena_parallel(&files, rounds, &root, grant_pii, &fitness_weights, thread_count)
+    } else {
+        // Sequential (original behavior)
+        let llm_backend = llm::create_backend(&cfg)
+            .map_err(|e| AgentisError::General(format!("{e}")))?;
+        let io_ctx = io::IoContext::new(&root, &cfg);
+        let tracer = trace::Tracer::new(trace::TraceLevel::Quiet);
+        let audit_log = audit::AuditLog::open(&root);
+        let max_agents = cfg.get_u64("max_concurrent_agents", 16) as u32;
 
-        for _ in 0..rounds {
-            let entry = run_arena_variant(
-                file, &store, &refs, &root, &cfg, llm_backend.as_ref(),
-                &io_ctx, &tracer, audit_log.as_ref(), max_agents,
-                grant_pii, &fitness_weights,
-            );
-            round_entries.push(entry);
+        let mut entries = Vec::new();
+        for file in &files {
+            let mut round_entries = Vec::new();
+            for _ in 0..rounds {
+                let entry = run_arena_variant(
+                    file, &store, &refs, &root, &cfg, llm_backend.as_ref(),
+                    &io_ctx, &tracer, audit_log.as_ref(), max_agents,
+                    grant_pii, &fitness_weights,
+                );
+                round_entries.push(entry);
+            }
+            let entry = if rounds == 1 {
+                round_entries.into_iter().next().unwrap()
+            } else {
+                arena::ArenaEntry::average(&round_entries)
+            };
+            entries.push(entry);
         }
+        entries
+    };
 
-        let entry = if rounds == 1 {
-            round_entries.into_iter().next().unwrap()
-        } else {
-            arena::ArenaEntry::average(&round_entries)
-        };
-        all_entries.push(entry);
-    }
-
-    // Sort by score descending
-    all_entries.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    // Sort by score descending, then by filename for tie-breaking
+    all_entries.sort_by(|a, b| {
+        b.score.partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.file.cmp(&b.file))
+    });
 
     // Apply --top filter
     if let Some(n) = top_n {
@@ -1740,6 +1771,120 @@ fn run_arena_variant(
     }
 
     // Run
+    match evaluator.eval_program(&program) {
+        Ok(_) => arena::ArenaEntry::from_report(file, &evaluator.fitness_report(), weights),
+        Err(e) => {
+            let mut report = evaluator.fitness_report();
+            report.error = true;
+            let mut entry = arena::ArenaEntry::from_report(file, &report, weights);
+            entry.error = Some(arena::ArenaEntry::from_error(file, &format!("{e}")).error.unwrap());
+            entry
+        }
+    }
+}
+
+/// Run arena variants in parallel using a thread pool (M31).
+///
+/// Each thread creates its own evaluator context from the .agentis root.
+/// Results are collected via channels and returned in the original file order.
+fn run_arena_parallel(
+    files: &[String],
+    rounds: usize,
+    root: &std::path::Path,
+    grant_pii: bool,
+    weights: &fitness::FitnessWeights,
+    thread_count: usize,
+) -> Vec<arena::ArenaEntry> {
+    let pool = colony::ThreadPool::new(thread_count);
+    let (tx, rx) = std::sync::mpsc::channel::<(usize, arena::ArenaEntry)>();
+
+    for (idx, file) in files.iter().enumerate() {
+        for _ in 0..rounds {
+            let tx = tx.clone();
+            let file = file.clone();
+            let weights = weights.clone();
+            let root_path = root.to_path_buf();
+
+            pool.execute(move || {
+                let entry = run_arena_variant_standalone(&file, &root_path, grant_pii, &weights);
+                let _ = tx.send((idx, entry));
+            });
+        }
+    }
+    drop(tx); // close sender so rx.iter() terminates after all jobs
+
+    // Collect results grouped by file index
+    let mut grouped: std::collections::HashMap<usize, Vec<arena::ArenaEntry>> =
+        std::collections::HashMap::new();
+    for (idx, entry) in rx {
+        grouped.entry(idx).or_default().push(entry);
+    }
+
+    pool.join();
+
+    // Build final entries in original file order, averaging rounds
+    let mut results = Vec::with_capacity(files.len());
+    for idx in 0..files.len() {
+        let entries = grouped.remove(&idx).unwrap_or_default();
+        let entry = if entries.len() == 1 {
+            entries.into_iter().next().unwrap()
+        } else if entries.is_empty() {
+            arena::ArenaEntry::from_error(&files[idx], "no results")
+        } else {
+            arena::ArenaEntry::average(&entries)
+        };
+        results.push(entry);
+    }
+
+    results
+}
+
+/// Run a single arena variant in a standalone context (for parallel use).
+///
+/// Creates its own Config, LLM backend, ObjectStore, etc. from the
+/// agentis root path. This makes the function fully self-contained
+/// and safe to call from any thread.
+fn run_arena_variant_standalone(
+    file: &str,
+    root: &std::path::Path,
+    grant_pii: bool,
+    weights: &fitness::FitnessWeights,
+) -> arena::ArenaEntry {
+    let source = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => return arena::ArenaEntry::from_error(file, &format!("{e}")),
+    };
+
+    let program = match Parser::parse_source(&source) {
+        Ok(p) => p,
+        Err(e) => return arena::ArenaEntry::from_error(file, &format!("{e}")),
+    };
+
+    let cfg = config::Config::load(root);
+    let llm_backend = match llm::create_backend(&cfg) {
+        Ok(b) => b,
+        Err(e) => return arena::ArenaEntry::from_error(file, &format!("{e}")),
+    };
+    let io_ctx = io::IoContext::new(root, &cfg);
+    let tracer = trace::Tracer::new(trace::TraceLevel::Quiet);
+    let max_agents = cfg.get_u64("max_concurrent_agents", 16) as u32;
+
+    let store = ObjectStore::new(root);
+    let refs = Refs::new(root);
+    let _ = store.save(&program).ok();
+
+    let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
+        .with_vcs(&store, &refs)
+        .with_persistence(&store)
+        .with_llm(llm_backend.as_ref())
+        .with_io(&io_ctx)
+        .with_max_agents(max_agents)
+        .with_tracer(&tracer);
+    evaluator.grant_all();
+    if grant_pii {
+        evaluator.grant(capabilities::CapKind::PiiTransmit);
+    }
+
     match evaluator.eval_program(&program) {
         Ok(_) => arena::ArenaEntry::from_report(file, &evaluator.fitness_report(), weights),
         Err(e) => {
