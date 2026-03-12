@@ -16,7 +16,7 @@ Agentis is an AI-native programming language fused with a Version Control System
 
 ```
 src/
-  main.rs           # CLI (init, commit, run, branch, switch, compile, sync, serve, log, go, mutate, arena, evolve, lineage)
+  main.rs           # CLI (init, commit, run, branch, switch, compile, sync, serve, worker, log, go, mutate, arena, evolve, lineage)
   arena.rs          # Arena runner (rank variants by fitness, table/JSON output)
   evolve.rs         # Evolution loop (generational mutation→arena→select, lineage tracking)
   fitness.rs        # Fitness scoring (FitnessReport, FitnessWeights, JSONL registry)
@@ -34,7 +34,8 @@ src/
   compiler.rs       # WASM compiler backend (AST→WASM binary, CB metering)
   capabilities.rs   # Capability-Based Security (OCap) — unforgeable handles + PiiTransmit
   snapshot.rs       # Orthogonal Persistence — memory snapshots at transaction boundaries
-  network.rs        # Raw TCP P2P sync (binary HAVE/WANT/DATA/DONE protocol)
+  colony.rs         # Distributed Colony (ThreadPool, worker node, protocol encode/decode)
+  network.rs        # Raw TCP P2P sync (binary HAVE/WANT/DATA/DONE + colony EVAL/RESULT/PING/PONG/AUTH)
   refs.rs           # Branch/reference management (genesis-first)
   pii.rs            # Internal PII scanner (guard, not builtin — never exposed to .ag code)
   audit.rs          # JSONL audit log for prompt() calls (.agentis/audit/prompts.jsonl)
@@ -56,7 +57,7 @@ Storage: AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (529)
+cargo test                     # Run all tests (557)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
@@ -69,6 +70,9 @@ cargo run -- switch <name>     # Switch to a different branch
 cargo run -- compile <branch>   # Compile branch to WASM binary
 cargo run -- sync <host:port>  # Sync objects with remote peer
 cargo run -- serve [addr:port] # Listen for incoming sync connections
+cargo run -- worker [addr:port]               # Start colony worker node
+cargo run -- worker 0.0.0.0:9462 --secret S   # Worker with auth
+cargo run -- worker --max-concurrent 4        # Limit concurrent evals
 cargo run -- log               # Show commit log
 cargo run -- snapshot list     # List all persisted snapshots
 cargo run -- snapshot show <h> # Show snapshot details (variables, budget, output)
@@ -132,3 +136,11 @@ cargo run -- lineage evolved/variant.ag     # Trace ancestry to seed
 - **Mutation Engine (M29):** `agentis mutate file.ag` generates agent variants by mutating prompt instruction strings. Source-level string replacement (not AST rewrite). LLM-guided mutations with real backend; 8 deterministic perturbations with mock. Flags: `--count`, `--out`, `--agent`, `--mutate-prompt`, `--dry-run`, `--list-agents`.
 - **Arena Runner (M28):** `agentis arena dir/` runs variants side by side, ranks by fitness. Supports `--rounds N` (multi-round averaging), `--top N`, `--json`, `--weights`. Sequential execution, quiet tracing. Error variants scored 0.0 with truncated error messages.
 - **Evolution Loop (M30):** `agentis evolve file.ag -g G -n N` runs the full evolutionary loop: mutate → arena → select → repeat. Tournament selection (top K=N/2 survives). Per-generation JSONL lineage in `.agentis/fitness/`. Intermediate bests saved to `<out>/g{gen:02}-best.ag`. `--budget-cap`, `--stop-on-stall`, `--show-lineage`, `--dry-run`. `agentis lineage <file>` traces ancestry to seed.
+
+## Phase 8 Features (Distributed Colony — in progress)
+
+- **Parallel Arena (M31):** `agentis arena dir/ --parallel [--threads N]` runs variants in parallel using a thread pool. Auto-detects CPU count. `agentis evolve ... --threads N` for parallel evolution. `colony.rs` provides `ThreadPool` with `mpsc` + worker threads.
+- **Worker Node (M32):** `agentis worker [addr:port]` starts a colony worker that evaluates `.ag` programs remotely. Uses local LLM config (heterogeneous backends). `--secret` for shared-secret auth (SHA-256). `--max-concurrent N` for pipeline parallelism. Payload limits: source ≤1MB, output/error ≤4KB.
+- **Colony Arena (M33):** _planned_
+- **Colony Observability (M34):** _planned_
+- **Protocol Extension:** Same binary framing as sync. EVAL(0x05)/RESULT(0x06) for evaluation, PING(0x07)/PONG(0x08) for health, AUTH(0x09)/AUTH_OK(0x0A)/AUTH_FAIL(0x0B) for auth handshake.

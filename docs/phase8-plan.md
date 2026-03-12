@@ -122,8 +122,8 @@ large, resource limit).
 
 ## Milestones
 
-- [ ] M31: Parallel Arena (local threads)
-- [ ] M32: Worker Node
+- [x] M31: Parallel Arena (local threads)
+- [x] M32: Worker Node
 - [ ] M33: Colony Arena
 - [ ] M34: Colony Observability
 
