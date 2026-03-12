@@ -34,6 +34,7 @@ src/
   compiler.rs       # WASM compiler backend (AST→WASM binary, CB metering)
   capabilities.rs   # Capability-Based Security (OCap) — unforgeable handles + PiiTransmit
   snapshot.rs       # Orthogonal Persistence — memory snapshots at transaction boundaries
+  checkpoint.rs     # Evolution Checkpoints (CheckpointStore, GenerationCheckpoint, binary serde)
   colony.rs         # Distributed Colony (ThreadPool, worker node, protocol encode/decode)
   network.rs        # Raw TCP P2P sync (binary HAVE/WANT/DATA/DONE + colony EVAL/RESULT/PING/PONG/AUTH)
   refs.rs           # Branch/reference management (genesis-first)
@@ -57,7 +58,7 @@ Storage: AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (582)
+cargo test                     # Run all tests (608)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
@@ -95,6 +96,8 @@ cargo run -- arena dir/ --workers workers.txt --secret S
 cargo run -- colony status --workers h1:9462,h2:9462  # Worker health
 cargo run -- colony status --workers workers.txt --json
 cargo run -- colony ping 10.0.0.1:9462                # Single ping
+cargo run -- colony tags                              # List checkpoint tags
+cargo run -- colony tag <hash> <name>                 # Tag a checkpoint
 cargo run -- evolve file.ag -g 10 -n 8      # Evolution: 10 gens, pop 8
 cargo run -- evolve file.ag --dry-run -g 10 -n 8  # Estimate cost
 cargo run -- evolve file.ag -g 5 -n 4 --show-lineage --out evolved/

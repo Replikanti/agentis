@@ -2,6 +2,8 @@ mod arena;
 mod ast;
 mod audit;
 mod capabilities;
+#[allow(dead_code)]
+mod checkpoint;
 mod colony;
 mod compiler;
 mod config;
@@ -746,6 +748,8 @@ fn cmd_colony(args: &[String]) -> Result<(), AgentisError> {
         eprintln!("Usage: agentis colony <subcommand>");
         eprintln!("  status [--workers W] [--secret S] [--json]  Show worker health");
         eprintln!("  ping <addr:port> [--secret S]               Ping a single worker");
+        eprintln!("  tags                                        List checkpoint tags");
+        eprintln!("  tag <hash> <name>                           Tag a checkpoint");
         process::exit(1);
     }
 
@@ -800,9 +804,39 @@ fn cmd_colony(args: &[String]) -> Result<(), AgentisError> {
             }
             Ok(())
         }
+        "tags" => {
+            let store = checkpoint::CheckpointStore::new(&root);
+            let tags = store
+                .list_tags()
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+            if tags.is_empty() {
+                println!("No checkpoint tags.");
+            } else {
+                for (name, hash) in &tags {
+                    println!("  {name:<24} {}", &hash[..12]);
+                }
+            }
+            Ok(())
+        }
+        "tag" => {
+            if args.len() < 3 {
+                eprintln!("Usage: agentis colony tag <hash> <name>");
+                process::exit(1);
+            }
+            let store = checkpoint::CheckpointStore::new(&root);
+            let hash = store
+                .resolve(&args[1])
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+            let name = &args[2];
+            store
+                .set_tag(name, &hash)
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+            println!("Tagged {} as '{name}'", &hash[..12]);
+            Ok(())
+        }
         other => {
             eprintln!("Unknown colony subcommand: {other}");
-            eprintln!("  Available: status, ping");
+            eprintln!("  Available: status, ping, tags, tag");
             process::exit(1);
         }
     }
