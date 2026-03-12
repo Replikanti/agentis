@@ -150,6 +150,9 @@ fn main() {
         "worker" => {
             cmd_worker(&args[2..])
         }
+        "colony" => {
+            cmd_colony(&args[2..])
+        }
         "lineage" => {
             if args.len() < 3 {
                 eprintln!("Usage: agentis lineage <source_file>");
@@ -195,6 +198,7 @@ fn print_usage() {
     eprintln!("  sync <host:port>     Sync objects with a remote peer");
     eprintln!("  serve [addr:port]    Listen for incoming sync connections");
     eprintln!("  worker [addr:port]   Start colony worker (--secret S --max-concurrent N)");
+    eprintln!("  colony status|ping   Colony diagnostics (--workers W --json)");
     eprintln!("  log [branch]         Show commit log for a branch");
     eprintln!("  snapshot list|show   List or inspect snapshots");
     eprintln!("  arena <files|dir>    Rank variants by fitness (--rounds --top --json --parallel --workers)");
@@ -708,6 +712,73 @@ fn cmd_worker(args: &[String]) -> Result<(), AgentisError> {
 
     colony::run_worker(config)
         .map_err(|e| AgentisError::General(format!("{e}")))
+}
+
+fn cmd_colony(args: &[String]) -> Result<(), AgentisError> {
+    if args.is_empty() {
+        eprintln!("Usage: agentis colony <subcommand>");
+        eprintln!("  status [--workers W] [--secret S] [--json]  Show worker health");
+        eprintln!("  ping <addr:port> [--secret S]               Ping a single worker");
+        process::exit(1);
+    }
+
+    let root = agentis_root();
+    let cfg = config::Config::load(&root);
+
+    match args[0].as_str() {
+        "status" => {
+            let workers_flag = parse_flag_value(args, "--workers");
+            let secret_flag = parse_flag_value(args, "--secret");
+            let json_output = args.iter().any(|a| a == "--json");
+
+            let workers_str = workers_flag
+                .or_else(|| cfg.get("colony.workers").map(|s| s.to_string()));
+            let workers = match workers_str {
+                Some(s) => colony::parse_workers(&s),
+                None => {
+                    eprintln!("No workers specified. Use --workers or set colony.workers in config.");
+                    process::exit(1);
+                }
+            };
+            let secret = secret_flag
+                .or_else(|| cfg.get("colony.secret").map(|s| s.to_string()));
+            let connect_timeout = cfg.get_u64("colony.connect_timeout", 5) * 1000;
+
+            let statuses = colony::colony_status(&workers, secret.as_deref(), connect_timeout);
+
+            if json_output {
+                println!("{}", colony::format_status_json(&statuses));
+            } else {
+                print!("{}", colony::format_status_table(&statuses));
+            }
+
+            Ok(())
+        }
+        "ping" => {
+            if args.len() < 2 || args[1].starts_with('-') {
+                eprintln!("Usage: agentis colony ping <addr:port> [--secret S]");
+                process::exit(1);
+            }
+            let addr = &args[1];
+            let secret_flag = parse_flag_value(args, "--secret");
+            let secret = secret_flag
+                .or_else(|| cfg.get("colony.secret").map(|s| s.to_string()));
+            let connect_timeout = cfg.get_u64("colony.connect_timeout", 5) * 1000;
+
+            let status = colony::ping_worker(addr, secret.as_deref(), connect_timeout);
+            print!("{}", colony::format_ping(&status));
+
+            if status.status != "online" {
+                process::exit(1);
+            }
+            Ok(())
+        }
+        other => {
+            eprintln!("Unknown colony subcommand: {other}");
+            eprintln!("  Available: status, ping");
+            process::exit(1);
+        }
+    }
 }
 
 fn cmd_log(branch: Option<&str>) -> Result<(), AgentisError> {

@@ -57,7 +57,7 @@ Storage: AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (571)
+cargo test                     # Run all tests (582)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
@@ -92,6 +92,9 @@ cargo run -- arena f1.ag f2.ag --rounds 5    # Run each 5 times, average scores
 cargo run -- arena dir/ --top 3 --json       # Top 3 as JSON
 cargo run -- arena dir/ --workers h1:9462,h2:9462  # Colony arena
 cargo run -- arena dir/ --workers workers.txt --secret S
+cargo run -- colony status --workers h1:9462,h2:9462  # Worker health
+cargo run -- colony status --workers workers.txt --json
+cargo run -- colony ping 10.0.0.1:9462                # Single ping
 cargo run -- evolve file.ag -g 10 -n 8      # Evolution: 10 gens, pop 8
 cargo run -- evolve file.ag --dry-run -g 10 -n 8  # Estimate cost
 cargo run -- evolve file.ag -g 5 -n 4 --show-lineage --out evolved/
@@ -139,10 +142,10 @@ cargo run -- lineage evolved/variant.ag     # Trace ancestry to seed
 - **Arena Runner (M28):** `agentis arena dir/` runs variants side by side, ranks by fitness. Supports `--rounds N` (multi-round averaging), `--top N`, `--json`, `--weights`. Sequential execution, quiet tracing. Error variants scored 0.0 with truncated error messages.
 - **Evolution Loop (M30):** `agentis evolve file.ag -g G -n N` runs the full evolutionary loop: mutate → arena → select → repeat. Tournament selection (top K=N/2 survives). Per-generation JSONL lineage in `.agentis/fitness/`. Intermediate bests saved to `<out>/g{gen:02}-best.ag`. `--budget-cap`, `--stop-on-stall`, `--show-lineage`, `--dry-run`. `agentis lineage <file>` traces ancestry to seed.
 
-## Phase 8 Features (Distributed Colony — in progress)
+## Phase 8 Features (Distributed Colony — complete)
 
 - **Parallel Arena (M31):** `agentis arena dir/ --parallel [--threads N]` runs variants in parallel using a thread pool. Auto-detects CPU count. `agentis evolve ... --threads N` for parallel evolution. `colony.rs` provides `ThreadPool` with `mpsc` + worker threads.
 - **Worker Node (M32):** `agentis worker [addr:port]` starts a colony worker that evaluates `.ag` programs remotely. Uses local LLM config (heterogeneous backends). `--secret` for shared-secret auth (SHA-256). `--max-concurrent N` for pipeline parallelism. Payload limits: source ≤1MB, output/error ≤4KB.
 - **Colony Arena (M33):** `agentis arena dir/ --workers host1:port,host2:port [--secret S]` distributes evaluation across workers. Round-robin distribution. Graceful fallback to local on worker failure with reason (connection refused/auth failed/timeout/protocol error). `--workers workers.txt` reads from file. `colony.workers` and `colony.secret` in config.
-- **Colony Observability (M34):** _planned_
+- **Colony Observability (M34):** `agentis colony status [--workers W] [--json]` shows worker health table. `agentis colony ping addr:port` for single-worker diagnostics. Reports backend name, eval stats, busy status, roundtrip time.
 - **Protocol Extension:** Same binary framing as sync. EVAL(0x05)/RESULT(0x06) for evaluation, PING(0x07)/PONG(0x08) for health, AUTH(0x09)/AUTH_OK(0x0A)/AUTH_FAIL(0x0B) for auth handshake.
