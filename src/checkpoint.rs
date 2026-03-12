@@ -912,4 +912,179 @@ mod tests {
         let err = store.load(&hash).unwrap_err();
         assert!(matches!(err, CheckpointError::IntegrityError { .. }));
     }
+
+    // --- M36: Auto-checkpoint + resume tests ---
+
+    #[test]
+    fn checkpoint_chain_simulates_evolution() {
+        // Simulate 3 generations of evolution with checkpointing
+        let dir = tempfile::tempdir().unwrap();
+        let store = CheckpointStore::new(dir.path());
+        let seed_hash = "seed1234abcd".to_string();
+
+        let mut prev_hash: Option<String> = None;
+        for g in 1..=3 {
+            let ckpt = GenerationCheckpoint {
+                generation: g,
+                parent: prev_hash.clone(),
+                seed_hash: seed_hash.clone(),
+                parents: vec![ParentEntry {
+                    source: format!("agent v{g}() {{ prompt(\"gen{g}\") }}"),
+                    source_hash: format!("hash_g{g}"),
+                }],
+                best_ever_score: 0.5 + g as f64 * 0.1,
+                best_ever_source: format!("best at gen {g}"),
+                best_ever_hash: format!("best_hash_g{g}"),
+                stall_count: 0,
+                cumulative_cb: g as u64 * 1000,
+                first_gen_avg_prompts: 2.0,
+                gen_best_score: 0.5 + g as f64 * 0.1,
+                gen_avg_score: 0.4 + g as f64 * 0.08,
+                gen_avg_prompts: 2.0 - g as f64 * 0.1,
+                variant_count: 4,
+                timestamp: 1710280440000 + g as u64 * 60000,
+                tag: None,
+            };
+            let hash = store.store(&ckpt).unwrap();
+            store.set_head(&hash).unwrap();
+            prev_hash = Some(hash);
+        }
+
+        // Verify HEAD points to gen 3
+        let head = store.head().unwrap().unwrap();
+        let head_ckpt = store.load(&head).unwrap();
+        assert_eq!(head_ckpt.generation, 3);
+
+        // Walk chain from HEAD — should get 3 → 2 → 1
+        let chain = store.walk_chain(&head, None).unwrap();
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0].1.generation, 3);
+        assert_eq!(chain[1].1.generation, 2);
+        assert_eq!(chain[2].1.generation, 1);
+        assert!(chain[2].1.parent.is_none());
+    }
+
+    #[test]
+    fn resume_restores_state() {
+        // Store a checkpoint, then load it and verify all resume-relevant fields
+        let dir = tempfile::tempdir().unwrap();
+        let store = CheckpointStore::new(dir.path());
+
+        let ckpt = GenerationCheckpoint {
+            generation: 5,
+            parent: Some("prevhash".to_string()),
+            seed_hash: "seedabc".to_string(),
+            parents: vec![
+                ParentEntry {
+                    source: "agent a() { prompt(\"x\") }".to_string(),
+                    source_hash: "ha".to_string(),
+                },
+                ParentEntry {
+                    source: "agent b() { prompt(\"y\") }".to_string(),
+                    source_hash: "hb".to_string(),
+                },
+            ],
+            best_ever_score: 0.935,
+            best_ever_source: "agent best() { prompt(\"z\") }".to_string(),
+            best_ever_hash: "hbest".to_string(),
+            stall_count: 2,
+            cumulative_cb: 25000,
+            first_gen_avg_prompts: 3.5,
+            gen_best_score: 0.890,
+            gen_avg_score: 0.720,
+            gen_avg_prompts: 2.8,
+            variant_count: 8,
+            timestamp: 1710280442000,
+            tag: None,
+        };
+
+        let hash = store.store(&ckpt).unwrap();
+        store.set_head(&hash).unwrap();
+
+        // Simulate resume: resolve, load, extract state
+        let resolved = store.resolve(&hash[..8]).unwrap();
+        let loaded = store.load(&resolved).unwrap();
+
+        // Verify all resume-critical fields
+        assert_eq!(loaded.generation, 5); // next gen = 6
+        assert_eq!(loaded.parents.len(), 2);
+        assert_eq!(loaded.parents[0].source, "agent a() { prompt(\"x\") }");
+        assert_eq!(loaded.parents[1].source_hash, "hb");
+        assert_eq!(loaded.best_ever_score, 0.935);
+        assert_eq!(loaded.best_ever_source, "agent best() { prompt(\"z\") }");
+        assert_eq!(loaded.best_ever_hash, "hbest");
+        assert_eq!(loaded.stall_count, 2);
+        assert_eq!(loaded.cumulative_cb, 25000);
+        assert_eq!(loaded.first_gen_avg_prompts, 3.5);
+    }
+
+    #[test]
+    fn tag_final_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CheckpointStore::new(dir.path());
+
+        // Simulate evolution with tagging at the end
+        let ckpt = make_checkpoint(10, None, None);
+        let hash = store.store(&ckpt).unwrap();
+        store.set_head(&hash).unwrap();
+        store.set_tag("experiment-a", &hash).unwrap();
+
+        // Resolve by tag
+        let resolved = store.resolve("experiment-a").unwrap();
+        assert_eq!(resolved, hash);
+
+        let loaded = store.load(&resolved).unwrap();
+        assert_eq!(loaded.generation, 10);
+    }
+
+    #[test]
+    fn checkpoint_interval_logic() {
+        // Test the interval check: g % interval == 0 || is_last
+        let interval = 3;
+
+        let should =
+            |g: usize, is_last: bool| -> bool { interval > 0 && (g % interval == 0 || is_last) };
+
+        // Gen 1: not a multiple of 3, not last
+        assert!(!should(1, false));
+        // Gen 3: multiple of 3
+        assert!(should(3, false));
+        // Gen 6: multiple of 3
+        assert!(should(6, false));
+        // Gen 7: not multiple, not last
+        assert!(!should(7, false));
+        // Gen 10: last gen
+        assert!(should(10, true));
+        // Gen 8: early stop (is_last = true)
+        assert!(should(8, true));
+    }
+
+    #[test]
+    fn checkpoint_interval_zero_disables() {
+        let interval = 0;
+        let should =
+            |g: usize, is_last: bool| -> bool { interval > 0 && (g % interval == 0 || is_last) };
+        // Never checkpoint when interval is 0
+        assert!(!should(1, false));
+        assert!(!should(5, true));
+        assert!(!should(10, true));
+    }
+
+    #[test]
+    fn resume_from_tagged_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CheckpointStore::new(dir.path());
+
+        let h1 = store.store(&make_checkpoint(1, None, None)).unwrap();
+        let h2 = store.store(&make_checkpoint(2, Some(&h1), None)).unwrap();
+        store.set_tag("midpoint", &h2).unwrap();
+
+        // Resume by tag
+        let resolved = store.resolve("midpoint").unwrap();
+        assert_eq!(resolved, h2);
+
+        let ckpt = store.load(&resolved).unwrap();
+        assert_eq!(ckpt.generation, 2);
+        // Next gen would be 3
+    }
 }
