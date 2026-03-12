@@ -848,7 +848,7 @@ pub fn run_arena_colony(
                     round_entries.push(entry);
                 }
                 Err(reason) => {
-                    eprintln!("Warning: Worker {} {} , falling back to local",
+                    eprintln!("Warning: Worker {} {}, falling back to local",
                         worker_addr, reason);
                     // Fallback to local
                     let entry = evaluate_locally_for_arena(
