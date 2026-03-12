@@ -54,7 +54,7 @@ const HASH_LEN: usize = 64; // SHA-256 hex string length
 
 // --- Message encoding/decoding ---
 
-fn write_msg(stream: &mut impl Write, msg_type: u8, payload: &[u8]) -> Result<(), NetworkError> {
+pub fn write_msg(stream: &mut impl Write, msg_type: u8, payload: &[u8]) -> Result<(), NetworkError> {
     stream.write_all(&[msg_type])?;
     stream.write_all(&(payload.len() as u32).to_le_bytes())?;
     stream.write_all(payload)?;
@@ -62,7 +62,7 @@ fn write_msg(stream: &mut impl Write, msg_type: u8, payload: &[u8]) -> Result<()
     Ok(())
 }
 
-fn read_msg(stream: &mut impl Read) -> Result<(u8, Vec<u8>), NetworkError> {
+pub fn read_msg(stream: &mut impl Read) -> Result<(u8, Vec<u8>), NetworkError> {
     let mut header = [0u8; 5]; // 1 byte type + 4 bytes length
     stream.read_exact(&mut header)?;
     let msg_type = header[0];

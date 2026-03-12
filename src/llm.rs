@@ -40,7 +40,7 @@ impl std::fmt::Display for LlmError {
 
 // --- LLM Backend Trait ---
 
-pub trait LlmBackend {
+pub trait LlmBackend: Send + Sync {
     fn complete(
         &self,
         instruction: &str,
