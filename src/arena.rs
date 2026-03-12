@@ -18,6 +18,10 @@ pub struct ArenaEntry {
     pub prompt_count: usize,
     pub error: Option<String>,
     pub rounds: usize,
+    /// Which worker evaluated this variant (None = local).
+    pub worker: Option<String>,
+    /// Evaluation wall-clock time in milliseconds.
+    pub eval_time_ms: Option<u64>,
 }
 
 impl ArenaEntry {
@@ -32,6 +36,8 @@ impl ArenaEntry {
             prompt_count: report.prompt_count,
             error: if report.error { Some("runtime error".to_string()) } else { None },
             rounds: 1,
+            worker: None,
+            eval_time_ms: None,
         }
     }
 
@@ -46,6 +52,8 @@ impl ArenaEntry {
             prompt_count: 0,
             error: Some(truncate_error(error, 80)),
             rounds: 1,
+            worker: None,
+            eval_time_ms: None,
         }
     }
 
@@ -67,6 +75,8 @@ impl ArenaEntry {
                 prompt_count: 0,
                 error: Some(truncate_error(errors[0], 80)),
                 rounds: entries.len(),
+                worker: entries[0].worker.clone(),
+                eval_time_ms: None,
             };
         }
 
@@ -87,6 +97,8 @@ impl ArenaEntry {
                 None
             },
             rounds: entries.len(),
+            worker: entries[0].worker.clone(),
+            eval_time_ms: None,
         }
     }
 }
@@ -160,6 +172,26 @@ pub fn format_table(entries: &[ArenaEntry], rounds: usize) -> String {
     out
 }
 
+/// Format a colony stats summary line.
+pub fn format_colony_stats(entries: &[ArenaEntry], worker_count: usize) -> String {
+    let local_count = entries.iter()
+        .filter(|e| e.worker.as_deref() == Some("local"))
+        .count();
+    let eval_times: Vec<u64> = entries.iter()
+        .filter_map(|e| e.eval_time_ms)
+        .collect();
+    let avg_ms = if eval_times.is_empty() { 0 } else {
+        eval_times.iter().sum::<u64>() / eval_times.len() as u64
+    };
+    format!("Colony: {} worker{}, {} local fallback{}, avg eval {}ms",
+        worker_count,
+        if worker_count == 1 { "" } else { "s" },
+        local_count,
+        if local_count == 1 { "" } else { "s" },
+        avg_ms,
+    )
+}
+
 /// Format the arena results as JSON.
 pub fn format_json(entries: &[ArenaEntry], rounds: usize) -> String {
     let items: Vec<String> = entries.iter().enumerate().map(|(i, e)| {
@@ -186,6 +218,14 @@ pub fn format_json(entries: &[ArenaEntry], rounds: usize) -> String {
         if rounds > 1 {
             fields.push(("rounds", json::JsonValue::Int(rounds as i64)));
             fields.push(("rounds_avg", json::JsonValue::Bool(true)));
+        }
+
+        // Colony fields (only present when running with --workers)
+        if let Some(ref w) = e.worker {
+            fields.push(("worker", json::JsonValue::String(w.clone())));
+        }
+        if let Some(t) = e.eval_time_ms {
+            fields.push(("eval_time_ms", json::JsonValue::Int(t as i64)));
         }
 
         format!("{}", json::object(fields))
@@ -293,6 +333,8 @@ mod tests {
                 prompt_count: 3,
                 error: None,
                 rounds: 1,
+                worker: None,
+                eval_time_ms: None,
             },
             ArenaEntry {
                 file: "b.ag".to_string(),
@@ -303,6 +345,8 @@ mod tests {
                 prompt_count: 0,
                 error: Some("CognitiveOverload".to_string()),
                 rounds: 1,
+                worker: None,
+                eval_time_ms: None,
             },
         ];
         let table = format_table(&entries, 1);
@@ -326,6 +370,8 @@ mod tests {
                 prompt_count: 3,
                 error: None,
                 rounds: 1,
+                worker: None,
+                eval_time_ms: None,
             },
         ];
         let j = format_json(&entries, 1);
@@ -350,6 +396,8 @@ mod tests {
                 prompt_count: 3,
                 error: None,
                 rounds: 3,
+                worker: None,
+                eval_time_ms: None,
             },
         ];
         let j = format_json(&entries, 3);
@@ -369,6 +417,8 @@ mod tests {
                 prompt_count: 3,
                 error: None,
                 rounds: 5,
+                worker: None,
+                eval_time_ms: None,
             },
         ];
         let table = format_table(&entries, 5);

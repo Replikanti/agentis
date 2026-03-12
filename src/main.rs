@@ -113,6 +113,7 @@ fn main() {
             if args.len() < 3 {
                 eprintln!("Usage: agentis arena <files|dir> [--rounds N] [--top N] [--json] [--weights W]");
                 eprintln!("       agentis arena <files|dir> --parallel [--threads N]");
+                eprintln!("       agentis arena <files|dir> --workers host1:port,host2:port [--secret S]");
                 process::exit(1);
             }
             cmd_arena(&args[2..])
@@ -140,6 +141,8 @@ fn main() {
                 eprintln!("  --clean             Remove old fitness data before running");
                 eprintln!("  --dry-run           Estimate cost without running");
                 eprintln!("  --threads N         Parallel arena evaluation (default: auto-detect)");
+                eprintln!("  --workers W         Colony workers (addr:port,... or file path)");
+                eprintln!("  --secret S          Colony auth secret");
                 process::exit(1);
             }
             cmd_evolve(&args[2], &args[3..])
@@ -194,9 +197,9 @@ fn print_usage() {
     eprintln!("  worker [addr:port]   Start colony worker (--secret S --max-concurrent N)");
     eprintln!("  log [branch]         Show commit log for a branch");
     eprintln!("  snapshot list|show   List or inspect snapshots");
-    eprintln!("  arena <files|dir>    Rank variants by fitness (--rounds --top --json --parallel)");
+    eprintln!("  arena <files|dir>    Rank variants by fitness (--rounds --top --json --parallel --workers)");
     eprintln!("  mutate <file> [flags] Generate mutated agent variants");
-    eprintln!("  evolve <file> [flags] Evolutionary loop (-g N -n N --out dir --threads N)");
+    eprintln!("  evolve <file> [flags] Evolutionary loop (-g N -n N --out dir --threads N --workers W)");
     eprintln!("  lineage <file>       Trace variant ancestry back to seed");
     eprintln!("  audit [flags]        Show prompt audit log");
     eprintln!("  version              Show version");
@@ -1330,6 +1333,8 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     let clean = args.iter().any(|a| a == "--clean");
     let threads: Option<usize> = parse_flag_value(args, "--threads")
         .and_then(|s| s.parse().ok());
+    let workers_flag = parse_flag_value(args, "--workers");
+    let secret_flag = parse_flag_value(args, "--secret");
 
     // Read seed source
     let seed_source = std::fs::read_to_string(source_file)?;
@@ -1379,6 +1384,27 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     let audit_log = audit::AuditLog::open(&root);
     let max_agents = cfg.get_u64("max_concurrent_agents", 16) as u32;
     let grant_pii = cfg.get("pii_transmit").is_some_and(|v| v == "allow");
+
+    // Resolve colony workers
+    let workers_str = workers_flag
+        .or_else(|| cfg.get("colony.workers").map(|s| s.to_string()));
+    let colony_workers: Vec<String> = workers_str
+        .map(|s| colony::parse_workers(&s))
+        .unwrap_or_default();
+    let colony_secret = secret_flag
+        .or_else(|| cfg.get("colony.secret").map(|s| s.to_string()));
+    let use_colony = !colony_workers.is_empty();
+
+    let colony_cfg = if use_colony {
+        Some(colony::ColonyConfig {
+            workers: colony_workers.clone(),
+            secret: colony_secret,
+            connect_timeout_ms: cfg.get_u64("colony.connect_timeout", 5) * 1000,
+            eval_timeout_ms: cfg.get_u64("colony.eval_timeout", 120) * 1000,
+        })
+    } else {
+        None
+    };
 
     // Create output directory
     let out_path = std::path::PathBuf::from(&out_dir);
@@ -1438,11 +1464,15 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             std::fs::write(&path, &v.source)?;
         }
 
-        // Arena: evaluate each variant (sequential or parallel)
-        let variant_entries = if let Some(tc) = threads {
-            let variant_files: Vec<String> = tracked_variants.iter()
-                .map(|v| gen_dir.join(&v.filename).to_string_lossy().to_string())
-                .collect();
+        // Arena: evaluate each variant (colony, parallel, or sequential)
+        let variant_files: Vec<String> = tracked_variants.iter()
+            .map(|v| gen_dir.join(&v.filename).to_string_lossy().to_string())
+            .collect();
+
+        let variant_entries = if let Some(ref cc) = colony_cfg {
+            colony::run_arena_colony(&variant_files, 1, cc, &root,
+                grant_pii, &fitness_weights, DEFAULT_BUDGET)
+        } else if let Some(tc) = threads {
             run_arena_parallel(&variant_files, 1, &root, grant_pii, &fitness_weights, tc)
         } else {
             let mut entries = Vec::new();
@@ -1636,7 +1666,7 @@ fn cmd_lineage(source_file: &str) -> Result<(), AgentisError> {
 
 /// Collect .ag files from CLI args, expanding directories and skipping flags.
 fn collect_ag_files(args: &[String]) -> Vec<String> {
-    let flags_with_values = ["--rounds", "--top", "--weights", "--threads"];
+    let flags_with_values = ["--rounds", "--top", "--weights", "--threads", "--workers", "--secret"];
     let mut files = Vec::new();
     for (i, arg) in args.iter().enumerate() {
         if arg.starts_with('-') {
@@ -1676,6 +1706,8 @@ fn cmd_arena(args: &[String]) -> Result<(), AgentisError> {
     let parallel = args.iter().any(|a| a == "--parallel");
     let threads: Option<usize> = parse_flag_value(args, "--threads")
         .and_then(|s| s.parse().ok());
+    let workers_flag = parse_flag_value(args, "--workers");
+    let secret_flag = parse_flag_value(args, "--secret");
 
     let files = collect_ag_files(args);
     if files.is_empty() {
@@ -1697,10 +1729,29 @@ fn cmd_arena(args: &[String]) -> Result<(), AgentisError> {
 
     let grant_pii = cfg.get("pii_transmit").is_some_and(|v| v == "allow");
 
-    // Determine evaluation mode: --parallel or --threads implies parallel
+    // Resolve workers: CLI flag > config
+    let workers_str = workers_flag
+        .or_else(|| cfg.get("colony.workers").map(|s| s.to_string()));
+    let workers: Vec<String> = workers_str
+        .map(|s| colony::parse_workers(&s))
+        .unwrap_or_default();
+    let secret = secret_flag
+        .or_else(|| cfg.get("colony.secret").map(|s| s.to_string()));
+
+    let use_colony = !workers.is_empty();
     let use_parallel = parallel || threads.is_some();
 
-    let mut all_entries: Vec<arena::ArenaEntry> = if use_parallel {
+    let mut all_entries: Vec<arena::ArenaEntry> = if use_colony {
+        // Colony mode: distribute across workers
+        let colony_cfg = colony::ColonyConfig {
+            workers: workers.clone(),
+            secret,
+            connect_timeout_ms: cfg.get_u64("colony.connect_timeout", 5) * 1000,
+            eval_timeout_ms: cfg.get_u64("colony.eval_timeout", 120) * 1000,
+        };
+        colony::run_arena_colony(&files, rounds, &colony_cfg, &root,
+            grant_pii, &fitness_weights, DEFAULT_BUDGET)
+    } else if use_parallel {
         let thread_count = threads.unwrap_or_else(colony::detect_threads);
         eprintln!("Parallel arena: {} variants, {} threads, {} round{} each",
             files.len(), thread_count, rounds, if rounds == 1 { "" } else { "s" });
@@ -1752,6 +1803,11 @@ fn cmd_arena(args: &[String]) -> Result<(), AgentisError> {
         println!("{}", arena::format_json(&all_entries, rounds));
     } else {
         print!("{}", arena::format_table(&all_entries, rounds));
+    }
+
+    // Colony stats
+    if use_colony {
+        eprintln!("{}", arena::format_colony_stats(&all_entries, workers.len()));
     }
 
     Ok(())

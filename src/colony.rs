@@ -143,10 +143,12 @@ pub struct EvalResult {
 
 impl EvalResult {
     /// Convert to an ArenaEntry for ranking.
-    pub fn to_arena_entry(&self, file: &str) -> crate::arena::ArenaEntry {
+    pub fn to_arena_entry(&self, file: &str, worker_addr: Option<&str>) -> crate::arena::ArenaEntry {
         if self.status != STATUS_OK || !self.error.is_empty() {
             let mut entry = crate::arena::ArenaEntry::from_error(file, &self.error);
             entry.score = self.score;
+            entry.worker = worker_addr.map(|s| s.to_string());
+            entry.eval_time_ms = Some(self.eval_time_ms);
             entry
         } else {
             crate::arena::ArenaEntry {
@@ -158,6 +160,8 @@ impl EvalResult {
                 prompt_count: self.prompt_count as usize,
                 error: None,
                 rounds: 1,
+                worker: worker_addr.map(|s| s.to_string()),
+                eval_time_ms: Some(self.eval_time_ms),
             }
         }
     }
@@ -701,6 +705,270 @@ fn worker_root() -> std::path::PathBuf {
     cwd.join(".agentis")
 }
 
+// --- Colony Coordinator (M33) ---
+
+/// Colony configuration for distributed arena evaluation.
+pub struct ColonyConfig {
+    pub workers: Vec<String>,
+    pub secret: Option<String>,
+    pub connect_timeout_ms: u64,
+    pub eval_timeout_ms: u64,
+}
+
+/// Parse workers from a CLI value. If the value is a path to an existing file,
+/// read it (one addr:port per line, blank lines and # comments ignored).
+/// Otherwise split by comma.
+pub fn parse_workers(value: &str) -> Vec<String> {
+    let path = std::path::Path::new(value);
+    if path.is_file() {
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            return contents.lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(|l| l.to_string())
+                .collect();
+        }
+    }
+    value.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Evaluate a single variant on a remote worker. Returns an ArenaEntry.
+/// On failure, logs a warning and returns None (caller should fall back to local).
+pub fn evaluate_on_worker(
+    worker_addr: &str,
+    file: &str,
+    source: &str,
+    budget: u64,
+    weights: &FitnessWeights,
+    grant_pii: bool,
+    secret: Option<&str>,
+    connect_timeout_ms: u64,
+    eval_timeout_ms: u64,
+) -> Result<crate::arena::ArenaEntry, String> {
+    // Connect with timeout
+    let addr: std::net::SocketAddr = worker_addr.parse()
+        .map_err(|e| format!("invalid address: {e}"))?;
+    let connect_timeout = std::time::Duration::from_millis(connect_timeout_ms);
+    let mut stream = TcpStream::connect_timeout(&addr, connect_timeout)
+        .map_err(|e| categorize_connect_error(e))?;
+
+    // Set read/write timeouts for eval
+    let eval_timeout = std::time::Duration::from_millis(eval_timeout_ms);
+    stream.set_read_timeout(Some(eval_timeout))
+        .map_err(|e| format!("failed to set read timeout: {e}"))?;
+    stream.set_write_timeout(Some(eval_timeout))
+        .map_err(|e| format!("failed to set write timeout: {e}"))?;
+
+    // Auth handshake
+    client_auth(&mut stream, secret)
+        .map_err(|e| categorize_auth_error(e))?;
+
+    // Send EVAL
+    let request_id = 1; // single eval per connection for now
+    let req = EvalRequest {
+        request_id,
+        source: source.to_string(),
+        budget,
+        weights: weights.clone(),
+        filename: file.to_string(),
+        grant_pii,
+        timeout_ms: eval_timeout_ms,
+    };
+    let payload = encode_eval_request(&req);
+    network::write_msg(&mut stream, MSG_EVAL, &payload)
+        .map_err(|e| categorize_protocol_error(e))?;
+
+    // Read RESULT
+    let (msg_type, result_payload) = network::read_msg(&mut stream)
+        .map_err(|e| categorize_protocol_error(e))?;
+    if msg_type != MSG_RESULT {
+        return Err(format!("protocol error (expected RESULT 0x06, got 0x{msg_type:02x})"));
+    }
+
+    let result = decode_eval_result(&result_payload)
+        .map_err(|e| format!("protocol error ({e})"))?;
+
+    Ok(result.to_arena_entry(file, Some(worker_addr)))
+}
+
+/// Run arena evaluation across colony workers with local fallback.
+/// Returns entries in the same order as `files`.
+pub fn run_arena_colony(
+    files: &[String],
+    rounds: usize,
+    colony: &ColonyConfig,
+    root: &std::path::Path,
+    grant_pii: bool,
+    weights: &FitnessWeights,
+    budget: u64,
+) -> Vec<crate::arena::ArenaEntry> {
+    let num_workers = colony.workers.len();
+    eprintln!("Colony arena: {} variants, {} worker{}, {} round{} each",
+        files.len(),
+        num_workers,
+        if num_workers == 1 { "" } else { "s" },
+        rounds,
+        if rounds == 1 { "" } else { "s" },
+    );
+
+    let mut all_entries = Vec::with_capacity(files.len());
+
+    for (idx, file) in files.iter().enumerate() {
+        let mut round_entries = Vec::new();
+
+        for round in 0..rounds {
+            // Round-robin worker assignment
+            let worker_idx = (idx * rounds + round) % num_workers;
+            let worker_addr = &colony.workers[worker_idx];
+
+            // Read source
+            let source = match std::fs::read_to_string(file) {
+                Ok(s) => s,
+                Err(e) => {
+                    round_entries.push(crate::arena::ArenaEntry::from_error(file, &format!("{e}")));
+                    continue;
+                }
+            };
+
+            if source.len() > MAX_SOURCE_SIZE {
+                round_entries.push(crate::arena::ArenaEntry::from_error(
+                    file, &format!("source too large ({} bytes, max {})", source.len(), MAX_SOURCE_SIZE)));
+                continue;
+            }
+
+            match evaluate_on_worker(
+                worker_addr, file, &source, budget, weights,
+                grant_pii, colony.secret.as_deref(),
+                colony.connect_timeout_ms, colony.eval_timeout_ms,
+            ) {
+                Ok(entry) => {
+                    round_entries.push(entry);
+                }
+                Err(reason) => {
+                    eprintln!("Warning: Worker {} {} , falling back to local",
+                        worker_addr, reason);
+                    // Fallback to local
+                    let entry = evaluate_locally_for_arena(
+                        file, &source, root, grant_pii, weights, budget);
+                    round_entries.push(entry);
+                }
+            }
+        }
+
+        let entry = if round_entries.len() == 1 {
+            round_entries.into_iter().next().unwrap()
+        } else {
+            crate::arena::ArenaEntry::average(&round_entries)
+        };
+        all_entries.push(entry);
+    }
+
+    all_entries
+}
+
+/// Local evaluation fallback for colony mode (returns ArenaEntry with worker="local").
+fn evaluate_locally_for_arena(
+    file: &str,
+    source: &str,
+    root: &std::path::Path,
+    grant_pii: bool,
+    weights: &FitnessWeights,
+    budget: u64,
+) -> crate::arena::ArenaEntry {
+    let start = Instant::now();
+
+    let program = match crate::parser::Parser::parse_source(source) {
+        Ok(p) => p,
+        Err(e) => {
+            let mut entry = crate::arena::ArenaEntry::from_error(file, &format!("{e}"));
+            entry.worker = Some("local".to_string());
+            return entry;
+        }
+    };
+
+    let cfg = crate::config::Config::load(root);
+    let llm_backend = match crate::llm::create_backend(&cfg) {
+        Ok(b) => b,
+        Err(e) => {
+            let mut entry = crate::arena::ArenaEntry::from_error(file, &format!("{e}"));
+            entry.worker = Some("local".to_string());
+            return entry;
+        }
+    };
+
+    let io_ctx = crate::io::IoContext::new(root, &cfg);
+    let tracer = crate::trace::Tracer::new(crate::trace::TraceLevel::Quiet);
+    let max_agents = cfg.get_u64("max_concurrent_agents", 16) as u32;
+    let store = crate::storage::ObjectStore::new(root);
+    let refs = crate::refs::Refs::new(root);
+    let _ = store.save(&program).ok();
+
+    let mut evaluator = crate::evaluator::Evaluator::new(budget)
+        .with_vcs(&store, &refs)
+        .with_persistence(&store)
+        .with_llm(llm_backend.as_ref())
+        .with_io(&io_ctx)
+        .with_max_agents(max_agents)
+        .with_tracer(&tracer);
+    evaluator.grant_all();
+    if grant_pii {
+        evaluator.grant(crate::capabilities::CapKind::PiiTransmit);
+    }
+
+    let elapsed = start.elapsed().as_millis() as u64;
+
+    match evaluator.eval_program(&program) {
+        Ok(_) => {
+            let mut entry = crate::arena::ArenaEntry::from_report(
+                file, &evaluator.fitness_report(), weights);
+            entry.worker = Some("local".to_string());
+            entry.eval_time_ms = Some(elapsed);
+            entry
+        }
+        Err(e) => {
+            let mut entry = crate::arena::ArenaEntry::from_error(file, &format!("{e}"));
+            entry.worker = Some("local".to_string());
+            entry.eval_time_ms = Some(elapsed);
+            entry
+        }
+    }
+}
+
+/// Categorize TCP connect errors into user-friendly messages.
+fn categorize_connect_error(e: std::io::Error) -> String {
+    match e.kind() {
+        std::io::ErrorKind::ConnectionRefused => "unreachable (connection refused)".to_string(),
+        std::io::ErrorKind::TimedOut => "connection timed out".to_string(),
+        _ => format!("unreachable ({e})"),
+    }
+}
+
+/// Categorize auth errors.
+fn categorize_auth_error(e: NetworkError) -> String {
+    match &e {
+        NetworkError::Protocol(msg) if msg.contains("authentication failed") => {
+            "auth failed".to_string()
+        }
+        _ => format!("{e}"),
+    }
+}
+
+/// Categorize protocol errors.
+fn categorize_protocol_error(e: NetworkError) -> String {
+    match &e {
+        NetworkError::Io(io_err) if io_err.kind() == std::io::ErrorKind::TimedOut => {
+            "timed out".to_string()
+        }
+        NetworkError::Io(io_err) if io_err.kind() == std::io::ErrorKind::WouldBlock => {
+            "timed out".to_string()
+        }
+        _ => format!("protocol error ({e})"),
+    }
+}
+
 // --- Binary helpers ---
 
 fn read_u8(buf: &[u8], pos: &mut usize) -> Result<u8, NetworkError> {
@@ -1153,11 +1421,13 @@ mod tests {
             eval_time_ms: 100,
         };
 
-        let entry = res.to_arena_entry("test.ag");
+        let entry = res.to_arena_entry("test.ag", Some("10.0.0.1:9462"));
         assert_eq!(entry.file, "test.ag");
         assert!((entry.score - 0.75).abs() < 1e-10);
         assert_eq!(entry.prompt_count, 2);
         assert!(entry.error.is_none());
+        assert_eq!(entry.worker.as_deref(), Some("10.0.0.1:9462"));
+        assert_eq!(entry.eval_time_ms, Some(100));
     }
 
     #[test]
@@ -1175,8 +1445,9 @@ mod tests {
             eval_time_ms: 10,
         };
 
-        let entry = res.to_arena_entry("bad.ag");
+        let entry = res.to_arena_entry("bad.ag", None);
         assert!(entry.error.is_some());
+        assert!(entry.worker.is_none());
         assert!(entry.error.unwrap().contains("parse error"));
     }
 
@@ -1245,5 +1516,254 @@ mod tests {
     fn truncate_bytes_short() {
         assert_eq!(truncate_bytes(b"hello", 10), b"hello");
         assert_eq!(truncate_bytes(b"hello", 3), b"hel");
+    }
+
+    // --- M33: Colony coordinator tests ---
+
+    #[test]
+    fn parse_workers_csv() {
+        let workers = parse_workers("10.0.0.1:9462,10.0.0.2:9462,10.0.0.3:9462");
+        assert_eq!(workers, vec!["10.0.0.1:9462", "10.0.0.2:9462", "10.0.0.3:9462"]);
+    }
+
+    #[test]
+    fn parse_workers_csv_with_spaces() {
+        let workers = parse_workers("host1:9462, host2:9462 , host3:9462");
+        assert_eq!(workers, vec!["host1:9462", "host2:9462", "host3:9462"]);
+    }
+
+    #[test]
+    fn parse_workers_from_file() {
+        let dir = std::env::temp_dir().join(format!("agentis_test_workers_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("workers.txt");
+        std::fs::write(&file, "10.0.0.1:9462\n# comment\n10.0.0.2:9462\n\n10.0.0.3:9462\n").unwrap();
+
+        let workers = parse_workers(file.to_str().unwrap());
+        assert_eq!(workers, vec!["10.0.0.1:9462", "10.0.0.2:9462", "10.0.0.3:9462"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_workers_empty() {
+        let workers = parse_workers("");
+        assert!(workers.is_empty());
+    }
+
+    #[test]
+    fn parse_workers_single() {
+        let workers = parse_workers("localhost:9462");
+        assert_eq!(workers, vec!["localhost:9462"]);
+    }
+
+    #[test]
+    fn categorize_connect_error_refused() {
+        let err = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused");
+        let msg = categorize_connect_error(err);
+        assert!(msg.contains("connection refused"), "got: {msg}");
+    }
+
+    #[test]
+    fn categorize_connect_error_timeout() {
+        let err = std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout");
+        let msg = categorize_connect_error(err);
+        assert!(msg.contains("timed out"), "got: {msg}");
+    }
+
+    #[test]
+    fn categorize_auth_error_msg() {
+        let err = NetworkError::Protocol("authentication failed".to_string());
+        let msg = categorize_auth_error(err);
+        assert_eq!(msg, "auth failed");
+    }
+
+    #[test]
+    fn categorize_protocol_error_timeout() {
+        let err = NetworkError::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout"));
+        let msg = categorize_protocol_error(err);
+        assert_eq!(msg, "timed out");
+    }
+
+    #[test]
+    fn evaluate_on_worker_connection_refused() {
+        // Try connecting to a port that's not listening
+        let result = evaluate_on_worker(
+            "127.0.0.1:1",   // port 1 should be refused
+            "test.ag",
+            "let x = 1;",
+            10_000,
+            &crate::fitness::FitnessWeights::default(),
+            false,
+            None,
+            1_000, // 1s timeout
+            5_000,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("refused") || err.contains("unreachable"), "got: {err}");
+    }
+
+    #[test]
+    fn colony_eval_with_worker_and_fallback() {
+        // Start a real worker, send an EVAL, verify result
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+
+        // Spawn a minimal "worker" that handles one EVAL and returns a canned RESULT
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+
+            // Read EVAL
+            let (msg_type, payload) = crate::network::read_msg(&mut stream).unwrap();
+            assert_eq!(msg_type, crate::network::MSG_EVAL);
+            let req = decode_eval_request(&payload).unwrap();
+            assert_eq!(req.filename, "test.ag");
+
+            // Send back a success RESULT
+            let result = EvalResult {
+                request_id: req.request_id,
+                status: STATUS_OK,
+                score: 0.85,
+                cb_eff: 0.9,
+                val_rate: 1.0,
+                exp_rate: 0.5,
+                prompt_count: 2,
+                output: "hello".to_string(),
+                error: String::new(),
+                eval_time_ms: 42,
+            };
+            let payload = encode_eval_result(&result);
+            crate::network::write_msg(&mut stream, crate::network::MSG_RESULT, &payload).unwrap();
+        });
+
+        let entry = evaluate_on_worker(
+            &addr,
+            "test.ag",
+            "let x = 1;",
+            10_000,
+            &crate::fitness::FitnessWeights::default(),
+            false,
+            None,
+            5_000,
+            30_000,
+        ).unwrap();
+
+        assert_eq!(entry.file, "test.ag");
+        assert!((entry.score - 0.85).abs() < 1e-10);
+        assert_eq!(entry.worker.as_deref(), Some(&*addr));
+        assert_eq!(entry.eval_time_ms, Some(42));
+        assert!(entry.error.is_none());
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn colony_eval_with_auth() {
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let secret = "test-colony-secret";
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+
+            // Auth handshake
+            server_auth(&mut stream, Some(secret)).unwrap();
+
+            // Read EVAL
+            let (msg_type, payload) = crate::network::read_msg(&mut stream).unwrap();
+            assert_eq!(msg_type, crate::network::MSG_EVAL);
+            let req = decode_eval_request(&payload).unwrap();
+
+            // Send RESULT
+            let result = EvalResult {
+                request_id: req.request_id,
+                status: STATUS_OK,
+                score: 0.7,
+                cb_eff: 0.8,
+                val_rate: 0.5,
+                exp_rate: 1.0,
+                prompt_count: 1,
+                output: String::new(),
+                error: String::new(),
+                eval_time_ms: 50,
+            };
+            let payload = encode_eval_result(&result);
+            crate::network::write_msg(&mut stream, crate::network::MSG_RESULT, &payload).unwrap();
+        });
+
+        let entry = evaluate_on_worker(
+            &addr,
+            "auth.ag",
+            "let x = 1;",
+            10_000,
+            &crate::fitness::FitnessWeights::default(),
+            false,
+            Some(secret),
+            5_000,
+            30_000,
+        ).unwrap();
+
+        assert!((entry.score - 0.7).abs() < 1e-10);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn colony_eval_auth_failure() {
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = server_auth(&mut stream, Some("correct-secret"));
+        });
+
+        let result = evaluate_on_worker(
+            &addr,
+            "test.ag",
+            "let x = 1;",
+            10_000,
+            &crate::fitness::FitnessWeights::default(),
+            false,
+            Some("wrong-secret"),
+            5_000,
+            30_000,
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("auth failed"), "got: {err}");
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn colony_stats_format() {
+        let entries = vec![
+            crate::arena::ArenaEntry {
+                file: "a.ag".to_string(),
+                score: 0.9, cb_eff: 0.95, val_rate: 1.0, exp_rate: 0.5,
+                prompt_count: 3, error: None, rounds: 1,
+                worker: Some("10.0.0.1:9462".to_string()),
+                eval_time_ms: Some(100),
+            },
+            crate::arena::ArenaEntry {
+                file: "b.ag".to_string(),
+                score: 0.8, cb_eff: 0.9, val_rate: 1.0, exp_rate: 0.5,
+                prompt_count: 2, error: None, rounds: 1,
+                worker: Some("local".to_string()),
+                eval_time_ms: Some(200),
+            },
+        ];
+        let stats = crate::arena::format_colony_stats(&entries, 2);
+        assert!(stats.contains("2 workers"), "got: {stats}");
+        assert!(stats.contains("1 local fallback"), "got: {stats}");
+        assert!(stats.contains("avg eval 150ms"), "got: {stats}");
     }
 }

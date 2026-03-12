@@ -483,6 +483,8 @@ mod tests {
             prompt_count: 3,
             error: None,
             rounds: 1,
+            worker: None,
+            eval_time_ms: None,
         };
 
         write_generation_jsonl(&dir, 1, &[(variant, arena_entry)], &FitnessWeights::default()).unwrap();
