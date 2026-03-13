@@ -170,6 +170,13 @@ fn main() {
                     "  --warm-start-prob P  Library injection probability per slot (default: 0.3)"
                 );
                 eprintln!("  --warm-start-decay P Decay warm-start probability to P by final gen");
+                eprintln!("  --adaptive-budget    Enable per-lineage adaptive budget allocation");
+                eprintln!(
+                    "  --max-lineage-fraction F  Max fraction for a single lineage (default: 0.5)"
+                );
+                eprintln!(
+                    "  --lineage-stall-window N  Generations to assess improvement (default: 5)"
+                );
                 process::exit(1);
             }
             cmd_evolve(&args[2], &args[3..])
@@ -1906,6 +1913,13 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         parse_flag_value(args, "--warm-start-prob").and_then(|s| s.parse().ok());
     let warm_start_decay: Option<f64> =
         parse_flag_value(args, "--warm-start-decay").and_then(|s| s.parse().ok());
+    let adaptive_budget = args.iter().any(|a| a == "--adaptive-budget");
+    let max_lineage_fraction: f64 = parse_flag_value(args, "--max-lineage-fraction")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.5);
+    let lineage_stall_window: usize = parse_flag_value(args, "--lineage-stall-window")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
 
     // Read seed source
     let seed_source = std::fs::read_to_string(source_file)?;
@@ -2104,6 +2118,30 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         .as_nanos() as u64;
     let mut rng = evolve::SimpleRng::new(rng_seed);
 
+    // Adaptive budget manager
+    let mut budget_mgr = if adaptive_budget {
+        let mut mgr = evolve::AdaptiveBudgetManager::new(evolve::AdaptiveBudgetConfig {
+            window_size: lineage_stall_window,
+            max_fraction: max_lineage_fraction,
+            min_improvement: 0.01,
+        });
+        mgr.register_lineage(&seed_hash);
+        for (_, lh) in &library_seeds {
+            mgr.register_lineage(lh);
+        }
+        Some(mgr)
+    } else {
+        None
+    };
+
+    // Lineage tracking: source_hash → lineage_seed_hash
+    let mut variant_lineages: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    variant_lineages.insert(seed_hash.clone(), seed_hash.clone());
+    for (_, lh) in &library_seeds {
+        variant_lineages.insert(lh.clone(), lh.clone());
+    }
+
     eprintln!("Evolution: {}", source_file);
     if resume_ref.is_some() {
         eprintln!(
@@ -2132,10 +2170,18 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             eprintln!("  Warm-start: {:.0}%", initial_warm_prob * 100.0);
         }
     }
+    if adaptive_budget {
+        eprintln!(
+            "  Adaptive budget: window={}, max-fraction={:.0}%",
+            lineage_stall_window,
+            max_lineage_fraction * 100.0
+        );
+    }
     eprintln!();
 
     let mut gen_results: Vec<evolve::GenResult> = Vec::new();
     let mut cb_only_warned = false;
+    let mut prev_terminated_count = 0usize;
 
     for g in start_gen..=end_gen {
         // Compute warm-start probability with decay
@@ -2155,10 +2201,25 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             "population"
         };
 
+        // Expand parents by adaptive budget allocation (if enabled)
+        let alloc_parents;
+        let effective_parents = if let Some(ref mgr) = budget_mgr {
+            let allocation = mgr.allocate_slots(population);
+            alloc_parents = evolve::expand_parents_by_allocation(
+                &parents,
+                &allocation,
+                &variant_lineages,
+                &seed_hash,
+            );
+            &alloc_parents
+        } else {
+            &parents
+        };
+
         // Generate variants from parents
         let mock_offset = (g - 1) * population;
         let tracked_variants = evolve::generate_tracked_variants(
-            &parents,
+            effective_parents,
             population,
             g,
             &base_name,
@@ -2224,13 +2285,45 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         };
 
         let mut scored: Vec<(evolve::TrackedVariant, arena::ArenaEntry)> = Vec::new();
+        let mut lineage_cb_spent: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+        let mut lineage_best_scores: std::collections::HashMap<String, f64> =
+            std::collections::HashMap::new();
+
         for (v, entry) in tracked_variants.iter().zip(variant_entries.into_iter()) {
-            // Track CB usage
+            // Track variant lineage
+            let lineage = if v.provenance == "library" {
+                v.parent_hash.clone()
+            } else {
+                variant_lineages
+                    .get(&v.parent_hash)
+                    .cloned()
+                    .unwrap_or_else(|| seed_hash.clone())
+            };
+            variant_lineages.insert(v.source_hash.clone(), lineage.clone());
+
+            // Track CB usage (global + per-lineage)
             if entry.error.is_none() {
                 let cb_spent = ((1.0 - entry.cb_eff) * DEFAULT_BUDGET as f64) as u64;
                 cumulative_cb += cb_spent;
+                *lineage_cb_spent.entry(lineage.clone()).or_insert(0) += cb_spent;
             }
+
+            // Track per-lineage best score
+            let best = lineage_best_scores.entry(lineage).or_insert(0.0);
+            if entry.score > *best {
+                *best = entry.score;
+            }
+
             scored.push((v.clone(), entry));
+        }
+
+        // Update adaptive budget manager with per-lineage results
+        if let Some(ref mut mgr) = budget_mgr {
+            for (lineage_hash, best) in &lineage_best_scores {
+                let cb = lineage_cb_spent.get(lineage_hash).copied().unwrap_or(0);
+                mgr.update(lineage_hash, *best, cb);
+            }
         }
 
         // Sort by score descending
@@ -2402,6 +2495,28 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
                 "Gen {:>2}: best={:.3}  avg={:.3}  prompts={:.1}  ({})",
                 g, gen_best, gen_avg, gen_avg_prompts, prov_suffix
             );
+        }
+
+        // Show adaptive budget report
+        if let Some(ref mgr) = budget_mgr {
+            if mgr.active_count() > 1 || mgr.terminated_lineages().len() > prev_terminated_count {
+                eprintln!("        budget: {}", mgr.format_report(population));
+            }
+            // Report newly terminated lineages
+            let terminated = mgr.terminated_lineages();
+            for t in terminated.iter().skip(prev_terminated_count) {
+                let last = mgr
+                    .last_score(&t.seed_hash)
+                    .map(|s| format!("{:.3}", s))
+                    .unwrap_or_else(|| "N/A".to_string());
+                eprintln!(
+                    "  Lineage {}.. terminated (stalled {} gens at {})",
+                    &t.seed_hash[..8.min(t.seed_hash.len())],
+                    t.stall_count,
+                    last
+                );
+            }
+            prev_terminated_count = terminated.len();
         }
 
         // Early stop (after checkpoint so last gen is always saved)
