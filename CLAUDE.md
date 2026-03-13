@@ -59,7 +59,7 @@ Storage: AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (720)
+cargo test                     # Run all tests (726)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
@@ -140,6 +140,9 @@ cargo run -- lib export --out best.alib --top 5           # Export top 5
 cargo run -- lib export --out tagged.alib --tag email-v3  # Export by tag
 cargo run -- lib import bundle.alib                       # Import bundle
 cargo run -- lib import bundle.alib --skip-duplicates     # Skip existing
+cargo run -- version                                      # Show current version
+cargo run -- update --check                               # Check for new release
+cargo run -- update                                       # Self-update to latest release
 ```
 
 ## Phase 2 Features
