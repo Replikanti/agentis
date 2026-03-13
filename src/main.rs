@@ -177,6 +177,13 @@ fn main() {
                 eprintln!(
                     "  --lineage-stall-window N  Generations to assess improvement (default: 5)"
                 );
+                eprintln!();
+                eprintln!("Event hooks (in .agentis/config):");
+                eprintln!("  hooks.on_stagnation = reduce_budget 0.3");
+                eprintln!("  hooks.on_new_best = checkpoint tag=improved");
+                eprintln!("  hooks.on_crash = log variant crashed");
+                eprintln!("  Actions: checkpoint, tag=<n>, lib_add, log <msg>,");
+                eprintln!("           reduce_budget <f>, inject_library <n>, skip");
                 process::exit(1);
             }
             cmd_evolve(&args[2], &args[3..])
@@ -1945,6 +1952,19 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     let llm_backend =
         llm::create_backend(&cfg).map_err(|e| AgentisError::General(format!("{e}")))?;
 
+    // Parse event hooks (fail early on invalid syntax)
+    let hooks = evolve::parse_hooks(&cfg).map_err(AgentisError::General)?;
+    if !hooks.is_empty() {
+        eprintln!(
+            "Event hooks: {}",
+            hooks
+                .iter()
+                .map(|h| format!("{:?}", h.event).to_lowercase())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
     // Dry-run mode
     if dry_run {
         let agents = mutation::extract_agents(&seed_source).map_err(AgentisError::General)?;
@@ -2315,6 +2335,35 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
                 *best = entry.score;
             }
 
+            // Fire on_crash / on_validation_fail hooks
+            if entry.error.is_some() {
+                for hook in evolve::hooks_for_event(&hooks, &evolve::HookEvent::Crash) {
+                    for action in &hook.actions {
+                        match action {
+                            evolve::HookAction::Log(msg) => {
+                                eprintln!("  [hook] crash: {}", msg);
+                            }
+                            evolve::HookAction::Skip => {
+                                // skip is a no-op here — variant already scored 0
+                            }
+                            _ => {} // other actions handled at generation level
+                        }
+                    }
+                }
+            } else if entry.val_rate < 1.0 {
+                for hook in evolve::hooks_for_event(&hooks, &evolve::HookEvent::ValidationFail) {
+                    for action in &hook.actions {
+                        match action {
+                            evolve::HookAction::Log(msg) => {
+                                eprintln!("  [hook] validation_fail: {}", msg);
+                            }
+                            evolve::HookAction::Skip => {}
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
             scored.push((v.clone(), entry));
         }
 
@@ -2391,7 +2440,8 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         });
 
         // Update best-ever
-        if gen_best > best_ever_score {
+        let is_new_best = gen_best > best_ever_score;
+        if is_new_best {
             best_ever_score = gen_best;
             best_ever_source = best_variant.source.clone();
             best_ever_hash = best_variant.source_hash.clone();
@@ -2399,6 +2449,135 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         } else {
             stall_count += 1;
         }
+
+        // Fire on_new_best hooks
+        if is_new_best {
+            for hook in evolve::hooks_for_event(&hooks, &evolve::HookEvent::NewBest) {
+                for action in &hook.actions {
+                    match action {
+                        evolve::HookAction::Checkpoint => {
+                            // Force a checkpoint (handled below via hook_force_checkpoint)
+                        }
+                        evolve::HookAction::Tag(_) => {
+                            // Tag will be applied to checkpoint created this generation
+                            // (deferred to checkpoint creation below)
+                        }
+                        evolve::HookAction::LibAdd => {
+                            let lib_store = library::LibraryStore::new(&root);
+                            let ts = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64;
+                            let lib_entry = library::LibraryEntry {
+                                source: best_variant.source.clone(),
+                                source_hash: best_variant.source_hash.clone(),
+                                seed_hash: seed_hash.clone(),
+                                generation: g as u32,
+                                evolution_run: prev_ckpt_hash.clone(),
+                                fitness_score: gen_best,
+                                cb_efficiency: scored[0].1.cb_eff,
+                                validate_rate: scored[0].1.val_rate,
+                                explore_rate: scored[0].1.exp_rate,
+                                prompt_count: scored[0].1.prompt_count as u32,
+                                description: format!("auto-added by on_new_best hook (gen {})", g),
+                                tags: vec!["hook-best".to_string()],
+                                timestamp: ts,
+                            };
+                            if let Err(e) = lib_store.store(&lib_entry) {
+                                eprintln!("  [hook] lib_add failed: {}", e);
+                            } else {
+                                eprintln!(
+                                    "  [hook] added best to library (score: {:.3})",
+                                    gen_best
+                                );
+                            }
+                        }
+                        evolve::HookAction::Log(msg) => {
+                            eprintln!("  [hook] new_best: {}", msg);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Fire on_stagnation hooks
+        if stall_count > 0 {
+            for hook in evolve::hooks_for_event(&hooks, &evolve::HookEvent::Stagnation) {
+                for action in &hook.actions {
+                    match action {
+                        evolve::HookAction::ReduceBudget(frac) => {
+                            if let Some(ref mut mgr) = budget_mgr {
+                                // Reduce all lineage fractions by the given factor
+                                mgr.reduce_all(*frac);
+                                eprintln!(
+                                    "  [hook] reduced budget fractions by {:.0}%",
+                                    frac * 100.0
+                                );
+                            }
+                        }
+                        evolve::HookAction::InjectLibrary(count) => {
+                            let lib_store = library::LibraryStore::new(&root);
+                            let results = lib_store.search("").unwrap_or_default();
+                            let inject_count = (*count).min(results.len());
+                            if inject_count > 0 {
+                                // Replace lowest-scoring parents with library entries
+                                let inject_start = parents.len().saturating_sub(inject_count);
+                                for (i, (_, entry)) in results.iter().take(inject_count).enumerate()
+                                {
+                                    let idx = inject_start + i;
+                                    if idx < parents.len() {
+                                        parents[idx] =
+                                            (entry.source.clone(), entry.source_hash.clone());
+                                        variant_lineages.insert(
+                                            entry.source_hash.clone(),
+                                            entry.source_hash.clone(),
+                                        );
+                                    }
+                                }
+                                eprintln!(
+                                    "  [hook] injected {} library entries into parent pool",
+                                    inject_count
+                                );
+                            }
+                        }
+                        evolve::HookAction::Log(msg) => {
+                            eprintln!("  [hook] stagnation (stall={}): {}", stall_count, msg);
+                        }
+                        evolve::HookAction::Checkpoint => {}
+                        evolve::HookAction::Tag(_) => {}
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Determine if hooks force a checkpoint or tag
+        let hook_force_checkpoint = if is_new_best {
+            evolve::hooks_for_event(&hooks, &evolve::HookEvent::NewBest)
+                .iter()
+                .any(|h| {
+                    h.actions
+                        .iter()
+                        .any(|a| matches!(a, evolve::HookAction::Checkpoint))
+                })
+        } else {
+            false
+        };
+        let hook_tag: Option<String> = if is_new_best {
+            evolve::hooks_for_event(&hooks, &evolve::HookEvent::NewBest)
+                .iter()
+                .flat_map(|h| h.actions.iter())
+                .find_map(|a| {
+                    if let evolve::HookAction::Tag(name) = a {
+                        Some(name.clone())
+                    } else {
+                        None
+                    }
+                })
+        } else {
+            None
+        };
 
         // Convergence warning
         if stall_count >= 3 && (stop_on_stall.is_none() || stall_count < stop_on_stall.unwrap()) {
@@ -2420,10 +2599,10 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             .map(|(v, _)| (v.source.clone(), v.source_hash.clone()))
             .collect();
 
-        // Auto-checkpoint (always checkpoint on last gen or early stop)
+        // Auto-checkpoint (always checkpoint on last gen, early stop, or hook-forced)
         let is_last = g == end_gen || stop_stall || stop_budget;
-        let should_checkpoint =
-            checkpoint_interval > 0 && (g % checkpoint_interval == 0 || is_last);
+        let should_checkpoint = hook_force_checkpoint
+            || (checkpoint_interval > 0 && (g % checkpoint_interval == 0 || is_last));
         let ckpt_hash_str = if should_checkpoint {
             let ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2460,6 +2639,14 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
                 .set_head(&hash)
                 .map_err(|e| AgentisError::General(format!("checkpoint HEAD: {e}")))?;
             prev_ckpt_hash = Some(hash.clone());
+            // Apply hook-generated tag
+            if let Some(ref ht) = hook_tag {
+                if let Err(e) = ckpt_store.set_tag(ht, &hash) {
+                    eprintln!("  [hook] tag failed: {}", e);
+                } else {
+                    eprintln!("  [hook] tagged checkpoint as '{}'", ht);
+                }
+            }
             Some(hash)
         } else {
             None

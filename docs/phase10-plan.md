@@ -324,10 +324,10 @@ already exists in the library.
 
 ## Milestones
 
-- [ ] M39: Persistent Population Library
-- [ ] M40: Smart Seeding & Warm-start
-- [ ] M41: Per-lineage Budget Caps + Adaptive Allocation
-- [ ] M42: Event Hooks
+- [x] M39: Persistent Population Library
+- [x] M40: Smart Seeding & Warm-start
+- [x] M41: Per-lineage Budget Caps + Adaptive Allocation
+- [x] M42: Event Hooks
 - [ ] M43: Portable Library Export / Import
 
 ### M39: Persistent Population Library

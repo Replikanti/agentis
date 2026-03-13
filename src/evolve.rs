@@ -469,6 +469,136 @@ pub fn count_provenance(variants: &[TrackedVariant]) -> (usize, usize, usize) {
     (seed_file, population, library)
 }
 
+// --- Event Hooks (M42) ---
+
+/// Evolution event that can trigger hooks.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HookEvent {
+    Stagnation,
+    NewBest,
+    ValidationFail,
+    Crash,
+}
+
+/// Action to execute when a hook fires.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HookAction {
+    ReduceBudget(f64),
+    InjectLibrary(usize),
+    Checkpoint,
+    Tag(String),
+    LibAdd,
+    Log(String),
+    Skip,
+}
+
+/// A parsed hook: event → list of actions.
+#[derive(Debug, Clone)]
+pub struct Hook {
+    pub event: HookEvent,
+    pub actions: Vec<HookAction>,
+}
+
+/// Parse hooks from config. Returns hooks + any parse errors.
+/// Config keys: `hooks.on_stagnation`, `hooks.on_new_best`,
+/// `hooks.on_validation_fail`, `hooks.on_crash`.
+pub fn parse_hooks(cfg: &crate::config::Config) -> Result<Vec<Hook>, String> {
+    let entries = [
+        ("hooks.on_stagnation", HookEvent::Stagnation),
+        ("hooks.on_new_best", HookEvent::NewBest),
+        ("hooks.on_validation_fail", HookEvent::ValidationFail),
+        ("hooks.on_crash", HookEvent::Crash),
+    ];
+
+    let mut hooks = Vec::new();
+    for (key, event) in &entries {
+        if let Some(value) = cfg.get(key) {
+            let actions =
+                parse_hook_actions(value).map_err(|e| format!("invalid hook '{}': {}", key, e))?;
+            if !actions.is_empty() {
+                hooks.push(Hook {
+                    event: event.clone(),
+                    actions,
+                });
+            }
+        }
+    }
+    Ok(hooks)
+}
+
+/// Parse a space-separated action string into actions.
+fn parse_hook_actions(value: &str) -> Result<Vec<HookAction>, String> {
+    let tokens: Vec<&str> = value.split_whitespace().collect();
+    if tokens.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut actions = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        match tokens[i] {
+            "checkpoint" => {
+                actions.push(HookAction::Checkpoint);
+                i += 1;
+            }
+            "lib_add" => {
+                actions.push(HookAction::LibAdd);
+                i += 1;
+            }
+            "skip" => {
+                actions.push(HookAction::Skip);
+                i += 1;
+            }
+            "reduce_budget" => {
+                i += 1;
+                let frac: f64 = tokens
+                    .get(i)
+                    .ok_or("reduce_budget requires a fraction argument")?
+                    .parse()
+                    .map_err(|_| "reduce_budget fraction must be a number")?;
+                actions.push(HookAction::ReduceBudget(frac));
+                i += 1;
+            }
+            "inject_library" => {
+                i += 1;
+                let count: usize = tokens
+                    .get(i)
+                    .ok_or("inject_library requires a count argument")?
+                    .parse()
+                    .map_err(|_| "inject_library count must be a number")?;
+                actions.push(HookAction::InjectLibrary(count));
+                i += 1;
+            }
+            "log" => {
+                // Rest of tokens are the message
+                let msg = tokens[i + 1..].join(" ");
+                if msg.is_empty() {
+                    return Err("log requires a message".to_string());
+                }
+                actions.push(HookAction::Log(msg));
+                break; // log consumes rest of line
+            }
+            t if t.starts_with("tag=") => {
+                let name = t.strip_prefix("tag=").unwrap();
+                if name.is_empty() {
+                    return Err("tag= requires a name".to_string());
+                }
+                actions.push(HookAction::Tag(name.to_string()));
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown action '{other}'"));
+            }
+        }
+    }
+    Ok(actions)
+}
+
+/// Find hooks matching a given event.
+pub fn hooks_for_event<'a>(hooks: &'a [Hook], event: &HookEvent) -> Vec<&'a Hook> {
+    hooks.iter().filter(|h| &h.event == event).collect()
+}
+
 // --- Adaptive Budget Manager (M41) ---
 
 /// Per-lineage budget tracking.
@@ -657,6 +787,17 @@ impl AdaptiveBudgetManager {
 
     pub fn active_count(&self) -> usize {
         self.lineages.iter().filter(|l| l.active).count()
+    }
+
+    /// Reduce all active lineage fractions by a multiplicative factor.
+    /// E.g., `reduce_all(0.3)` reduces each fraction by 30%.
+    pub fn reduce_all(&mut self, factor: f64) {
+        for l in &mut self.lineages {
+            if l.active {
+                l.allocated_fraction *= 1.0 - factor;
+            }
+        }
+        self.normalize();
     }
 
     /// Format allocation report for generation summary.
@@ -1269,5 +1410,121 @@ mod tests {
         assert_eq!(expanded[1].1, "hash_a");
         assert_eq!(expanded[2].1, "hash_a");
         assert_eq!(expanded[3].1, "hash_b");
+    }
+
+    // --- Hook parsing tests ---
+
+    #[test]
+    fn parse_hooks_empty_config() {
+        let cfg = crate::config::Config::parse("");
+        let hooks = parse_hooks(&cfg).unwrap();
+        assert!(hooks.is_empty());
+    }
+
+    #[test]
+    fn parse_hooks_checkpoint() {
+        let cfg = crate::config::Config::parse("hooks.on_crash = checkpoint");
+        let hooks = parse_hooks(&cfg).unwrap();
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0].event, HookEvent::Crash);
+        assert_eq!(hooks[0].actions, vec![HookAction::Checkpoint]);
+    }
+
+    #[test]
+    fn parse_hooks_checkpoint_with_tag() {
+        let cfg = crate::config::Config::parse("hooks.on_new_best = checkpoint tag=improved");
+        let hooks = parse_hooks(&cfg).unwrap();
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0].event, HookEvent::NewBest);
+        assert_eq!(
+            hooks[0].actions,
+            vec![
+                HookAction::Checkpoint,
+                HookAction::Tag("improved".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_hooks_reduce_budget() {
+        let cfg = crate::config::Config::parse("hooks.on_stagnation = reduce_budget 0.3");
+        let hooks = parse_hooks(&cfg).unwrap();
+        assert_eq!(hooks[0].event, HookEvent::Stagnation);
+        assert_eq!(hooks[0].actions, vec![HookAction::ReduceBudget(0.3)]);
+    }
+
+    #[test]
+    fn parse_hooks_inject_library() {
+        let cfg = crate::config::Config::parse("hooks.on_stagnation = inject_library 3");
+        let hooks = parse_hooks(&cfg).unwrap();
+        assert_eq!(hooks[0].actions, vec![HookAction::InjectLibrary(3)]);
+    }
+
+    #[test]
+    fn parse_hooks_log_message() {
+        let cfg = crate::config::Config::parse("hooks.on_crash = log evolution crashed!");
+        let hooks = parse_hooks(&cfg).unwrap();
+        assert_eq!(
+            hooks[0].actions,
+            vec![HookAction::Log("evolution crashed!".to_string())]
+        );
+    }
+
+    #[test]
+    fn parse_hooks_lib_add() {
+        let cfg = crate::config::Config::parse("hooks.on_new_best = lib_add");
+        let hooks = parse_hooks(&cfg).unwrap();
+        assert_eq!(hooks[0].actions, vec![HookAction::LibAdd]);
+    }
+
+    #[test]
+    fn parse_hooks_skip() {
+        let cfg = crate::config::Config::parse("hooks.on_crash = skip");
+        let hooks = parse_hooks(&cfg).unwrap();
+        assert_eq!(hooks[0].actions, vec![HookAction::Skip]);
+    }
+
+    #[test]
+    fn parse_hooks_multiple_events() {
+        let cfg = crate::config::Config::parse(
+            "hooks.on_stagnation = reduce_budget 0.5\nhooks.on_new_best = checkpoint tag=best",
+        );
+        let hooks = parse_hooks(&cfg).unwrap();
+        assert_eq!(hooks.len(), 2);
+    }
+
+    #[test]
+    fn parse_hooks_invalid_action() {
+        let cfg = crate::config::Config::parse("hooks.on_crash = explode");
+        let result = parse_hooks(&cfg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown action"));
+    }
+
+    #[test]
+    fn parse_hooks_missing_argument() {
+        let cfg = crate::config::Config::parse("hooks.on_stagnation = reduce_budget");
+        let result = parse_hooks(&cfg);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn hooks_for_event_filters() {
+        let hooks = vec![
+            Hook {
+                event: HookEvent::Crash,
+                actions: vec![HookAction::Checkpoint],
+            },
+            Hook {
+                event: HookEvent::NewBest,
+                actions: vec![HookAction::LibAdd],
+            },
+        ];
+        let crash_hooks = hooks_for_event(&hooks, &HookEvent::Crash);
+        assert_eq!(crash_hooks.len(), 1);
+        assert_eq!(crash_hooks[0].event, HookEvent::Crash);
+
+        let stag_hooks = hooks_for_event(&hooks, &HookEvent::Stagnation);
+        assert!(stag_hooks.is_empty());
     }
 }
