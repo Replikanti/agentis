@@ -177,6 +177,10 @@ fn main() {
                 eprintln!(
                     "  --lineage-stall-window N  Generations to assess improvement (default: 5)"
                 );
+                eprintln!(
+                    "  --no-lib-add            Disable auto-add best to library at end of run"
+                );
+                eprintln!("  --lib-add-interval N    Also add to library every N generations");
                 eprintln!();
                 eprintln!("Event hooks (in .agentis/config):");
                 eprintln!("  hooks.on_stagnation = reduce_budget 0.3");
@@ -2019,6 +2023,9 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     let lineage_stall_window: usize = parse_flag_value(args, "--lineage-stall-window")
         .and_then(|s| s.parse().ok())
         .unwrap_or(5);
+    let no_lib_add = args.iter().any(|a| a == "--no-lib-add");
+    let lib_add_interval: Option<usize> =
+        parse_flag_value(args, "--lib-add-interval").and_then(|s| s.parse().ok());
 
     // Read seed source
     let seed_source = std::fs::read_to_string(source_file)?;
@@ -2043,6 +2050,12 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     };
     let llm_backend =
         llm::create_backend(&cfg).map_err(|e| AgentisError::General(format!("{e}")))?;
+
+    // Auto-add threshold from config (default 0.8)
+    let min_auto_score: f64 = cfg
+        .get("lib.min_auto_score")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.8);
 
     // Parse event hooks (fail early on invalid syntax)
     let hooks = evolve::parse_hooks(&cfg).map_err(AgentisError::General)?;
@@ -2222,6 +2235,13 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     };
 
     let end_gen = start_gen + generations - 1;
+
+    // Best-ever fitness components (for auto-lib-add)
+    let mut best_ever_cb_eff = 0.0f64;
+    let mut best_ever_val_rate = 0.0f64;
+    let mut best_ever_exp_rate = 0.0f64;
+    let mut best_ever_prompts = 0u32;
+    let mut best_ever_gen = 0u32;
 
     // Create PRNG for warm-start randomization
     let rng_seed = std::time::SystemTime::now()
@@ -2537,6 +2557,11 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             best_ever_score = gen_best;
             best_ever_source = best_variant.source.clone();
             best_ever_hash = best_variant.source_hash.clone();
+            best_ever_cb_eff = scored[0].1.cb_eff;
+            best_ever_val_rate = scored[0].1.val_rate;
+            best_ever_exp_rate = scored[0].1.exp_rate;
+            best_ever_prompts = scored[0].1.prompt_count as u32;
+            best_ever_gen = g as u32;
             stall_count = 0;
         } else {
             stall_count += 1;
@@ -2798,6 +2823,44 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             prev_terminated_count = terminated.len();
         }
 
+        // Periodic auto-add to library (--lib-add-interval N)
+        if !no_lib_add
+            && is_new_best
+            && best_ever_score >= min_auto_score
+            && lib_add_interval.is_some_and(|interval| g % interval == 0)
+        {
+            let lib_store = library::LibraryStore::new(&root);
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let lib_entry = library::LibraryEntry {
+                source: best_ever_source.clone(),
+                source_hash: best_ever_hash.clone(),
+                seed_hash: seed_hash.clone(),
+                generation: best_ever_gen,
+                evolution_run: prev_ckpt_hash.clone(),
+                fitness_score: best_ever_score,
+                cb_efficiency: best_ever_cb_eff,
+                validate_rate: best_ever_val_rate,
+                explore_rate: best_ever_exp_rate,
+                prompt_count: best_ever_prompts,
+                description: format!("auto-added at gen {} (interval)", g),
+                tags: vec!["auto-evolve".to_string()],
+                timestamp: ts,
+            };
+            if !lib_store.has_source(&best_ever_hash).unwrap_or(true) {
+                match lib_store.store(&lib_entry) {
+                    Ok(h) => eprintln!(
+                        "  Auto-added to library: {}... (score: {:.3})",
+                        &h[..12],
+                        best_ever_score
+                    ),
+                    Err(e) => eprintln!("  Warning: auto-lib-add failed: {}", e),
+                }
+            }
+        }
+
         // Early stop (after checkpoint so last gen is always saved)
         if stop_stall {
             eprintln!(
@@ -2846,6 +2909,40 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         let chain = evolve::trace_lineage(&lineage, &best_ever_hash, source_file);
         if chain.len() > 1 {
             eprintln!("  Lineage: {}", evolve::format_lineage(&chain));
+        }
+    }
+
+    // Auto-add best-ever to library at end of run
+    if !no_lib_add && best_ever_score >= min_auto_score {
+        let lib_store = library::LibraryStore::new(&root);
+        if !lib_store.has_source(&best_ever_hash).unwrap_or(true) {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let lib_entry = library::LibraryEntry {
+                source: best_ever_source.clone(),
+                source_hash: best_ever_hash.clone(),
+                seed_hash: seed_hash.clone(),
+                generation: best_ever_gen,
+                evolution_run: prev_ckpt_hash.clone(),
+                fitness_score: best_ever_score,
+                cb_efficiency: best_ever_cb_eff,
+                validate_rate: best_ever_val_rate,
+                explore_rate: best_ever_exp_rate,
+                prompt_count: best_ever_prompts,
+                description: format!("auto-added from evolve (gen {})", best_ever_gen),
+                tags: vec!["auto-evolve".to_string()],
+                timestamp: ts,
+            };
+            match lib_store.store(&lib_entry) {
+                Ok(h) => eprintln!(
+                    "  Added to library: {}... (score: {:.3})",
+                    &h[..12],
+                    best_ever_score
+                ),
+                Err(e) => eprintln!("  Warning: auto-lib-add failed: {}", e),
+            }
         }
     }
 
