@@ -1,0 +1,78 @@
+// Self-Improving Classifier — Phase 11 Demo
+//
+// Demonstrates introspection + memo for budget-aware, lineage-aware
+// self-improving behavior across evolution generations.
+//
+// Run:    agentis go examples/self-improving-classifier.ag
+// Evolve: agentis evolve examples/self-improving-classifier.ag -g 5 -n 4
+
+type Category {
+    label: string,
+    confidence: float
+}
+
+// Budget-aware, lineage-aware classifier agent
+agent classifier(text: string) -> Category {
+    cb 200;
+
+    // Read introspection data
+    let cb_left = introspect.cb_remaining;
+    let summary = introspect.lineage_summary;
+    let fail_count = summary.failure_count;
+    let total = summary.total_ancestors;
+    let avg_fitness = summary.avg_fitness;
+    let gen = introspect.generation;
+
+    // Recall memo from previous generations
+    let hints = recall_latest("classifier-strategy");
+
+    // Strategy 1: Low budget — zero-shot, no frills
+    if cb_left < 80 {
+        let result = prompt("Classify this text into a category. Be brief.", text) -> Category;
+        validate result { result.confidence > 0.5 };
+        memo_write("classifier-strategy", "gen=" + to_string(gen) + " low-budget path");
+        return result;
+    }
+
+    // Strategy 2: Catastrophic trajectory — >70% ancestors failed, start fresh
+    if total > 0 {
+        if fail_count * 10 > total * 7 {
+            let result = prompt("Ignore all previous approaches. Classify this text using the simplest possible method.", text) -> Category;
+            validate result { result.confidence > 0.5 };
+            memo_write("classifier-strategy", "gen=" + to_string(gen) + " reset path");
+            return result;
+        }
+    }
+
+    // Strategy 3: Strong lineage — try ambitious approach
+    if avg_fitness > 0.8 {
+        let result = prompt("Classify with detailed reasoning and sub-categories.", text) -> Category;
+        validate result { result.confidence > 0.6 };
+        memo_write("classifier-strategy", "gen=" + to_string(gen) + " ambitious path conf=" + to_string(result.confidence));
+        return result;
+    }
+
+    // Strategy 4: Default classification
+    let result = prompt("Classify this text into a category.", text) -> Category;
+
+    validate result {
+        result.confidence > 0.6
+    };
+
+    // Record what worked for future generations
+    memo_write("classifier-strategy",
+        "gen=" + to_string(gen) + " default path conf=" + to_string(result.confidence)
+    );
+
+    return result;
+}
+
+explore "positive-review" {
+    let r = classifier("This product is amazing, best purchase ever!");
+    validate r { r.label == "positive" };
+}
+
+explore "negative-review" {
+    let r = classifier("Terrible quality, broke after one day.");
+    validate r { r.label == "negative" };
+}
