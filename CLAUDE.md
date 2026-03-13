@@ -18,7 +18,7 @@ Agentis is an AI-native programming language fused with a Version Control System
 src/
   main.rs           # CLI (init, commit, run, branch, switch, compile, sync, serve, worker, log, go, mutate, arena, evolve, lineage, lib)
   arena.rs          # Arena runner (rank variants by fitness, table/JSON output)
-  evolve.rs         # Evolution loop (generational mutation→arena→select, lineage tracking, SimpleRng, warm-start)
+  evolve.rs         # Evolution loop (generational mutation→arena→select, lineage tracking, SimpleRng, warm-start, adaptive budget)
   fitness.rs        # Fitness scoring (FitnessReport, FitnessWeights, JSONL registry)
   mutation.rs       # Mutation engine (extract agents, mock/LLM mutations, source reconstruction)
   lexer.rs          # Tokenizer
@@ -59,7 +59,7 @@ Storage: AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (691)
+cargo test                     # Run all tests (701)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
@@ -119,6 +119,9 @@ cargo run -- evolve file.ag -g 10 -n 8 --seed-from-lib "email"  # Warm-start fro
 cargo run -- evolve file.ag -g 10 -n 8 --seed-from-lib "tag:v3" --seed-top-k 5
 cargo run -- evolve file.ag -g 10 -n 8 --seed-from-lib "email" --warm-start-prob 0.5
 cargo run -- evolve file.ag -g 20 -n 8 --seed-from-lib "email" --warm-start-prob 0.7 --warm-start-decay 0.1
+cargo run -- evolve seed.ag -g 20 -n 8 --adaptive-budget
+cargo run -- evolve seed.ag -g 20 -n 8 --adaptive-budget --max-lineage-fraction 0.6
+cargo run -- evolve seed.ag -g 20 -n 8 --adaptive-budget --lineage-stall-window 3
 cargo run -- lineage evolved/variant.ag     # Trace ancestry to seed
 cargo run -- lib add file.ag               # Add variant to library (auto-evaluate)
 cargo run -- lib add file.ag --tag "v1" --description "Email classifier"
@@ -191,3 +194,4 @@ cargo run -- lib tag <hash> <name>         # Tag an entry
 
 - **Persistent Population Library (M39):** Content-addressed library in `.agentis/library/`. `LibraryEntry` with source, provenance, fitness metrics, description, tags. Binary serialization (magic `AGlb`, version 1). `LibraryStore` with store/load, index, tags, search (substring + fuzzy Levenshtein ≤ 2), resolve, remove. CLI: `agentis lib add/list/show/search/remove/tags/tag`. LLM-generated descriptions (or `--description`/`--desc-from-file`/`--no-desc`). Auto-fitness evaluation on add.
 - **Smart Seeding & Warm-start (M40):** `--seed-from-lib <query>` loads library entries as warm-start seeds for evolution. `--seed-top-k N` limits to top N. `--warm-start-prob P` controls per-variant injection probability (default 0.3). `--warm-start-decay P` linearly decays probability. `SimpleRng` xorshift64 PRNG (no rand crate). Provenance tracking: "seed-file"/"population"/"library" per variant in JSONL lineage. Generation summary shows provenance breakdown when library entries are active.
+- **Per-lineage Budget Caps (M41):** `--adaptive-budget` enables dynamic per-lineage budget allocation. `LineageBudget` tracks fraction, CB, recent scores, stall count. `AdaptiveBudgetManager` with register/update/allocate_slots. Growing lineages (Δscore > 0.01 over window) get +50% allocation; stalled lineages reduced to 1/3; dead lineages (stall > 2×window) terminated. Slot allocation via floor + remainder distribution. `--max-lineage-fraction F` (default 0.5), `--lineage-stall-window N` (default 5). Generation summary shows budget allocation when multiple lineages active.

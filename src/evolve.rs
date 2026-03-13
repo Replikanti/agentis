@@ -469,6 +469,259 @@ pub fn count_provenance(variants: &[TrackedVariant]) -> (usize, usize, usize) {
     (seed_file, population, library)
 }
 
+// --- Adaptive Budget Manager (M41) ---
+
+/// Per-lineage budget tracking.
+#[derive(Debug, Clone)]
+pub struct LineageBudget {
+    pub seed_hash: String,
+    pub allocated_fraction: f64,
+    pub cumulative_cb: u64,
+    pub recent_scores: Vec<f64>,
+    pub stall_count: u32,
+    pub active: bool,
+}
+
+/// Configuration for adaptive budget allocation.
+pub struct AdaptiveBudgetConfig {
+    pub window_size: usize,
+    pub max_fraction: f64,
+    pub min_improvement: f64,
+}
+
+impl Default for AdaptiveBudgetConfig {
+    fn default() -> Self {
+        Self {
+            window_size: 5,
+            max_fraction: 0.5,
+            min_improvement: 0.01,
+        }
+    }
+}
+
+/// Manages per-lineage budget allocation across an evolution run.
+pub struct AdaptiveBudgetManager {
+    lineages: Vec<LineageBudget>,
+    window_size: usize,
+    max_fraction: f64,
+    min_improvement: f64,
+}
+
+impl AdaptiveBudgetManager {
+    pub fn new(config: AdaptiveBudgetConfig) -> Self {
+        Self {
+            lineages: Vec::new(),
+            window_size: config.window_size,
+            max_fraction: config.max_fraction,
+            min_improvement: config.min_improvement,
+        }
+    }
+
+    /// Register a new lineage (idempotent).
+    pub fn register_lineage(&mut self, seed_hash: &str) {
+        if self.lineages.iter().any(|l| l.seed_hash == seed_hash) {
+            return;
+        }
+        self.lineages.push(LineageBudget {
+            seed_hash: seed_hash.to_string(),
+            allocated_fraction: 1.0, // normalize will set equal shares
+            cumulative_cb: 0,
+            recent_scores: Vec::new(),
+            stall_count: 0,
+            active: true,
+        });
+        self.normalize();
+    }
+
+    /// Update a lineage after a generation with its best score and CB spent.
+    pub fn update(&mut self, seed_hash: &str, gen_best: f64, cb_spent: u64) {
+        let active_count = self.active_count();
+        let Some(lineage) = self.lineages.iter_mut().find(|l| l.seed_hash == seed_hash) else {
+            return;
+        };
+        if !lineage.active {
+            return;
+        }
+
+        lineage.cumulative_cb += cb_spent;
+        lineage.recent_scores.push(gen_best);
+        if lineage.recent_scores.len() > self.window_size {
+            lineage.recent_scores.remove(0);
+        }
+
+        // Only adjust allocation once the window is full
+        if lineage.recent_scores.len() >= self.window_size {
+            let first = lineage.recent_scores[0];
+            let last = *lineage.recent_scores.last().unwrap();
+            let delta = last - first;
+
+            if delta > self.min_improvement {
+                // Growing: increase by 50%, capped at max_fraction
+                lineage.allocated_fraction =
+                    (lineage.allocated_fraction * 1.5).min(self.max_fraction);
+                lineage.stall_count = 0;
+            } else {
+                // Stalled: reduce to 1/3
+                lineage.stall_count += 1;
+                lineage.allocated_fraction /= 3.0;
+            }
+        }
+
+        // Terminate dead lineage (stall > 2 * window_size), keep at least 1
+        let hard_cap = (self.window_size * 2) as u32;
+        if lineage.stall_count > hard_cap && active_count > 1 {
+            lineage.active = false;
+            lineage.allocated_fraction = 0.0;
+        }
+
+        self.normalize();
+    }
+
+    /// Normalize active lineage fractions to sum to 1.0.
+    fn normalize(&mut self) {
+        let total: f64 = self
+            .lineages
+            .iter()
+            .filter(|l| l.active)
+            .map(|l| l.allocated_fraction)
+            .sum();
+        let active_count = self.active_count();
+
+        if active_count == 0 {
+            return;
+        }
+
+        if total == 0.0 {
+            let equal = 1.0 / active_count as f64;
+            for l in self.lineages.iter_mut().filter(|l| l.active) {
+                l.allocated_fraction = equal;
+            }
+        } else {
+            for l in self.lineages.iter_mut().filter(|l| l.active) {
+                l.allocated_fraction /= total;
+            }
+        }
+    }
+
+    /// Allocate variant slots to lineages based on current fractions.
+    /// Uses floor + remainder distribution to highest-fraction lineages.
+    pub fn allocate_slots(&self, total_slots: usize) -> Vec<(String, usize)> {
+        let active: Vec<&LineageBudget> = self.lineages.iter().filter(|l| l.active).collect();
+        if active.is_empty() {
+            return vec![];
+        }
+
+        let mut result: Vec<(String, usize)> = active
+            .iter()
+            .map(|l| {
+                (
+                    l.seed_hash.clone(),
+                    (l.allocated_fraction * total_slots as f64).floor() as usize,
+                )
+            })
+            .collect();
+
+        let assigned: usize = result.iter().map(|(_, s)| s).sum();
+        let mut remaining = total_slots.saturating_sub(assigned);
+
+        // Distribute remainders by fractional part (descending)
+        let mut fracs: Vec<(usize, f64)> = active
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                (
+                    i,
+                    l.allocated_fraction * total_slots as f64 - result[i].1 as f64,
+                )
+            })
+            .collect();
+        fracs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        for (idx, _) in fracs {
+            if remaining == 0 {
+                break;
+            }
+            result[idx].1 += 1;
+            remaining -= 1;
+        }
+
+        result
+    }
+
+    #[allow(dead_code)]
+    pub fn is_active(&self, seed_hash: &str) -> bool {
+        self.lineages
+            .iter()
+            .any(|l| l.seed_hash == seed_hash && l.active)
+    }
+
+    pub fn active_count(&self) -> usize {
+        self.lineages.iter().filter(|l| l.active).count()
+    }
+
+    /// Format allocation report for generation summary.
+    pub fn format_report(&self, total_slots: usize) -> String {
+        let allocation = self.allocate_slots(total_slots);
+        allocation
+            .iter()
+            .map(|(hash, slots)| {
+                let prefix = &hash[..8.min(hash.len())];
+                format!("{prefix} {slots}/{total_slots}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Get lineage info for termination messages.
+    pub fn terminated_lineages(&self) -> Vec<&LineageBudget> {
+        self.lineages.iter().filter(|l| !l.active).collect()
+    }
+
+    /// Get the last score for a lineage (for termination messages).
+    pub fn last_score(&self, seed_hash: &str) -> Option<f64> {
+        self.lineages
+            .iter()
+            .find(|l| l.seed_hash == seed_hash)
+            .and_then(|l| l.recent_scores.last().copied())
+    }
+}
+
+/// Expand parents list according to adaptive budget slot allocation.
+/// Groups parents by lineage, then repeats each group's parents to fill allocated slots.
+pub fn expand_parents_by_allocation(
+    parents: &[(String, String)],
+    allocation: &[(String, usize)],
+    lineage_map: &HashMap<String, String>,
+    default_lineage: &str,
+) -> Vec<(String, String)> {
+    // Group parents by lineage
+    let mut by_lineage: HashMap<String, Vec<&(String, String)>> = HashMap::new();
+    for p in parents {
+        let lineage = lineage_map
+            .get(&p.1)
+            .map(|s| s.as_str())
+            .unwrap_or(default_lineage);
+        by_lineage.entry(lineage.to_string()).or_default().push(p);
+    }
+
+    let mut result = Vec::new();
+    for (lineage, slots) in allocation {
+        if let Some(lp) = by_lineage.get(lineage) {
+            for i in 0..*slots {
+                result.push(lp[i % lp.len()].clone());
+            }
+        }
+    }
+
+    // If allocation produced fewer than expected (some lineages had no parents),
+    // fill with any available parent
+    if result.is_empty() && !parents.is_empty() {
+        result.push(parents[0].clone());
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -835,5 +1088,186 @@ mod tests {
         assert!(content.contains("\"provenance\":\"library\""));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- Adaptive Budget Manager tests ---
+
+    #[test]
+    fn budget_single_lineage_gets_all_slots() {
+        let mut mgr = AdaptiveBudgetManager::new(AdaptiveBudgetConfig::default());
+        mgr.register_lineage("seed_a");
+        let alloc = mgr.allocate_slots(8);
+        assert_eq!(alloc.len(), 1);
+        assert_eq!(alloc[0].1, 8);
+    }
+
+    #[test]
+    fn budget_two_lineages_equal_initially() {
+        let mut mgr = AdaptiveBudgetManager::new(AdaptiveBudgetConfig::default());
+        mgr.register_lineage("seed_a");
+        mgr.register_lineage("seed_b");
+        let alloc = mgr.allocate_slots(8);
+        assert_eq!(alloc.len(), 2);
+        assert_eq!(alloc[0].1, 4);
+        assert_eq!(alloc[1].1, 4);
+    }
+
+    #[test]
+    fn budget_growing_lineage_gets_more() {
+        let mut mgr = AdaptiveBudgetManager::new(AdaptiveBudgetConfig {
+            window_size: 3,
+            max_fraction: 0.8,
+            min_improvement: 0.01,
+        });
+        mgr.register_lineage("grow");
+        mgr.register_lineage("stall");
+
+        // Feed growing scores to "grow", flat scores to "stall"
+        for i in 0..3 {
+            mgr.update("grow", 0.5 + (i as f64) * 0.1, 100);
+            mgr.update("stall", 0.5, 100);
+        }
+
+        let alloc = mgr.allocate_slots(8);
+        let grow_slots = alloc.iter().find(|(h, _)| h == "grow").unwrap().1;
+        let stall_slots = alloc.iter().find(|(h, _)| h == "stall").unwrap().1;
+        assert!(
+            grow_slots > stall_slots,
+            "growing lineage should get more slots: grow={grow_slots}, stall={stall_slots}"
+        );
+    }
+
+    #[test]
+    fn budget_stalled_lineage_reduced() {
+        let mut mgr = AdaptiveBudgetManager::new(AdaptiveBudgetConfig {
+            window_size: 3,
+            max_fraction: 0.8,
+            min_improvement: 0.01,
+        });
+        mgr.register_lineage("active");
+        mgr.register_lineage("stalled");
+
+        // Both stall, but keep active
+        for _ in 0..3 {
+            mgr.update("active", 0.5, 100);
+            mgr.update("stalled", 0.5, 100);
+        }
+
+        // Now one grows, the other stays stalled
+        for i in 0..3 {
+            mgr.update("active", 0.6 + (i as f64) * 0.05, 100);
+            mgr.update("stalled", 0.5, 100);
+        }
+
+        let alloc = mgr.allocate_slots(8);
+        let active_slots = alloc.iter().find(|(h, _)| h == "active").unwrap().1;
+        let stalled_slots = alloc.iter().find(|(h, _)| h == "stalled").unwrap().1;
+        assert!(
+            active_slots > stalled_slots,
+            "active={active_slots}, stalled={stalled_slots}"
+        );
+    }
+
+    #[test]
+    fn budget_termination() {
+        let mut mgr = AdaptiveBudgetManager::new(AdaptiveBudgetConfig {
+            window_size: 2,
+            max_fraction: 0.8,
+            min_improvement: 0.01,
+        });
+        mgr.register_lineage("survivor");
+        mgr.register_lineage("doomed");
+
+        // Hard cap = window_size * 2 = 4
+        // Survivor improves, doomed stays flat → doomed terminates
+        for i in 0..10 {
+            mgr.update("survivor", 0.5 + (i as f64) * 0.02, 100);
+            mgr.update("doomed", 0.3, 100);
+        }
+
+        assert!(mgr.is_active("survivor"));
+        assert!(!mgr.is_active("doomed"), "doomed should be terminated");
+
+        let alloc = mgr.allocate_slots(8);
+        assert_eq!(alloc.len(), 1);
+        assert_eq!(alloc[0].0, "survivor");
+        assert_eq!(alloc[0].1, 8);
+    }
+
+    #[test]
+    fn budget_last_lineage_not_terminated() {
+        let mut mgr = AdaptiveBudgetManager::new(AdaptiveBudgetConfig {
+            window_size: 2,
+            max_fraction: 0.8,
+            min_improvement: 0.01,
+        });
+        mgr.register_lineage("only");
+
+        for _ in 0..10 {
+            mgr.update("only", 0.5, 100);
+        }
+
+        assert!(mgr.is_active("only"), "last lineage must not be terminated");
+    }
+
+    #[test]
+    fn budget_slot_rounding() {
+        let mut mgr = AdaptiveBudgetManager::new(AdaptiveBudgetConfig::default());
+        mgr.register_lineage("a");
+        mgr.register_lineage("b");
+        mgr.register_lineage("c");
+
+        // 3 lineages, 10 slots: 3.33 each → 3+3+3 = 9, remainder 1 goes to highest frac
+        let alloc = mgr.allocate_slots(10);
+        let total: usize = alloc.iter().map(|(_, s)| s).sum();
+        assert_eq!(total, 10, "all slots must be allocated");
+    }
+
+    #[test]
+    fn budget_normalization() {
+        let mut mgr = AdaptiveBudgetManager::new(AdaptiveBudgetConfig::default());
+        mgr.register_lineage("x");
+        mgr.register_lineage("y");
+
+        let total: f64 = mgr
+            .lineages
+            .iter()
+            .filter(|l| l.active)
+            .map(|l| l.allocated_fraction)
+            .sum();
+        assert!((total - 1.0).abs() < 0.001, "fractions should sum to 1.0");
+    }
+
+    #[test]
+    fn budget_format_report() {
+        let mut mgr = AdaptiveBudgetManager::new(AdaptiveBudgetConfig::default());
+        mgr.register_lineage("abcdef1234567890");
+        mgr.register_lineage("12345678abcdef90");
+
+        let report = mgr.format_report(8);
+        assert!(report.contains("abcdef12 4/8"));
+        assert!(report.contains("12345678 4/8"));
+    }
+
+    #[test]
+    fn expand_parents_basic() {
+        let parents = vec![
+            ("src_a".to_string(), "hash_a".to_string()),
+            ("src_b".to_string(), "hash_b".to_string()),
+        ];
+        let mut lineage_map = HashMap::new();
+        lineage_map.insert("hash_a".to_string(), "lineage_1".to_string());
+        lineage_map.insert("hash_b".to_string(), "lineage_2".to_string());
+
+        let allocation = vec![("lineage_1".to_string(), 3), ("lineage_2".to_string(), 1)];
+
+        let expanded =
+            expand_parents_by_allocation(&parents, &allocation, &lineage_map, "lineage_1");
+        assert_eq!(expanded.len(), 4);
+        // First 3 from lineage_1, last 1 from lineage_2
+        assert_eq!(expanded[0].1, "hash_a");
+        assert_eq!(expanded[1].1, "hash_a");
+        assert_eq!(expanded[2].1, "hash_a");
+        assert_eq!(expanded[3].1, "hash_b");
     }
 }
