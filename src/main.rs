@@ -489,6 +489,7 @@ fn cmd_go(
     let audit_log = audit::AuditLog::open(&agentis_root());
 
     let max_agents = cfg.get_u64("max_concurrent_agents", 16) as u32;
+    let memo_dir = agentis_root().join("memo");
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
         .with_vcs(&store, &refs)
         .with_persistence(&store)
@@ -496,7 +497,8 @@ fn cmd_go(
         .with_llm(llm_backend.as_ref())
         .with_io(&io_ctx)
         .with_max_agents(max_agents)
-        .with_tracer(&tracer);
+        .with_tracer(&tracer)
+        .with_memo_dir(&memo_dir);
     if let Some(ref audit) = audit_log {
         evaluator = evaluator.with_audit(audit);
     }
@@ -3324,6 +3326,7 @@ fn run_arena_variant(
     let _ = store.save(&program).ok();
 
     // Create evaluator
+    let memo_dir = root.join("memo");
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
         .with_vcs(store, refs)
         .with_persistence(store)
@@ -3331,7 +3334,8 @@ fn run_arena_variant(
         .with_llm(llm_backend)
         .with_io(io_ctx)
         .with_max_agents(max_agents)
-        .with_tracer(tracer);
+        .with_tracer(tracer)
+        .with_memo_dir(&memo_dir);
     if let Some(audit) = audit_log {
         evaluator = evaluator.with_audit(audit);
     }
@@ -3447,13 +3451,15 @@ fn run_arena_variant_standalone(
     let refs = Refs::new(root);
     let _ = store.save(&program).ok();
 
+    let memo_dir = root.join("memo");
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
         .with_vcs(&store, &refs)
         .with_persistence(&store)
         .with_llm(llm_backend.as_ref())
         .with_io(&io_ctx)
         .with_max_agents(max_agents)
-        .with_tracer(&tracer);
+        .with_tracer(&tracer)
+        .with_memo_dir(&memo_dir);
     evaluator.grant_all();
     if grant_pii {
         evaluator.grant(capabilities::CapKind::PiiTransmit);
