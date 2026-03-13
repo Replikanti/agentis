@@ -491,6 +491,10 @@ fn cmd_go(
 
     let max_agents = cfg.get_u64("max_concurrent_agents", 16) as u32;
     let memo_dir = agentis_root().join("memo");
+    let memo_max = cfg
+        .get("memo.max_size")
+        .and_then(parse_size_bytes)
+        .unwrap_or(10 * 1024 * 1024);
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
         .with_vcs(&store, &refs)
         .with_persistence(&store)
@@ -499,7 +503,8 @@ fn cmd_go(
         .with_io(&io_ctx)
         .with_max_agents(max_agents)
         .with_tracer(&tracer)
-        .with_memo_dir(&memo_dir);
+        .with_memo_dir(&memo_dir)
+        .with_memo_max_size(memo_max);
     if let Some(ref audit) = audit_log {
         evaluator = evaluator.with_audit(audit);
     }
