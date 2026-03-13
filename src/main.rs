@@ -3689,10 +3689,23 @@ fn cmd_update(args: &[String]) -> Result<(), AgentisError> {
     let current_exe = std::env::current_exe()
         .map_err(|e| AgentisError::General(format!("cannot locate current executable: {e}")))?;
 
-    // Write to temp file next to the current exe, then rename (atomic)
-    let tmp_path = current_exe.with_extension("update-tmp");
-    std::fs::write(&tmp_path, &binary)
-        .map_err(|e| AgentisError::General(format!("failed to write temp file: {e}")))?;
+    // Write to temp file — try next to the binary first (same filesystem = atomic rename),
+    // fall back to system temp dir if the directory is not writable.
+    let tmp_beside = current_exe.with_extension("update-tmp");
+    let tmp_path = match std::fs::write(&tmp_beside, &binary) {
+        Ok(_) => tmp_beside,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            let tmp_fallback = std::env::temp_dir().join("agentis-update-tmp");
+            std::fs::write(&tmp_fallback, &binary)
+                .map_err(|e2| AgentisError::General(format!("failed to write temp file: {e2}")))?;
+            tmp_fallback
+        }
+        Err(e) => {
+            return Err(AgentisError::General(format!(
+                "failed to write temp file: {e}"
+            )));
+        }
+    };
 
     // Set executable permissions
     #[cfg(unix)]
@@ -3702,12 +3715,20 @@ fn cmd_update(args: &[String]) -> Result<(), AgentisError> {
             .map_err(|e| AgentisError::General(format!("failed to set permissions: {e}")))?;
     }
 
-    // Rename over the current binary
-    std::fs::rename(&tmp_path, &current_exe).map_err(|e| {
-        // Clean up temp file on failure
+    // Try atomic rename first; if it fails (cross-device or permission), try copy.
+    let replace_result: Result<(), std::io::Error> = std::fs::rename(&tmp_path, &current_exe)
+        .or_else(|_| {
+            std::fs::copy(&tmp_path, &current_exe).map(|_| ())?;
+            let _ = std::fs::remove_file(&tmp_path);
+            Ok(())
+        });
+
+    if let Err(e) = replace_result {
         let _ = std::fs::remove_file(&tmp_path);
-        AgentisError::General(format!("failed to replace binary (may need sudo): {e}"))
-    })?;
+        return Err(AgentisError::General(format!(
+            "failed to replace binary: {e}\nHint: try `sudo agentis update`"
+        )));
+    }
 
     println!("Updated v{current} -> v{latest}.");
     Ok(())
