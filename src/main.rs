@@ -222,6 +222,11 @@ fn main() {
         eprintln!("Error: {e}");
         process::exit(1);
     }
+
+    // Quiet background update check (at most once per day)
+    if !matches!(args[1].as_str(), "update" | "version") {
+        maybe_notify_update();
+    }
 }
 
 fn print_usage() {
@@ -3735,6 +3740,84 @@ fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     parse(a).cmp(&parse(b))
 }
 
+/// Silently check for updates (at most once per 24h). Print a hint if newer version exists.
+/// Never blocks for more than 3 seconds. Errors are swallowed — this must never break normal usage.
+fn maybe_notify_update() {
+    let cache_path = match std::env::var("HOME") {
+        Ok(home) => std::path::PathBuf::from(home).join(".agentis-update"),
+        Err(_) => return,
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Read cache: line 1 = timestamp, line 2 = latest version
+    let (cached_ts, cached_version) = read_update_cache(&cache_path);
+
+    // Only hit the network once per day
+    if now.saturating_sub(cached_ts) < 86400 {
+        if !cached_version.is_empty() {
+            show_update_hint(&cached_version);
+        }
+        return;
+    }
+
+    // Fetch latest version with a short timeout
+    let latest = match fetch_latest_version_quiet() {
+        Some(v) => v,
+        None => return,
+    };
+
+    // Update cache (best-effort)
+    let _ = std::fs::write(&cache_path, format!("{now}\n{latest}"));
+
+    show_update_hint(&latest);
+}
+
+fn show_update_hint(latest: &str) {
+    let current = env!("CARGO_PKG_VERSION");
+    if compare_versions(current, latest) == std::cmp::Ordering::Less {
+        eprintln!();
+        eprintln!(
+            "Update available: v{current} \u{2192} v{latest} \u{2014} run `agentis update` to install."
+        );
+    }
+}
+
+fn read_update_cache(path: &std::path::Path) -> (u64, String) {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return (0, String::new()),
+    };
+    let mut lines = content.lines();
+    let ts: u64 = lines.next().and_then(|l| l.parse().ok()).unwrap_or(0);
+    let version = lines.next().unwrap_or("").to_string();
+    (ts, version)
+}
+
+/// Fetch latest release version from GitHub with a 3-second timeout.
+/// Returns None on any error (no network, timeout, parse failure).
+fn fetch_latest_version_quiet() -> Option<String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(3)))
+        .build()
+        .into();
+
+    let mut response = agent
+        .get("https://api.github.com/repos/Replikanti/agentis/releases/latest")
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "agentis-self-update")
+        .call()
+        .ok()?;
+
+    let body = response.body_mut().read_to_string().ok()?;
+    let release = json::parse(&body).ok()?;
+    let tag = release.get("tag_name")?.as_str()?;
+    Some(tag.strip_prefix('v').unwrap_or(tag).to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3778,6 +3861,37 @@ mod tests {
             assert!(name.is_some());
             assert!(name.unwrap().starts_with("agentis-"));
         }
+    }
+
+    #[test]
+    fn update_cache_roundtrip() {
+        let dir = std::env::temp_dir().join("agentis-test-cache");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("update-cache-test");
+        std::fs::write(&path, "1700000000\n0.7.0").unwrap();
+        let (ts, ver) = read_update_cache(&path);
+        assert_eq!(ts, 1700000000);
+        assert_eq!(ver, "0.7.0");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn update_cache_missing_file() {
+        let path = std::path::Path::new("/tmp/agentis-nonexistent-cache-file");
+        let (ts, ver) = read_update_cache(path);
+        assert_eq!(ts, 0);
+        assert_eq!(ver, "");
+    }
+
+    #[test]
+    fn update_cache_corrupt() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("agentis-test-cache-corrupt");
+        std::fs::write(&path, "not-a-number\n").unwrap();
+        let (ts, ver) = read_update_cache(&path);
+        assert_eq!(ts, 0);
+        assert_eq!(ver, "");
+        let _ = std::fs::remove_file(&path);
     }
 }
 
