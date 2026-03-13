@@ -1828,13 +1828,12 @@ impl<'a> Evaluator<'a> {
                         _ => {}
                     }
                     // Static introspect fields (generation, lineage_id, etc.)
-                    return fields
-                        .get(&expr.field)
-                        .cloned()
-                        .ok_or_else(|| EvalError::UndefinedField {
+                    return fields.get(&expr.field).cloned().ok_or_else(|| {
+                        EvalError::UndefinedField {
                             type_name: type_name.clone(),
                             field: expr.field.clone(),
-                        });
+                        }
+                    });
                 }
                 // Non-introspect field access costs 1 CB
                 self.spend(1)?;
