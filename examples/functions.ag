@@ -1,0 +1,32 @@
+// functions.ag — Pure functions, if/else, recursion.
+// fn is for reusable logic. Agents are for LLM-powered tasks.
+
+// Pure function — shares caller's scope and budget
+fn factorial(n: int) -> int {
+    if n <= 1 {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}
+
+fn clamp(value: int, lo: int, hi: int) -> int {
+    if value < lo {
+        return lo;
+    }
+    if value > hi {
+        return hi;
+    }
+    return value;
+}
+
+fn greet(name: string) -> string {
+    return "Hello, " + name + "!";
+}
+
+let result = factorial(6);
+print("6! =", result);
+
+let clamped = clamp(42, 0, 10);
+print("clamp(42, 0, 10) =", clamped);
+
+print(greet("Agentis"));

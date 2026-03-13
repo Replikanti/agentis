@@ -1,0 +1,68 @@
+// test-suite.ag — Using validate and explore as tests.
+// Run with: agentis test examples/test-suite.ag
+// validate blocks = assertions. explore blocks = isolated test cases.
+// Exit code 0 = all pass, 1 = any fail.
+cb 500;
+
+fn abs(x: int) -> int {
+    if x < 0 {
+        return 0 - x;
+    }
+    return x;
+}
+
+fn max(a: int, b: int) -> int {
+    if a > b {
+        return a;
+    }
+    return b;
+}
+
+fn min(a: int, b: int) -> int {
+    if a < b {
+        return a;
+    }
+    return b;
+}
+
+// Each explore block runs in isolation.
+// If validate passes -> test passes (branch created).
+// If validate fails -> test fails (rolled back, no side effects).
+
+explore "test-abs-positive" {
+    let result = abs(42);
+    validate result { result == 42 };
+}
+
+explore "test-abs-negative" {
+    let result = abs(0 - 7);
+    validate result { result == 7 };
+}
+
+explore "test-abs-zero" {
+    let result = abs(0);
+    validate result { result == 0 };
+}
+
+explore "test-max" {
+    let result = max(3, 7);
+    validate result { result == 7 };
+}
+
+explore "test-min" {
+    let result = min(3, 7);
+    validate result { result == 3 };
+}
+
+explore "test-collections" {
+    let items = [10, 20, 30];
+    validate items {
+        len(items) == 3,
+        get(items, 0) == 10,
+        get(items, 2) == 30
+    };
+    let more = push(items, 40);
+    validate more { len(more) == 4 };
+}
+
+print("All tests defined. Run: agentis test examples/test-suite.ag");

@@ -44,10 +44,10 @@ forces you to rethink your data pipeline.
 
 ## Milestones
 
-- [ ] M15: Runtime Trace (see what agents are doing)
-- [ ] M16: One-Step Workflow + AST-Native Diagnostics
-- [ ] M17: Example Suite (demonstrate "everything is prompt")
-- [ ] M18: Documentation (language reference, philosophy, getting started)
+- [x] M15: Runtime Trace (see what agents are doing)
+- [x] M16: One-Step Workflow + AST-Native Diagnostics
+- [x] M17: Example Suite (demonstrate "everything is prompt")
+- [x] M18: Documentation (language reference, philosophy, getting started)
 
 ### M15: Runtime Trace
 
