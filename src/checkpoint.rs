@@ -728,7 +728,7 @@ pub fn parse_duration_ms(s: &str) -> Option<u64> {
 
 // --- Formatting ---
 
-/// Format a Unix-millis timestamp as "YYYY-MM-DD HH:MM".
+/// Format a Unix-millis timestamp as "YYYY-MM-DD HH:MM:SS".
 pub fn format_timestamp(ts_ms: u64) -> String {
     let secs = ts_ms / 1000;
     // Manual UTC calendar from Unix seconds (no chrono dependency).
@@ -736,6 +736,7 @@ pub fn format_timestamp(ts_ms: u64) -> String {
     let time_of_day = secs % 86400;
     let hours = time_of_day / 3600;
     let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
 
     // Days since 1970-01-01 → (year, month, day)
     // Civil calendar algorithm (Euclidean affine).
@@ -750,7 +751,7 @@ pub fn format_timestamp(ts_ms: u64) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
 
-    format!("{y:04}-{m:02}-{d:02} {hours:02}:{minutes:02}")
+    format!("{y:04}-{m:02}-{d:02} {hours:02}:{minutes:02}:{seconds:02}")
 }
 
 /// Format a history table from a checkpoint chain (newest first).
@@ -799,7 +800,12 @@ pub fn format_history(chain: &[(String, GenerationCheckpoint)]) -> String {
 }
 
 /// Format detailed trace of a single checkpoint.
-pub fn format_trace(hash: &str, ckpt: &GenerationCheckpoint) -> String {
+/// `parent_gen` is the generation number of the parent checkpoint (if known).
+pub fn format_trace(
+    hash: &str,
+    ckpt: &GenerationCheckpoint,
+    parent_gen: Option<u32>,
+) -> String {
     let mut out = String::new();
     out.push_str(&format!("Checkpoint: {hash}\n"));
     out.push_str(&format!("  Generation:     {}\n", ckpt.generation));
@@ -827,7 +833,16 @@ pub fn format_trace(hash: &str, ckpt: &GenerationCheckpoint) -> String {
         ckpt.parents.len()
     ));
     match &ckpt.parent {
-        Some(p) => out.push_str(&format!("  Previous:       {}...\n", &p[..12.min(p.len())])),
+        Some(p) => {
+            let gen_str = match parent_gen {
+                Some(g) => format!(" (gen {g})"),
+                None => String::new(),
+            };
+            out.push_str(&format!(
+                "  Previous:       {}...{gen_str}\n",
+                &p[..12.min(p.len())]
+            ));
+        }
         None => out.push_str("  Previous:       (none — first generation)\n"),
     }
     out
@@ -1455,20 +1470,20 @@ mod tests {
 
     #[test]
     fn format_timestamp_epoch() {
-        assert_eq!(format_timestamp(0), "1970-01-01 00:00");
+        assert_eq!(format_timestamp(0), "1970-01-01 00:00:00");
     }
 
     #[test]
     fn format_timestamp_known_date() {
         // 2026-03-12 23:14:02 UTC = 1773357242 seconds
         let ts = 1773357242000;
-        assert_eq!(format_timestamp(ts), "2026-03-12 23:14");
+        assert_eq!(format_timestamp(ts), "2026-03-12 23:14:02");
     }
 
     #[test]
     fn format_timestamp_2000() {
         // 2000-01-01 00:00:00 UTC = 946684800 seconds
-        assert_eq!(format_timestamp(946684800000), "2000-01-01 00:00");
+        assert_eq!(format_timestamp(946684800000), "2000-01-01 00:00:00");
     }
 
     #[test]
@@ -1564,7 +1579,7 @@ mod tests {
             tag: Some("exp-a".to_string()),
         };
 
-        let out = format_trace("fullhash1234567890", &ckpt);
+        let out = format_trace("fullhash1234567890", &ckpt, Some(4));
         assert!(out.contains("Checkpoint: fullhash1234567890"));
         assert!(out.contains("Generation:     5"));
         assert!(out.contains("Tag:            exp-a"));
@@ -1573,13 +1588,13 @@ mod tests {
         assert!(out.contains("Stall count:    1"));
         assert!(out.contains("Cumulative CB:  25000"));
         assert!(out.contains("Parents:        2 survivors"));
-        assert!(out.contains("Previous:       aabbccdd1122"));
+        assert!(out.contains("Previous:       aabbccdd1122... (gen 4)"));
     }
 
     #[test]
     fn format_trace_no_parent() {
         let ckpt = make_checkpoint(1, None, None);
-        let out = format_trace("somehash", &ckpt);
+        let out = format_trace("somehash", &ckpt, None);
         assert!(out.contains("Previous:       (none"));
     }
 

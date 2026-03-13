@@ -115,7 +115,7 @@ Header:
 
 Chain:
   [u32 generation]
-  [u8 has_parent][32 bytes parent_hash if has_parent]
+  [u8 has_parent][u32 parent_hash_len][parent_hash bytes if has_parent]
   [u32 seed_hash_len][seed_hash]
 
 Evolution state:
@@ -336,7 +336,7 @@ Checkpoint: ab3f1234567890...
   Generation:     10
   Tag:            experiment-a
   Date:           2026-03-12 23:14:02
-  Seed:           8a7b... (classify.ag)
+  Seed:           8a7b...
   Best score:     0.935 (ever: 0.935)
   Avg score:      0.812
   Avg prompts:    2.4
@@ -410,7 +410,6 @@ tag what you want to keep.
 |------|--------|
 | `src/checkpoint.rs` | **New.** CheckpointStore, GenerationCheckpoint, ParentEntry, binary encode/decode, HEAD/tag management, history walking, GC |
 | `src/main.rs` | `evolve` command: `--resume`, `--checkpoint-interval`, `--tag` flags. `colony` subcommands: `history`, `trace`, `best`, `tags`, `tag`, `gc`. Help text |
-| `src/evolve.rs` | Minor: extract checkpoint-building helper from generation state |
 | `CLAUDE.md` | Phase 9 docs |
 | `docs/phase9-plan.md` | This document |
 
