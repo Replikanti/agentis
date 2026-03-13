@@ -1024,6 +1024,8 @@ fn cmd_lib(args: &[String]) -> Result<(), AgentisError> {
         eprintln!("  remove <hash-or-tag>                                    Remove entry");
         eprintln!("  tags                                                    List all tags");
         eprintln!("  tag <hash> <name>                                       Tag an entry");
+        eprintln!("  export --out <file.alib> [--tag T] [--top N] [--all]    Export bundle");
+        eprintln!("  import <file.alib> [--skip-duplicates]                  Import bundle");
         process::exit(1);
     }
 
@@ -1253,9 +1255,99 @@ fn cmd_lib(args: &[String]) -> Result<(), AgentisError> {
             eprintln!("Tagged {}... as '{}'", &hash[..12], args[2]);
             Ok(())
         }
+        "export" => {
+            let out_path = parse_flag_value(args, "--out");
+            let tag_filter = parse_flag_value(args, "--tag");
+            let top_n: Option<usize> = parse_flag_value(args, "--top").and_then(|s| s.parse().ok());
+            let export_all = args.iter().any(|a| a == "--all");
+
+            let out_file = match out_path {
+                Some(p) => p,
+                None => {
+                    eprintln!(
+                        "Usage: agentis lib export --out <file.alib> [--tag T] [--top N] [--all]"
+                    );
+                    process::exit(1);
+                }
+            };
+
+            let lib = library::LibraryStore::new(&root);
+            let all_hashes = lib
+                .list()
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+
+            // Select entries
+            let mut selected: Vec<(String, library::LibraryEntry)> = Vec::new();
+            for hash in &all_hashes {
+                if let Ok(entry) = lib.load(hash) {
+                    if let Some(ref tag) = tag_filter
+                        && !entry.tags.iter().any(|t| t == tag)
+                    {
+                        continue;
+                    }
+                    selected.push((hash.clone(), entry));
+                }
+            }
+
+            // Sort by fitness score descending for --top
+            selected.sort_by(|a, b| {
+                b.1.fitness_score
+                    .partial_cmp(&a.1.fitness_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            if let Some(n) = top_n {
+                selected.truncate(n);
+            }
+
+            if selected.is_empty() && !export_all {
+                eprintln!("No matching entries to export.");
+                process::exit(1);
+            }
+
+            let hashes: Vec<String> = if export_all && selected.is_empty() {
+                // --all with no filter: export everything
+                all_hashes
+            } else {
+                selected.iter().map(|(h, _)| h.clone()).collect()
+            };
+
+            if hashes.is_empty() {
+                eprintln!("No entries to export.");
+                process::exit(1);
+            }
+
+            let count = lib
+                .export_bundle(&hashes, std::path::Path::new(&out_file))
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+            eprintln!("Exported {} entries to {}", count, out_file);
+            Ok(())
+        }
+        "import" => {
+            if args.len() < 2 || args[1].starts_with('-') {
+                eprintln!("Usage: agentis lib import <file.alib> [--skip-duplicates]");
+                process::exit(1);
+            }
+            let bundle_path = &args[1];
+            let skip_dups = args.iter().any(|a| a == "--skip-duplicates");
+
+            let lib = library::LibraryStore::new(&root);
+            lib.init()
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+
+            let (imported, skipped) = lib
+                .import_bundle(std::path::Path::new(bundle_path), skip_dups)
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+
+            eprintln!("Imported: {}", imported);
+            if skipped > 0 {
+                eprintln!("Skipped (duplicates): {}", skipped);
+            }
+            Ok(())
+        }
         other => {
             eprintln!("Unknown lib subcommand: {other}");
-            eprintln!("  Available: add, list, show, search, remove, tags, tag");
+            eprintln!("  Available: add, list, show, search, remove, tags, tag, export, import");
             process::exit(1);
         }
     }

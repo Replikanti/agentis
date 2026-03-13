@@ -35,7 +35,7 @@ src/
   capabilities.rs   # Capability-Based Security (OCap) — unforgeable handles + PiiTransmit
   snapshot.rs       # Orthogonal Persistence — memory snapshots at transaction boundaries
   checkpoint.rs     # Evolution Checkpoints (CheckpointStore, GenerationCheckpoint, binary serde)
-  library.rs        # Persistent Population Library (LibraryStore, LibraryEntry, search, tags)
+  library.rs        # Persistent Population Library (LibraryStore, LibraryEntry, search, tags, export/import bundles)
   colony.rs         # Distributed Colony (ThreadPool, worker node, protocol encode/decode)
   network.rs        # Raw TCP P2P sync (binary HAVE/WANT/DATA/DONE + colony EVAL/RESULT/PING/PONG/AUTH)
   refs.rs           # Branch/reference management (genesis-first)
@@ -59,7 +59,7 @@ Storage: AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (713)
+cargo test                     # Run all tests (720)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
@@ -133,6 +133,11 @@ cargo run -- lib search "email"            # Search by description/tag (fuzzy)
 cargo run -- lib remove <hash-or-tag>      # Remove entry
 cargo run -- lib tags                      # List all tags
 cargo run -- lib tag <hash> <name>         # Tag an entry
+cargo run -- lib export --out bundle.alib --all           # Export all entries
+cargo run -- lib export --out best.alib --top 5           # Export top 5
+cargo run -- lib export --out tagged.alib --tag email-v3  # Export by tag
+cargo run -- lib import bundle.alib                       # Import bundle
+cargo run -- lib import bundle.alib --skip-duplicates     # Skip existing
 ```
 
 ## Phase 2 Features
@@ -196,3 +201,4 @@ cargo run -- lib tag <hash> <name>         # Tag an entry
 - **Smart Seeding & Warm-start (M40):** `--seed-from-lib <query>` loads library entries as warm-start seeds for evolution. `--seed-top-k N` limits to top N. `--warm-start-prob P` controls per-variant injection probability (default 0.3). `--warm-start-decay P` linearly decays probability. `SimpleRng` xorshift64 PRNG (no rand crate). Provenance tracking: "seed-file"/"population"/"library" per variant in JSONL lineage. Generation summary shows provenance breakdown when library entries are active.
 - **Per-lineage Budget Caps (M41):** `--adaptive-budget` enables dynamic per-lineage budget allocation. `LineageBudget` tracks fraction, CB, recent scores, stall count. `AdaptiveBudgetManager` with register/update/allocate_slots. Growing lineages (Δscore > 0.01 over window) get +50% allocation; stalled lineages reduced to 1/3; dead lineages (stall > 2×window) terminated. Slot allocation via floor + remainder distribution. `--max-lineage-fraction F` (default 0.5), `--lineage-stall-window N` (default 5). Generation summary shows budget allocation when multiple lineages active.
 - **Event Hooks (M42):** Config-driven reactions to evolution events. 4 event types: `on_stagnation`, `on_new_best`, `on_validation_fail`, `on_crash`. 7 action types: `checkpoint`, `tag=<name>`, `lib_add`, `log <msg>`, `reduce_budget <frac>`, `inject_library <count>`, `skip`. Config syntax: `hooks.on_stagnation = reduce_budget 0.3`. Invalid hook syntax reported at startup before evolution begins. Only predefined action vocabulary — no arbitrary shell commands.
+- **Portable Library Export/Import (M43):** `agentis lib export --out bundle.alib` exports library entries as portable `.alib` bundles. Selection by `--tag T`, `--top N`, or `--all`. Bundle format: magic `ALIb`, version 1, u32 entry_count, length-prefixed serialized entries. `agentis lib import bundle.alib` imports entries with optional `--skip-duplicates` (checks source_hash). Graceful handling of truncated/corrupt bundles (imports as many entries as possible before stopping).
