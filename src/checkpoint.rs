@@ -801,11 +801,7 @@ pub fn format_history(chain: &[(String, GenerationCheckpoint)]) -> String {
 
 /// Format detailed trace of a single checkpoint.
 /// `parent_gen` is the generation number of the parent checkpoint (if known).
-pub fn format_trace(
-    hash: &str,
-    ckpt: &GenerationCheckpoint,
-    parent_gen: Option<u32>,
-) -> String {
+pub fn format_trace(hash: &str, ckpt: &GenerationCheckpoint, parent_gen: Option<u32>) -> String {
     let mut out = String::new();
     out.push_str(&format!("Checkpoint: {hash}\n"));
     out.push_str(&format!("  Generation:     {}\n", ckpt.generation));
