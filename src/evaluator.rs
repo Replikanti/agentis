@@ -387,6 +387,60 @@ pub enum TestKind {
     Validate,
 }
 
+/// Calculate total size of memo store excluding a specific key file.
+fn memo_store_size_except(memo_dir: &std::path::Path, exclude_key: &str) -> u64 {
+    let exclude_name = format!("{exclude_key}.jsonl");
+    std::fs::read_dir(memo_dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    name.ends_with(".jsonl") && !name.starts_with('.') && name != exclude_name
+                })
+                .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// Calculate total size of memo store.
+pub fn memo_store_total_size(memo_dir: &std::path::Path) -> u64 {
+    std::fs::read_dir(memo_dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    name.ends_with(".jsonl") && !name.starts_with('.')
+                })
+                .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// List memo keys with entry counts and sizes.
+pub fn memo_list_keys(memo_dir: &std::path::Path) -> Vec<(String, usize, u64)> {
+    let mut result = Vec::new();
+    let entries = match std::fs::read_dir(memo_dir) {
+        Ok(e) => e,
+        Err(_) => return result,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".jsonl") || name.starts_with('.') {
+            continue;
+        }
+        let key = name.strip_suffix(".jsonl").unwrap_or(&name).to_string();
+        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        let line_count = std::fs::read_to_string(entry.path())
+            .map(|c| c.lines().filter(|l| !l.trim().is_empty()).count())
+            .unwrap_or(0);
+        result.push((key, line_count, size));
+    }
+    result.sort_by(|a, b| a.0.cmp(&b.0));
+    result
+}
+
 pub struct Evaluator<'a> {
     env: Environment,
     functions: HashMap<String, Callable>,
@@ -417,6 +471,8 @@ pub struct Evaluator<'a> {
     memo_dir: Option<std::path::PathBuf>,
     /// Per-generation write limit tracking: (key, generation) → count.
     memo_write_counts: HashMap<(String, i64), usize>,
+    /// Max total memo store size in bytes (default 10 MB).
+    memo_max_size: u64,
     // Fitness counters (always tracked, regardless of test mode)
     prompt_count: usize,
     validates_passed: usize,
@@ -452,6 +508,7 @@ impl<'a> Evaluator<'a> {
             introspect: IntrospectContext::default(),
             memo_dir: None,
             memo_write_counts: HashMap::new(),
+            memo_max_size: 10 * 1024 * 1024, // 10 MB default
             prompt_count: 0,
             validates_passed: 0,
             validates_total: 0,
@@ -522,6 +579,12 @@ impl<'a> Evaluator<'a> {
     /// Set the memo store directory (`.agentis/memo/`).
     pub fn with_memo_dir(mut self, dir: &std::path::Path) -> Self {
         self.memo_dir = Some(dir.to_path_buf());
+        self
+    }
+
+    /// Set the max total memo store size in bytes.
+    pub fn with_memo_max_size(mut self, bytes: u64) -> Self {
+        self.memo_max_size = bytes;
         self
     }
 
@@ -1317,6 +1380,28 @@ impl<'a> Evaluator<'a> {
                     value_str.truncate(10240);
                     value_str.push_str("[truncated]");
                 }
+                // Check max 50 keys limit
+                std::fs::create_dir_all(&memo_dir)
+                    .map_err(|e| EvalError::General(format!("memo: create dir: {e}")))?;
+                let memo_file = memo_dir.join(format!("{key}.jsonl"));
+                if !memo_file.exists() {
+                    // Count existing keys
+                    let key_count = std::fs::read_dir(&memo_dir)
+                        .map(|rd| {
+                            rd.filter_map(|e| e.ok())
+                                .filter(|e| {
+                                    e.path().extension().is_some_and(|ext| ext == "jsonl")
+                                        && !e.file_name().to_string_lossy().starts_with('.')
+                                })
+                                .count()
+                        })
+                        .unwrap_or(0);
+                    if key_count >= 50 {
+                        return Err(EvalError::General(format!(
+                            "memo: max 50 keys exceeded ({key_count} keys exist)"
+                        )));
+                    }
+                }
                 // Write entry as JSONL
                 let ts = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -1327,15 +1412,35 @@ impl<'a> Evaluator<'a> {
                     ("value", crate::json::JsonValue::String(value_str)),
                     ("timestamp", crate::json::JsonValue::Int(ts as i64)),
                 ]);
-                // Atomic write: append via tmp + rename pattern
-                std::fs::create_dir_all(&memo_dir)
-                    .map_err(|e| EvalError::General(format!("memo: create dir: {e}")))?;
-                let memo_file = memo_dir.join(format!("{key}.jsonl"));
-                let tmp_file = memo_dir.join(format!(".{key}.tmp"));
-                // Read existing content, append, write to tmp, rename
+                // Read existing, append, enforce limits
                 let existing = std::fs::read_to_string(&memo_file).unwrap_or_default();
-                let new_content = format!("{existing}{entry}\n");
-                std::fs::write(&tmp_file, &new_content)
+                let mut lines: Vec<&str> =
+                    existing.lines().filter(|l| !l.trim().is_empty()).collect();
+                // Max 100 entries per key — evict oldest (FIFO: drop from front)
+                while lines.len() >= 100 {
+                    lines.remove(0);
+                }
+                let entry_str = format!("{entry}");
+                lines.push(&entry_str);
+                let new_content = lines.join("\n") + "\n";
+                // Total size check — evict oldest entries from this key
+                let max_size = self.memo_max_size;
+                let other_size = memo_store_size_except(&memo_dir, &key);
+                let mut content_bytes = new_content.len() as u64;
+                let mut eviction_lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+                while content_bytes + other_size > max_size && eviction_lines.len() > 1 {
+                    eviction_lines.remove(0);
+                    let evicted = eviction_lines.join("\n") + "\n";
+                    content_bytes = evicted.len() as u64;
+                }
+                let final_content = if eviction_lines.len() < lines.len() {
+                    eviction_lines.join("\n") + "\n"
+                } else {
+                    new_content
+                };
+                // Atomic write: tmp + rename
+                let tmp_file = memo_dir.join(format!(".{key}.tmp"));
+                std::fs::write(&tmp_file, &final_content)
                     .map_err(|e| EvalError::General(format!("memo: write tmp: {e}")))?;
                 std::fs::rename(&tmp_file, &memo_file)
                     .map_err(|e| EvalError::General(format!("memo: rename: {e}")))?;
@@ -4604,5 +4709,137 @@ mod tests {
         evaluator.grant_all();
         evaluator.eval_program(&program).unwrap();
         assert_eq!(evaluator.output(), &["third second first"]);
+    }
+
+    // --- M47: Memo GC tests ---
+
+    #[test]
+    fn memo_gc_max_100_entries_per_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let memo_dir = dir.path().join("memo");
+        std::fs::create_dir_all(&memo_dir).unwrap();
+        // Pre-populate 99 entries directly (bypassing per-gen write limit)
+        let memo_file = memo_dir.join("gc-key.jsonl");
+        let mut content = String::new();
+        for i in 0..99 {
+            content.push_str(&format!(
+                "{{\"generation\":0,\"value\":\"old-entry-{i}\",\"timestamp\":1000}}\n"
+            ));
+        }
+        std::fs::write(&memo_file, &content).unwrap();
+        // Now write 2 more via memo_write — should cap at 100 (oldest evicted)
+        let src = r#"
+            memo_write("gc-key", "new-entry-1");
+            memo_write("gc-key", "new-entry-2");
+            let vals = recall("gc-key");
+            print(len(vals));
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let mut evaluator = Evaluator::new(10000).with_memo_dir(&memo_dir);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+        assert_eq!(evaluator.output(), &["100"]);
+    }
+
+    #[test]
+    fn memo_gc_max_50_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let memo_dir = dir.path().join("memo");
+        // Write 50 keys — should succeed
+        let mut lines = String::new();
+        for i in 0..50 {
+            lines.push_str(&format!("memo_write(\"key-{i}\", \"val\");\n"));
+        }
+        // 51st key should fail
+        lines.push_str("memo_write(\"key-50\", \"val\");\n");
+        let program = Parser::parse_source(&lines).unwrap();
+        let mut evaluator = Evaluator::new(1000000).with_memo_dir(&memo_dir);
+        evaluator.grant_all();
+        let result = evaluator.eval_program(&program);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("max 50 keys"), "error: {err}");
+    }
+
+    #[test]
+    fn memo_gc_total_size_eviction() {
+        let dir = tempfile::tempdir().unwrap();
+        let memo_dir = dir.path().join("memo");
+        // Set very small max size (1 KB) to trigger eviction
+        let src = r#"
+            memo_write("size-test", "aaaaaaaaaa");
+            memo_write("size-test", "bbbbbbbbbb");
+            memo_write("size-test", "cccccccccc");
+            memo_write("size-test", "dddddddddd");
+            memo_write("size-test", "eeeeeeeeee");
+            let vals = recall("size-test");
+            print(len(vals));
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let mut evaluator = Evaluator::new(10000)
+            .with_memo_dir(&memo_dir)
+            .with_memo_max_size(200); // very small — will evict old entries
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+        let out = evaluator.output();
+        let count: usize = out[0].parse().unwrap();
+        // With 200 byte limit, some entries should have been evicted
+        assert!(count < 5, "expected eviction, got {count} entries");
+        assert!(count >= 1, "should keep at least 1 entry");
+    }
+
+    #[test]
+    fn memo_config_max_size_respected() {
+        let dir = tempfile::tempdir().unwrap();
+        let memo_dir = dir.path().join("memo");
+        // Default 10MB should not evict small entries
+        let src = r#"
+            memo_write("config-test", "small");
+            let vals = recall("config-test");
+            print(len(vals));
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let mut evaluator = Evaluator::new(10000).with_memo_dir(&memo_dir);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+        assert_eq!(evaluator.output(), &["1"]);
+    }
+
+    #[test]
+    fn memo_list_keys_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let memo_dir = dir.path().join("memo");
+        let src = r#"
+            memo_write("alpha", "one");
+            memo_write("alpha", "two");
+            memo_write("beta", "three");
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let mut evaluator = Evaluator::new(10000).with_memo_dir(&memo_dir);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+
+        let keys = memo_list_keys(&memo_dir);
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].0, "alpha");
+        assert_eq!(keys[0].1, 2); // 2 entries
+        assert_eq!(keys[1].0, "beta");
+        assert_eq!(keys[1].1, 1); // 1 entry
+    }
+
+    #[test]
+    fn memo_store_total_size_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let memo_dir = dir.path().join("memo");
+        let src = r#"
+            memo_write("sz", "hello");
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let mut evaluator = Evaluator::new(10000).with_memo_dir(&memo_dir);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+
+        let total = memo_store_total_size(&memo_dir);
+        assert!(total > 0, "total size should be > 0");
     }
 }
