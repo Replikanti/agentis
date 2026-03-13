@@ -194,6 +194,7 @@ fn main() {
         }
         "worker" => cmd_worker(&args[2..]),
         "colony" => cmd_colony(&args[2..]),
+        "memo" => cmd_memo(&args[2..]),
         "lib" => cmd_lib(&args[2..]),
         "lineage" => {
             if args.len() < 3 {
@@ -490,6 +491,10 @@ fn cmd_go(
 
     let max_agents = cfg.get_u64("max_concurrent_agents", 16) as u32;
     let memo_dir = agentis_root().join("memo");
+    let memo_max = cfg
+        .get("memo.max_size")
+        .and_then(parse_size_bytes)
+        .unwrap_or(10 * 1024 * 1024);
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
         .with_vcs(&store, &refs)
         .with_persistence(&store)
@@ -498,7 +503,8 @@ fn cmd_go(
         .with_io(&io_ctx)
         .with_max_agents(max_agents)
         .with_tracer(&tracer)
-        .with_memo_dir(&memo_dir);
+        .with_memo_dir(&memo_dir)
+        .with_memo_max_size(memo_max);
     if let Some(ref audit) = audit_log {
         evaluator = evaluator.with_audit(audit);
     }
@@ -792,6 +798,112 @@ fn cmd_worker(args: &[String]) -> Result<(), AgentisError> {
     };
 
     colony::run_worker(config).map_err(|e| AgentisError::General(format!("{e}")))
+}
+
+fn cmd_memo(args: &[String]) -> Result<(), AgentisError> {
+    let root = agentis_root();
+    let memo_dir = root.join("memo");
+    let subcmd = args.first().map(|s| s.as_str()).unwrap_or("list");
+    match subcmd {
+        "list" => {
+            let keys = evaluator::memo_list_keys(&memo_dir);
+            if keys.is_empty() {
+                println!("No memo keys found.");
+                return Ok(());
+            }
+            println!("{:<30} {:>8} {:>10}", "KEY", "ENTRIES", "SIZE");
+            println!("{}", "-".repeat(50));
+            for (key, count, size) in &keys {
+                println!("{:<30} {:>8} {:>10}", key, count, format_bytes(*size));
+            }
+            println!(
+                "\n{} keys, {} total",
+                keys.len(),
+                format_bytes(evaluator::memo_store_total_size(&memo_dir))
+            );
+        }
+        "stats" => {
+            let keys = evaluator::memo_list_keys(&memo_dir);
+            let total_size = evaluator::memo_store_total_size(&memo_dir);
+            let total_entries: usize = keys.iter().map(|(_, c, _)| c).sum();
+            println!("Memo store: {}", memo_dir.display());
+            println!("  Keys:         {}", keys.len());
+            println!("  Entries:      {total_entries}");
+            println!("  Total size:   {}", format_bytes(total_size));
+            if !keys.is_empty() {
+                // Show top 5 largest keys
+                let mut by_size = keys.clone();
+                by_size.sort_by(|a, b| b.2.cmp(&a.2));
+                println!("\n  Largest keys:");
+                for (key, count, size) in by_size.iter().take(5) {
+                    println!("    {:<30} {} entries, {}", key, count, format_bytes(*size));
+                }
+            }
+        }
+        "clear" => {
+            if args.len() > 1 {
+                // Clear specific key
+                let key = &args[1];
+                let memo_file = memo_dir.join(format!("{key}.jsonl"));
+                if memo_file.exists() {
+                    std::fs::remove_file(&memo_file)?;
+                    println!("Cleared memo key: {key}");
+                } else {
+                    eprintln!("Memo key not found: {key}");
+                }
+            } else {
+                // Clear all
+                if memo_dir.exists() {
+                    let keys = evaluator::memo_list_keys(&memo_dir);
+                    let count = keys.len();
+                    for (key, _, _) in &keys {
+                        let path = memo_dir.join(format!("{key}.jsonl"));
+                        let _ = std::fs::remove_file(path);
+                    }
+                    println!("Cleared {count} memo keys.");
+                } else {
+                    println!("No memo store found.");
+                }
+            }
+        }
+        _ => {
+            eprintln!("Usage: agentis memo <list|stats|clear [key]>");
+            process::exit(1);
+        }
+    }
+    Ok(())
+}
+
+/// Parse a human-readable size string like "10MB", "1GB", "512KB" into bytes.
+fn parse_size_bytes(s: &str) -> Option<u64> {
+    let s = s.trim().to_uppercase();
+    if let Some(rest) = s.strip_suffix("GB") {
+        rest.trim()
+            .parse::<f64>()
+            .ok()
+            .map(|v| (v * 1024.0 * 1024.0 * 1024.0) as u64)
+    } else if let Some(rest) = s.strip_suffix("MB") {
+        rest.trim()
+            .parse::<f64>()
+            .ok()
+            .map(|v| (v * 1024.0 * 1024.0) as u64)
+    } else if let Some(rest) = s.strip_suffix("KB") {
+        rest.trim().parse::<f64>().ok().map(|v| (v * 1024.0) as u64)
+    } else if let Some(rest) = s.strip_suffix('B') {
+        rest.trim().parse::<u64>().ok()
+    } else {
+        s.parse::<u64>().ok()
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 fn cmd_colony(args: &[String]) -> Result<(), AgentisError> {
@@ -2042,6 +2154,8 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     let no_lib_add = args.iter().any(|a| a == "--no-lib-add");
     let lib_add_interval: Option<usize> =
         parse_flag_value(args, "--lib-add-interval").and_then(|s| s.parse().ok());
+    let _memo_max_size: Option<u64> =
+        parse_flag_value(args, "--memo-max-size").and_then(|s| parse_size_bytes(&s));
 
     // Read seed source
     let seed_source = std::fs::read_to_string(source_file)?;
@@ -3301,7 +3415,7 @@ fn run_arena_variant(
     store: &ObjectStore,
     refs: &Refs,
     root: &std::path::Path,
-    _cfg: &config::Config,
+    cfg: &config::Config,
     llm_backend: &dyn llm::LlmBackend,
     io_ctx: &io::IoContext,
     tracer: &trace::Tracer,
@@ -3327,6 +3441,10 @@ fn run_arena_variant(
 
     // Create evaluator
     let memo_dir = root.join("memo");
+    let memo_max = cfg
+        .get("memo.max_size")
+        .and_then(parse_size_bytes)
+        .unwrap_or(10 * 1024 * 1024);
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
         .with_vcs(store, refs)
         .with_persistence(store)
@@ -3335,7 +3453,8 @@ fn run_arena_variant(
         .with_io(io_ctx)
         .with_max_agents(max_agents)
         .with_tracer(tracer)
-        .with_memo_dir(&memo_dir);
+        .with_memo_dir(&memo_dir)
+        .with_memo_max_size(memo_max);
     if let Some(audit) = audit_log {
         evaluator = evaluator.with_audit(audit);
     }
@@ -3452,6 +3571,10 @@ fn run_arena_variant_standalone(
     let _ = store.save(&program).ok();
 
     let memo_dir = root.join("memo");
+    let memo_max = cfg
+        .get("memo.max_size")
+        .and_then(parse_size_bytes)
+        .unwrap_or(10 * 1024 * 1024);
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
         .with_vcs(&store, &refs)
         .with_persistence(&store)
@@ -3459,7 +3582,8 @@ fn run_arena_variant_standalone(
         .with_io(&io_ctx)
         .with_max_agents(max_agents)
         .with_tracer(&tracer)
-        .with_memo_dir(&memo_dir);
+        .with_memo_dir(&memo_dir)
+        .with_memo_max_size(memo_max);
     evaluator.grant_all();
     if grant_pii {
         evaluator.grant(capabilities::CapKind::PiiTransmit);
