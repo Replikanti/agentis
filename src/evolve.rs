@@ -77,6 +77,28 @@ pub struct LineageEntry {
     #[allow(dead_code)]
     pub prompt_count: usize,
     pub mutations: Vec<String>,
+    /// Outcome of this variant's evaluation (M45).
+    #[allow(dead_code)]
+    pub outcome: String,
+    /// Wall-clock evaluation time in milliseconds (M45).
+    #[allow(dead_code)]
+    pub elapsed_ms: u64,
+    /// CB spent during evaluation (M45).
+    #[allow(dead_code)]
+    pub cb_spent: u64,
+}
+
+// --- Ancestor record (M45) ---
+
+/// A distilled record of an ancestor's outcome, exposed via `introspect.ancestor_failures`
+/// and `introspect.ancestor_successes`.
+#[derive(Debug, Clone)]
+pub struct AncestorRecord {
+    pub generation: usize,
+    pub outcome: String,
+    pub fitness_score: f64,
+    pub code_hash: String,
+    pub elapsed_ms: u64,
 }
 
 // --- Generation result ---
@@ -253,6 +275,10 @@ pub fn write_generation_jsonl(
             ("weights", json::JsonValue::String(weights.to_string())),
         ];
 
+        if let Some(ms) = arena_entry.eval_time_ms {
+            fields.push(("eval_time_ms", json::JsonValue::Int(ms as i64)));
+        }
+
         if let Some(ref e) = arena_entry.error {
             fields.push(("error", json::JsonValue::String(e.clone())));
         }
@@ -320,6 +346,25 @@ pub fn load_lineage(fitness_dir: &Path) -> HashMap<String, LineageEntry> {
                     })
                     .unwrap_or_default();
 
+                // M45: read outcome and eval_time_ms if present
+                let outcome = val
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .map(|e| {
+                        if e.contains("CognitiveOverload") || e.contains("budget") {
+                            "cb_exhausted".to_string()
+                        } else if e.contains("timeout") || e.contains("Timeout") {
+                            "timeout".to_string()
+                        } else {
+                            "validation_failed".to_string()
+                        }
+                    })
+                    .unwrap_or_else(|| "survived".to_string());
+                let elapsed_ms = val
+                    .get("eval_time_ms")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0) as u64;
+
                 if !source_hash.is_empty() {
                     map.insert(
                         source_hash.clone(),
@@ -330,6 +375,9 @@ pub fn load_lineage(fitness_dir: &Path) -> HashMap<String, LineageEntry> {
                             score,
                             prompt_count,
                             mutations,
+                            outcome,
+                            elapsed_ms,
+                            cb_spent: 0,
                         },
                     );
                 }
@@ -972,6 +1020,9 @@ mod tests {
                 score: 0.72,
                 prompt_count: 3,
                 mutations: vec!["classifier".to_string()],
+                outcome: "survived".to_string(),
+                elapsed_ms: 0,
+                cb_spent: 0,
             },
         );
         lineage.insert(
@@ -983,6 +1034,9 @@ mod tests {
                 score: 0.85,
                 prompt_count: 2,
                 mutations: vec!["classifier".to_string()],
+                outcome: "survived".to_string(),
+                elapsed_ms: 0,
+                cb_spent: 0,
             },
         );
 

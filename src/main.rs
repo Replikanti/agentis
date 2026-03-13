@@ -2195,6 +2195,8 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         mut cumulative_cb,
         mut first_gen_avg_prompts,
         mut prev_ckpt_hash,
+        mut ancestor_failures,
+        mut ancestor_successes,
     ) = if let Some(ref resume) = resume_ref {
         let hash = ckpt_store
             .resolve(resume)
@@ -2218,6 +2220,30 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             .map(|p| (p.source.clone(), p.source_hash.clone()))
             .collect();
 
+        // Restore ancestor history from checkpoint (M45)
+        let restored_failures: Vec<evolve::AncestorRecord> = ckpt
+            .ancestor_failures
+            .iter()
+            .map(|r| evolve::AncestorRecord {
+                generation: r.generation as usize,
+                outcome: r.outcome.clone(),
+                fitness_score: r.fitness_score,
+                code_hash: r.code_hash.clone(),
+                elapsed_ms: r.elapsed_ms,
+            })
+            .collect();
+        let restored_successes: Vec<evolve::AncestorRecord> = ckpt
+            .ancestor_successes
+            .iter()
+            .map(|r| evolve::AncestorRecord {
+                generation: r.generation as usize,
+                outcome: r.outcome.clone(),
+                fitness_score: r.fitness_score,
+                code_hash: r.code_hash.clone(),
+                elapsed_ms: r.elapsed_ms,
+            })
+            .collect();
+
         eprintln!(
             "Resuming from checkpoint {} (gen {})",
             &hash[..12],
@@ -2233,6 +2259,8 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             ckpt.cumulative_cb,
             ckpt.first_gen_avg_prompts,
             Some(hash),
+            restored_failures,
+            restored_successes,
         )
     } else {
         (
@@ -2245,6 +2273,8 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             0u64,
             0.0,
             None,
+            Vec::new(),
+            Vec::new(),
         )
     };
 
@@ -2545,6 +2575,42 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             }
         }
 
+        // Record ancestor history (M45) — classify each variant as success or failure
+        for (v, entry) in &scored {
+            let outcome = if entry.error.is_some() {
+                let err_msg = entry.error.as_deref().unwrap_or("unknown");
+                if err_msg.contains("CognitiveOverload") || err_msg.contains("budget") {
+                    "cb_exhausted"
+                } else if err_msg.contains("timeout") || err_msg.contains("Timeout") {
+                    "timeout"
+                } else {
+                    "validation_failed"
+                }
+            } else if entry.val_rate < 1.0 {
+                "validation_failed"
+            } else {
+                "survived"
+            };
+            let record = evolve::AncestorRecord {
+                generation: g,
+                outcome: outcome.to_string(),
+                fitness_score: entry.score,
+                code_hash: v.source_hash.clone(),
+                elapsed_ms: entry.eval_time_ms.unwrap_or(0),
+            };
+            if outcome == "survived" {
+                ancestor_successes.insert(0, record);
+                if ancestor_successes.len() > 3 {
+                    ancestor_successes.truncate(3);
+                }
+            } else {
+                ancestor_failures.insert(0, record);
+                if ancestor_failures.len() > 10 {
+                    ancestor_failures.truncate(10);
+                }
+            }
+        }
+
         // Save generation best
         let best_variant = &scored[0].0;
         let best_filename = format!("g{g:02}-best.ag");
@@ -2762,6 +2828,26 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
                 variant_count: tracked_variants.len() as u32,
                 timestamp: ts,
                 tag: None,
+                ancestor_failures: ancestor_failures
+                    .iter()
+                    .map(|r| checkpoint::CheckpointAncestorRecord {
+                        generation: r.generation as u32,
+                        outcome: r.outcome.clone(),
+                        fitness_score: r.fitness_score,
+                        code_hash: r.code_hash.clone(),
+                        elapsed_ms: r.elapsed_ms,
+                    })
+                    .collect(),
+                ancestor_successes: ancestor_successes
+                    .iter()
+                    .map(|r| checkpoint::CheckpointAncestorRecord {
+                        generation: r.generation as u32,
+                        outcome: r.outcome.clone(),
+                        fitness_score: r.fitness_score,
+                        code_hash: r.code_hash.clone(),
+                        elapsed_ms: r.elapsed_ms,
+                    })
+                    .collect(),
             };
             let hash = ckpt_store
                 .store(&gen_ckpt)

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 // --- Magic / version ---
 
 const MAGIC: &[u8; 4] = b"AGCK";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 
 // --- Error type ---
 
@@ -56,6 +56,16 @@ pub struct ParentEntry {
     pub source_hash: String,
 }
 
+/// Serializable ancestor record for checkpoint storage (M45).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckpointAncestorRecord {
+    pub generation: u32,
+    pub outcome: String,
+    pub fitness_score: f64,
+    pub code_hash: String,
+    pub elapsed_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct GenerationCheckpoint {
     // Chain
@@ -83,6 +93,10 @@ pub struct GenerationCheckpoint {
     // Metadata
     pub timestamp: u64,
     pub tag: Option<String>,
+
+    // Ancestor history (M45, version 2+)
+    pub ancestor_failures: Vec<CheckpointAncestorRecord>,
+    pub ancestor_successes: Vec<CheckpointAncestorRecord>,
 }
 
 // --- Binary serialization ---
@@ -137,6 +151,24 @@ impl GenerationCheckpoint {
             None => buf.push(0),
         }
 
+        // Ancestor history (version 2+)
+        write_u32(&mut buf, self.ancestor_failures.len() as u32);
+        for rec in &self.ancestor_failures {
+            write_u32(&mut buf, rec.generation);
+            write_string(&mut buf, &rec.outcome);
+            buf.extend_from_slice(&rec.fitness_score.to_le_bytes());
+            write_string(&mut buf, &rec.code_hash);
+            buf.extend_from_slice(&rec.elapsed_ms.to_le_bytes());
+        }
+        write_u32(&mut buf, self.ancestor_successes.len() as u32);
+        for rec in &self.ancestor_successes {
+            write_u32(&mut buf, rec.generation);
+            write_string(&mut buf, &rec.outcome);
+            buf.extend_from_slice(&rec.fitness_score.to_le_bytes());
+            write_string(&mut buf, &rec.code_hash);
+            buf.extend_from_slice(&rec.elapsed_ms.to_le_bytes());
+        }
+
         buf
     }
 
@@ -154,7 +186,7 @@ impl GenerationCheckpoint {
         }
         pos += 4;
         let version = data[pos];
-        if version != VERSION {
+        if version != 1 && version != 2 {
             return Err(CheckpointError::InvalidFormat(format!(
                 "unsupported version: {version}"
             )));
@@ -206,6 +238,46 @@ impl GenerationCheckpoint {
             None
         };
 
+        // Ancestor history (version 2+ only)
+        let (ancestor_failures, ancestor_successes) = if version >= 2 {
+            let fail_count = read_u32(data, &mut pos)?;
+            let mut failures = Vec::with_capacity(fail_count as usize);
+            for _ in 0..fail_count {
+                let generation = read_u32(data, &mut pos)?;
+                let outcome = read_string(data, &mut pos)?;
+                let fitness_score = read_f64(data, &mut pos)?;
+                let code_hash = read_string(data, &mut pos)?;
+                let elapsed_ms = read_u64(data, &mut pos)?;
+                failures.push(CheckpointAncestorRecord {
+                    generation,
+                    outcome,
+                    fitness_score,
+                    code_hash,
+                    elapsed_ms,
+                });
+            }
+            let succ_count = read_u32(data, &mut pos)?;
+            let mut successes = Vec::with_capacity(succ_count as usize);
+            for _ in 0..succ_count {
+                let generation = read_u32(data, &mut pos)?;
+                let outcome = read_string(data, &mut pos)?;
+                let fitness_score = read_f64(data, &mut pos)?;
+                let code_hash = read_string(data, &mut pos)?;
+                let elapsed_ms = read_u64(data, &mut pos)?;
+                successes.push(CheckpointAncestorRecord {
+                    generation,
+                    outcome,
+                    fitness_score,
+                    code_hash,
+                    elapsed_ms,
+                });
+            }
+            (failures, successes)
+        } else {
+            // Version 1: no ancestor data
+            (Vec::new(), Vec::new())
+        };
+
         Ok(GenerationCheckpoint {
             generation,
             parent,
@@ -223,6 +295,8 @@ impl GenerationCheckpoint {
             variant_count,
             timestamp,
             tag,
+            ancestor_failures,
+            ancestor_successes,
         })
     }
 }
@@ -979,6 +1053,8 @@ mod tests {
             variant_count: 8,
             timestamp: 1710280442000,
             tag: tag.map(|s| s.to_string()),
+            ancestor_failures: Vec::new(),
+            ancestor_successes: Vec::new(),
         }
     }
 
@@ -1027,7 +1103,7 @@ mod tests {
         let ckpt = make_checkpoint(1, None, None);
         let bytes = ckpt.to_bytes();
         assert_eq!(&bytes[0..4], b"AGCK");
-        assert_eq!(bytes[4], 1); // version
+        assert_eq!(bytes[4], 2); // version
     }
 
     #[test]
@@ -1044,6 +1120,58 @@ mod tests {
         bytes[4] = 99;
         let err = GenerationCheckpoint::from_bytes(&bytes).unwrap_err();
         assert!(matches!(err, CheckpointError::InvalidFormat(_)));
+    }
+
+    #[test]
+    fn v1_checkpoint_loads_without_ancestors() {
+        // Build a v1 checkpoint manually (same layout as v2 but version=1, no ancestor data)
+        let ckpt = make_checkpoint(1, None, None);
+        let mut bytes = ckpt.to_bytes();
+        // Patch version byte from 2 to 1
+        bytes[4] = 1;
+        // Remove the ancestor data at the end (2x u32 zero counts = 8 bytes)
+        let ancestor_overhead = 8; // two write_u32(0) for empty lists
+        bytes.truncate(bytes.len() - ancestor_overhead);
+        let decoded = GenerationCheckpoint::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.generation, 1);
+        assert!(decoded.ancestor_failures.is_empty());
+        assert!(decoded.ancestor_successes.is_empty());
+    }
+
+    #[test]
+    fn roundtrip_with_ancestors() {
+        let mut ckpt = make_checkpoint(3, Some("prev"), None);
+        ckpt.ancestor_failures = vec![
+            CheckpointAncestorRecord {
+                generation: 1,
+                outcome: "validation_failed".to_string(),
+                fitness_score: 0.25,
+                code_hash: "hash_fail_1".to_string(),
+                elapsed_ms: 500,
+            },
+            CheckpointAncestorRecord {
+                generation: 2,
+                outcome: "cb_exhausted".to_string(),
+                fitness_score: 0.1,
+                code_hash: "hash_fail_2".to_string(),
+                elapsed_ms: 1200,
+            },
+        ];
+        ckpt.ancestor_successes = vec![CheckpointAncestorRecord {
+            generation: 2,
+            outcome: "survived".to_string(),
+            fitness_score: 0.85,
+            code_hash: "hash_ok_1".to_string(),
+            elapsed_ms: 800,
+        }];
+        let bytes = ckpt.to_bytes();
+        let decoded = GenerationCheckpoint::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.ancestor_failures.len(), 2);
+        assert_eq!(decoded.ancestor_successes.len(), 1);
+        assert_eq!(decoded.ancestor_failures[0].outcome, "validation_failed");
+        assert_eq!(decoded.ancestor_failures[1].outcome, "cb_exhausted");
+        assert_eq!(decoded.ancestor_successes[0].fitness_score, 0.85);
+        assert_eq!(ckpt, decoded);
     }
 
     #[test]
@@ -1318,6 +1446,8 @@ mod tests {
                 variant_count: 4,
                 timestamp: 1710280440000 + g as u64 * 60000,
                 tag: None,
+                ancestor_failures: Vec::new(),
+                ancestor_successes: Vec::new(),
             };
             let hash = store.store(&ckpt).unwrap();
             store.set_head(&hash).unwrap();
@@ -1370,6 +1500,8 @@ mod tests {
             variant_count: 8,
             timestamp: 1710280442000,
             tag: None,
+            ancestor_failures: Vec::new(),
+            ancestor_successes: Vec::new(),
         };
 
         let hash = store.store(&ckpt).unwrap();
@@ -1510,6 +1642,8 @@ mod tests {
                     variant_count: 4,
                     timestamp: 1773540842000,
                     tag: Some("my-tag".to_string()),
+                    ancestor_failures: Vec::new(),
+                    ancestor_successes: Vec::new(),
                 },
             ),
             (
@@ -1531,6 +1665,8 @@ mod tests {
                     variant_count: 4,
                     timestamp: 1773540800000,
                     tag: None,
+                    ancestor_failures: Vec::new(),
+                    ancestor_successes: Vec::new(),
                 },
             ),
         ];
@@ -1573,6 +1709,8 @@ mod tests {
             variant_count: 8,
             timestamp: 1773540842000,
             tag: Some("exp-a".to_string()),
+            ancestor_failures: Vec::new(),
+            ancestor_successes: Vec::new(),
         };
 
         let out = format_trace("fullhash1234567890", &ckpt, Some(4));
