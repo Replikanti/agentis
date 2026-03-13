@@ -361,6 +361,10 @@ const BUNDLED_EXAMPLES: &[(&str, &str)] = &[
     ("test-suite.ag", include_str!("../examples/test-suite.ag")),
     ("pii-guard.ag", include_str!("../examples/pii-guard.ag")),
     ("evolve-seed.ag", include_str!("../examples/evolve-seed.ag")),
+    (
+        "self-improving-classifier.ag",
+        include_str!("../examples/self-improving-classifier.ag"),
+    ),
     ("README.md", include_str!("../examples/README.md")),
 ];
 
@@ -4138,6 +4142,27 @@ mod tests {
         assert_eq!(ts, 0);
         assert_eq!(ver, "");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn bundled_examples_parse() {
+        for (name, content) in BUNDLED_EXAMPLES {
+            if !name.ends_with(".ag") {
+                continue;
+            }
+            let result = crate::parser::Parser::parse_source(content);
+            assert!(result.is_ok(), "example {name} failed to parse: {result:?}");
+        }
+    }
+
+    #[test]
+    fn parse_size_bytes_units() {
+        assert_eq!(parse_size_bytes("10MB"), Some(10 * 1024 * 1024));
+        assert_eq!(parse_size_bytes("1GB"), Some(1024 * 1024 * 1024));
+        assert_eq!(parse_size_bytes("512KB"), Some(512 * 1024));
+        assert_eq!(parse_size_bytes("100B"), Some(100));
+        assert_eq!(parse_size_bytes("100"), Some(100));
+        assert_eq!(parse_size_bytes("abc"), None);
     }
 }
 
