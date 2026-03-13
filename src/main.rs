@@ -323,7 +323,7 @@ fn cmd_init(secure: bool) -> Result<(), AgentisError> {
         }
         // Also copy data.txt to sandbox for pipeline example
         std::fs::write(sandbox.join("data.txt"), EXAMPLE_DATA)?;
-        println!("Created examples/ directory with 6 programs.");
+        println!("Created examples/ directory with 13 programs.");
     }
 
     if secure {
@@ -342,10 +342,17 @@ fn cmd_init(secure: bool) -> Result<(), AgentisError> {
 const BUNDLED_EXAMPLES: &[(&str, &str)] = &[
     ("fast-demo.ag", include_str!("../examples/fast-demo.ag")),
     ("hello.ag", include_str!("../examples/hello.ag")),
+    ("functions.ag", include_str!("../examples/functions.ag")),
+    ("collections.ag", include_str!("../examples/collections.ag")),
+    ("budget.ag", include_str!("../examples/budget.ag")),
     ("classify.ag", include_str!("../examples/classify.ag")),
+    ("io-sandbox.ag", include_str!("../examples/io-sandbox.ag")),
     ("pipeline.ag", include_str!("../examples/pipeline.ag")),
     ("parallel.ag", include_str!("../examples/parallel.ag")),
     ("explore.ag", include_str!("../examples/explore.ag")),
+    ("test-suite.ag", include_str!("../examples/test-suite.ag")),
+    ("pii-guard.ag", include_str!("../examples/pii-guard.ag")),
+    ("evolve-seed.ag", include_str!("../examples/evolve-seed.ag")),
     ("README.md", include_str!("../examples/README.md")),
 ];
 

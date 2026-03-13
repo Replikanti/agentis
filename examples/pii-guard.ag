@@ -1,0 +1,28 @@
+// pii-guard.ag — PII protection demo.
+// Agentis scans prompt inputs for personal data (email, phone, SSN, etc.).
+// Without --grant-pii, prompts containing PII are BLOCKED.
+//
+// Try these two ways:
+//   agentis go examples/pii-guard.ag                 # blocked!
+//   agentis go examples/pii-guard.ag --grant-pii     # allowed
+cb 200;
+
+// This agent processes customer feedback that may contain PII.
+agent feedback_processor(text: string) -> string {
+    cb 150;
+    let analysis = prompt(
+        "Classify this feedback as positive, negative, or neutral. Respond with one word.",
+        text
+    ) -> string;
+    return analysis;
+}
+
+// Safe input — no PII, always works
+let safe = feedback_processor("The product is great, I love it!");
+print("Safe input:", safe);
+
+// Input with PII — blocked without --grant-pii
+// The PII scanner detects email addresses, phone numbers,
+// credit cards, SSNs, IBANs, and Czech birth numbers.
+let risky = feedback_processor("Contact me at john@example.com or 555-123-4567");
+print("PII input:", risky);

@@ -1,0 +1,29 @@
+// collections.ag — Lists and maps.
+// Agentis has two collection types: ordered lists and key-value maps.
+
+// Lists: [item, item, ...]
+let numbers = [10, 20, 30];
+print("List:", numbers);
+print("Length:", len(numbers));
+print("First:", get(numbers, 0));
+print("Last:", get(numbers, 2));
+
+// push returns a new list (immutable semantics)
+let extended = push(numbers, 40);
+print("After push:", extended);
+print("Original unchanged:", numbers);
+
+// Maps: map_of(key, value, key, value, ...)
+let config = map_of(
+    "backend", "claude",
+    "model", "sonnet",
+    "temperature", "0.7"
+);
+print("Config:", config);
+print("Backend:", get(config, "backend"));
+print("Keys:", len(config));
+
+// Lists of strings
+let tags = ["fast", "reliable"];
+let more_tags = push(tags, "tested");
+print("Tags:", more_tags, "count:", len(more_tags));

@@ -1,0 +1,23 @@
+// io-sandbox.ag — Reading and writing files in the sandbox.
+// All file I/O is sandboxed to .agentis/sandbox/ (no escape).
+// Requires FileRead and FileWrite capabilities (granted by default).
+cb 200;
+
+// Write a report to the sandbox
+file_write("report.txt", "Analysis complete.\nScore: 95\nStatus: pass");
+print("Wrote report.txt");
+
+// Read it back
+let content = file_read("report.txt");
+print("Read back:", content);
+
+// Agent that processes a file
+agent summarizer(path: string) -> string {
+    cb 150;
+    let data = file_read(path);
+    let summary = prompt("Summarize this data in one sentence", data) -> string;
+    return summary;
+}
+
+let summary = summarizer("report.txt");
+print("Summary:", summary);
