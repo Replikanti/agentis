@@ -3925,26 +3925,39 @@ fn cmd_update(args: &[String]) -> Result<(), AgentisError> {
             .map_err(|e| AgentisError::General(format!("failed to set permissions: {e}")))?;
     }
 
-    // Try direct install first (rename or copy)
+    // Replace the running binary.
+    // On Linux, `cp` over a running binary fails with "Text file busy".
+    // The fix: remove first (unlinks the inode while the old process keeps
+    // running), then copy the new file into the now-free path.
     let needs_sudo = match std::fs::rename(&tmp_path, &current_exe) {
         Ok(_) => false,
-        Err(_) => match std::fs::copy(&tmp_path, &current_exe) {
-            Ok(_) => {
-                let _ = std::fs::remove_file(&tmp_path);
-                false
+        Err(_) => {
+            // Try remove + copy (handles "Text file busy")
+            let _ = std::fs::remove_file(&current_exe);
+            match std::fs::copy(&tmp_path, &current_exe) {
+                Ok(_) => {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    false
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => true,
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Err(AgentisError::General(format!(
+                        "failed to replace binary: {e}"
+                    )));
+                }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => true,
-            Err(e) => {
-                let _ = std::fs::remove_file(&tmp_path);
-                return Err(AgentisError::General(format!(
-                    "failed to replace binary: {e}"
-                )));
-            }
-        },
+        }
     };
 
     if needs_sudo {
         println!("Permission required \u{2014} re-running install with sudo...");
+        // sudo rm + cp to handle both permission and "Text file busy"
+        let _ = std::process::Command::new("sudo")
+            .arg("rm")
+            .arg("-f")
+            .arg(&current_exe)
+            .status();
         let status = std::process::Command::new("sudo")
             .arg("cp")
             .arg(&tmp_path)
