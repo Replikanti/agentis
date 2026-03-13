@@ -164,6 +164,12 @@ fn main() {
                 eprintln!("  --threads N         Parallel arena evaluation (default: auto-detect)");
                 eprintln!("  --workers W         Colony workers (addr:port,... or file path)");
                 eprintln!("  --secret S          Colony auth secret");
+                eprintln!("  --seed-from-lib <q>  Seed from library entries matching query");
+                eprintln!("  --seed-top-k N       Take top N library entries (default: all)");
+                eprintln!(
+                    "  --warm-start-prob P  Library injection probability per slot (default: 0.3)"
+                );
+                eprintln!("  --warm-start-decay P Decay warm-start probability to P by final gen");
                 process::exit(1);
             }
             cmd_evolve(&args[2], &args[3..])
@@ -1893,6 +1899,13 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
     let tag_name = parse_flag_value(args, "--tag");
+    let seed_from_lib = parse_flag_value(args, "--seed-from-lib");
+    let seed_top_k: Option<usize> =
+        parse_flag_value(args, "--seed-top-k").and_then(|s| s.parse().ok());
+    let warm_start_prob_flag: Option<f64> =
+        parse_flag_value(args, "--warm-start-prob").and_then(|s| s.parse().ok());
+    let warm_start_decay: Option<f64> =
+        parse_flag_value(args, "--warm-start-decay").and_then(|s| s.parse().ok());
 
     // Read seed source
     let seed_source = std::fs::read_to_string(source_file)?;
@@ -1995,6 +2008,29 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     // Checkpoint store
     let ckpt_store = checkpoint::CheckpointStore::new(&root);
 
+    // Load library seeds if --seed-from-lib specified
+    let library_seeds: Vec<(String, String)> = if let Some(ref query) = seed_from_lib {
+        let lib_store = library::LibraryStore::new(&root);
+        let search_query = query.strip_prefix("tag:").unwrap_or(query);
+        let results = lib_store.search(search_query).unwrap_or_default();
+        let limited: Vec<_> = if let Some(k) = seed_top_k {
+            results.into_iter().take(k).collect()
+        } else {
+            results
+        };
+        if limited.is_empty() {
+            eprintln!("Warning: no library entries found for query '{query}'");
+        }
+        limited
+            .iter()
+            .map(|(_, entry)| (entry.source.clone(), entry.source_hash.clone()))
+            .collect()
+    } else {
+        vec![]
+    };
+    let initial_warm_prob =
+        warm_start_prob_flag.unwrap_or(if !library_seeds.is_empty() { 0.3 } else { 0.0 });
+
     // Resume from checkpoint or start fresh
     let (
         start_gen,
@@ -2061,6 +2097,13 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
 
     let end_gen = start_gen + generations - 1;
 
+    // Create PRNG for warm-start randomization
+    let rng_seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let mut rng = evolve::SimpleRng::new(rng_seed);
+
     eprintln!("Evolution: {}", source_file);
     if resume_ref.is_some() {
         eprintln!(
@@ -2070,12 +2113,48 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     } else {
         eprintln!("  Population: {}, Generations: {}", population, generations);
     }
+    if !library_seeds.is_empty() {
+        eprintln!(
+            "  Library seeds: {}{}",
+            library_seeds.len(),
+            seed_from_lib
+                .as_ref()
+                .map(|q| format!(" (query: \"{q}\")"))
+                .unwrap_or_default()
+        );
+        if let Some(end) = warm_start_decay {
+            eprintln!(
+                "  Warm-start: {:.0}% → {:.0}%",
+                initial_warm_prob * 100.0,
+                end * 100.0
+            );
+        } else if initial_warm_prob > 0.0 {
+            eprintln!("  Warm-start: {:.0}%", initial_warm_prob * 100.0);
+        }
+    }
     eprintln!();
 
     let mut gen_results: Vec<evolve::GenResult> = Vec::new();
     let mut cb_only_warned = false;
 
     for g in start_gen..=end_gen {
+        // Compute warm-start probability with decay
+        let current_warm_prob = if let Some(end_prob) = warm_start_decay {
+            if end_gen > start_gen {
+                let progress = (g - start_gen) as f64 / (end_gen - start_gen) as f64;
+                initial_warm_prob + (end_prob - initial_warm_prob) * progress
+            } else {
+                initial_warm_prob
+            }
+        } else {
+            initial_warm_prob
+        };
+        let default_provenance = if g == 1 && resume_ref.is_none() {
+            "seed-file"
+        } else {
+            "population"
+        };
+
         // Generate variants from parents
         let mock_offset = (g - 1) * population;
         let tracked_variants = evolve::generate_tracked_variants(
@@ -2087,6 +2166,10 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             llm_backend.as_ref(),
             custom_template.as_deref(),
             mock_offset,
+            default_provenance,
+            &library_seeds,
+            current_warm_prob,
+            &mut rng,
         )
         .map_err(AgentisError::General)?;
 
@@ -2289,25 +2372,35 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             None
         };
 
-        // Print generation summary
+        // Print generation summary with provenance breakdown
+        let (prov_seed, prov_pop, prov_lib) = evolve::count_provenance(&tracked_variants);
+        let prov_suffix = if prov_lib > 0 {
+            let mut parts = Vec::new();
+            if prov_seed > 0 {
+                parts.push(format!("{} seed-file", prov_seed));
+            }
+            if prov_pop > 0 {
+                parts.push(format!("{} population", prov_pop));
+            }
+            parts.push(format!("{} library", prov_lib));
+            format!("{} variants: {}", tracked_variants.len(), parts.join(", "))
+        } else {
+            format!("{} variants", tracked_variants.len())
+        };
         if let Some(ref h) = ckpt_hash_str {
             eprintln!(
-                "Gen {:>2}: best={:.3}  avg={:.3}  prompts={:.1}  ckpt={}  ({} variants)",
+                "Gen {:>2}: best={:.3}  avg={:.3}  prompts={:.1}  ckpt={}  ({})",
                 g,
                 gen_best,
                 gen_avg,
                 gen_avg_prompts,
                 &h[..8],
-                tracked_variants.len()
+                prov_suffix
             );
         } else {
             eprintln!(
-                "Gen {:>2}: best={:.3}  avg={:.3}  prompts={:.1}  ({} variants)",
-                g,
-                gen_best,
-                gen_avg,
-                gen_avg_prompts,
-                tracked_variants.len()
+                "Gen {:>2}: best={:.3}  avg={:.3}  prompts={:.1}  ({})",
+                g, gen_best, gen_avg, gen_avg_prompts, prov_suffix
             );
         }
 

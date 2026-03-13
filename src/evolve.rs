@@ -13,6 +13,42 @@ use crate::json;
 use crate::mutation;
 use crate::storage::ObjectStore;
 
+// --- Simple PRNG ---
+
+/// Simple xorshift64 PRNG — no external crate dependency.
+pub struct SimpleRng {
+    state: u64,
+}
+
+impl SimpleRng {
+    /// Create a new PRNG from a seed (must be non-zero for xorshift).
+    pub fn new(seed: u64) -> Self {
+        Self {
+            state: if seed == 0 { 1 } else { seed },
+        }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.state ^= self.state << 13;
+        self.state ^= self.state >> 7;
+        self.state ^= self.state << 17;
+        self.state
+    }
+
+    /// Random f64 in [0.0, 1.0).
+    pub fn next_f64(&mut self) -> f64 {
+        (self.next_u64() as f64) / (u64::MAX as f64)
+    }
+
+    /// Random usize in [0, bound).
+    pub fn next_usize(&mut self, bound: usize) -> usize {
+        if bound == 0 {
+            return 0;
+        }
+        (self.next_u64() % bound as u64) as usize
+    }
+}
+
 // --- Evolution config ---
 
 #[allow(dead_code)]
@@ -71,6 +107,7 @@ pub struct TrackedVariant {
     pub parent_hash: String,
     pub filename: String,
     pub mutated_agents: Vec<String>,
+    pub provenance: String, // "seed-file", "population", or "library"
 }
 
 /// Hash source content using SHA-256 (reuses ObjectStore utility).
@@ -88,14 +125,34 @@ pub fn generate_tracked_variants(
     backend: &dyn crate::llm::LlmBackend,
     custom_template: Option<&str>,
     mock_offset: usize,
+    default_provenance: &str,
+    library_seeds: &[(String, String)],
+    warm_start_prob: f64,
+    rng: &mut SimpleRng,
 ) -> Result<Vec<TrackedVariant>, String> {
     let mut variants = Vec::new();
     let is_mock = backend.name() == "mock";
 
     for i in 0..population {
-        // Pick parent round-robin
-        let parent_idx = i % parents.len();
-        let (parent_source, parent_hash) = &parents[parent_idx];
+        // Decide parent: library seed (warm-start) or population
+        let use_library =
+            !library_seeds.is_empty() && warm_start_prob > 0.0 && rng.next_f64() < warm_start_prob;
+
+        let (parent_source, parent_hash, provenance) = if use_library {
+            let idx = rng.next_usize(library_seeds.len());
+            (
+                library_seeds[idx].0.as_str(),
+                library_seeds[idx].1.as_str(),
+                "library".to_string(),
+            )
+        } else {
+            let parent_idx = i % parents.len();
+            (
+                parents[parent_idx].0.as_str(),
+                parents[parent_idx].1.as_str(),
+                default_provenance.to_string(),
+            )
+        };
 
         let agents = mutation::extract_agents(parent_source)?;
         if agents.is_empty() {
@@ -135,9 +192,10 @@ pub fn generate_tracked_variants(
         variants.push(TrackedVariant {
             source: new_source,
             source_hash: new_hash,
-            parent_hash: parent_hash.clone(),
+            parent_hash: parent_hash.to_string(),
             filename,
             mutated_agents: vec![agent.name.clone()],
+            provenance,
         });
     }
 
@@ -188,6 +246,10 @@ pub fn write_generation_jsonl(
                 json::JsonValue::Int(arena_entry.prompt_count as i64),
             ),
             ("mutations", json::JsonValue::Array(mutations_json)),
+            (
+                "provenance",
+                json::JsonValue::String(variant.provenance.clone()),
+            ),
             ("weights", json::JsonValue::String(weights.to_string())),
         ];
 
@@ -392,6 +454,21 @@ pub fn format_dry_run(
     out
 }
 
+/// Count provenance types in tracked variants: (seed-file, population, library).
+pub fn count_provenance(variants: &[TrackedVariant]) -> (usize, usize, usize) {
+    let mut seed_file = 0;
+    let mut population = 0;
+    let mut library = 0;
+    for v in variants {
+        match v.provenance.as_str() {
+            "seed-file" => seed_file += 1,
+            "library" => library += 1,
+            _ => population += 1,
+        }
+    }
+    (seed_file, population, library)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,12 +500,27 @@ mod tests {
         let hash = hash_source(source);
         let parents = vec![(source.to_string(), hash)];
         let backend = crate::llm::MockBackend;
-        let variants =
-            generate_tracked_variants(&parents, 3, 1, "test", None, &backend, None, 0).unwrap();
+        let mut rng = SimpleRng::new(42);
+        let variants = generate_tracked_variants(
+            &parents,
+            3,
+            1,
+            "test",
+            None,
+            &backend,
+            None,
+            0,
+            "seed-file",
+            &[],
+            0.0,
+            &mut rng,
+        )
+        .unwrap();
         assert_eq!(variants.len(), 3);
         assert!(variants[0].source.contains("Carefully Process this"));
         assert!(!variants[0].parent_hash.is_empty());
         assert_eq!(variants[0].filename, "test-g01-m1.ag");
+        assert_eq!(variants[0].provenance, "seed-file");
     }
 
     #[test]
@@ -452,8 +544,22 @@ mod tests {
             (source_b.to_string(), hash_source(source_b)),
         ];
         let backend = crate::llm::MockBackend;
-        let variants =
-            generate_tracked_variants(&parents, 4, 2, "test", None, &backend, None, 0).unwrap();
+        let mut rng = SimpleRng::new(42);
+        let variants = generate_tracked_variants(
+            &parents,
+            4,
+            2,
+            "test",
+            None,
+            &backend,
+            None,
+            0,
+            "population",
+            &[],
+            0.0,
+            &mut rng,
+        )
+        .unwrap();
         assert_eq!(variants.len(), 4);
         // Variants 0,2 from parent A, variants 1,3 from parent B
         assert_eq!(variants[0].parent_hash, hash_source(source_a));
@@ -540,6 +646,7 @@ mod tests {
             parent_hash: "parent000".to_string(),
             filename: "test-g01-m1.ag".to_string(),
             mutated_agents: vec!["worker".to_string()],
+            provenance: "population".to_string(),
         };
         let arena_entry = ArenaEntry {
             file: "test-g01-m1.ag".to_string(),
@@ -568,6 +675,164 @@ mod tests {
         assert_eq!(entry.generation, 1);
         assert_eq!(entry.parent_hash, "parent000");
         assert!((entry.score - 0.85).abs() < 0.001);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn simple_rng_bounded() {
+        let mut rng = SimpleRng::new(123);
+        for _ in 0..1000 {
+            let v = rng.next_f64();
+            assert!((0.0..1.0).contains(&v), "out of range: {v}");
+        }
+    }
+
+    #[test]
+    fn simple_rng_usize_bounded() {
+        let mut rng = SimpleRng::new(7);
+        for _ in 0..100 {
+            let v = rng.next_usize(5);
+            assert!(v < 5, "out of bounds: {v}");
+        }
+    }
+
+    #[test]
+    fn simple_rng_zero_seed() {
+        let mut rng = SimpleRng::new(0);
+        // Should not panic or produce only zeros
+        let v = rng.next_f64();
+        assert!(v >= 0.0);
+    }
+
+    #[test]
+    fn warm_start_provenance_all_library() {
+        let source = r#"
+            agent worker(x: string) -> string {
+                let r = prompt("Process this", x) -> string;
+                return r;
+            }
+            let y = worker("test");
+        "#;
+        let hash = hash_source(source);
+        let parents = vec![(source.to_string(), hash)];
+        let lib_source = r#"
+            agent worker(x: string) -> string {
+                let r = prompt("Library process", x) -> string;
+                return r;
+            }
+            let y = worker("test");
+        "#;
+        let lib_hash = hash_source(lib_source);
+        let lib_seeds = vec![(lib_source.to_string(), lib_hash)];
+        let backend = crate::llm::MockBackend;
+        let mut rng = SimpleRng::new(42);
+        let variants = generate_tracked_variants(
+            &parents,
+            4,
+            1,
+            "test",
+            None,
+            &backend,
+            None,
+            0,
+            "seed-file",
+            &lib_seeds,
+            1.0,
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(variants.len(), 4);
+        for v in &variants {
+            assert_eq!(v.provenance, "library");
+        }
+    }
+
+    #[test]
+    fn no_warm_start_provenance_seed_file() {
+        let source = r#"
+            agent worker(x: string) -> string {
+                let r = prompt("Process this", x) -> string;
+                return r;
+            }
+            let y = worker("test");
+        "#;
+        let hash = hash_source(source);
+        let parents = vec![(source.to_string(), hash)];
+        let backend = crate::llm::MockBackend;
+        let mut rng = SimpleRng::new(42);
+        let variants = generate_tracked_variants(
+            &parents,
+            3,
+            1,
+            "test",
+            None,
+            &backend,
+            None,
+            0,
+            "seed-file",
+            &[],
+            0.0,
+            &mut rng,
+        )
+        .unwrap();
+        for v in &variants {
+            assert_eq!(v.provenance, "seed-file");
+        }
+    }
+
+    #[test]
+    fn count_provenance_mixed() {
+        let make = |prov: &str| TrackedVariant {
+            source: String::new(),
+            source_hash: String::new(),
+            parent_hash: String::new(),
+            filename: String::new(),
+            mutated_agents: vec![],
+            provenance: prov.to_string(),
+        };
+        let variants = vec![
+            make("seed-file"),
+            make("library"),
+            make("population"),
+            make("library"),
+        ];
+        let (s, p, l) = count_provenance(&variants);
+        assert_eq!(s, 1);
+        assert_eq!(p, 1);
+        assert_eq!(l, 2);
+    }
+
+    #[test]
+    fn jsonl_includes_provenance() {
+        let dir = std::env::temp_dir().join(format!("agentis_prov_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let variant = TrackedVariant {
+            source: "test".to_string(),
+            source_hash: "hash1".to_string(),
+            parent_hash: "parent1".to_string(),
+            filename: "t.ag".to_string(),
+            mutated_agents: vec!["w".to_string()],
+            provenance: "library".to_string(),
+        };
+        let entry = ArenaEntry {
+            file: "t.ag".to_string(),
+            score: 0.5,
+            cb_eff: 0.9,
+            val_rate: 1.0,
+            exp_rate: 0.0,
+            prompt_count: 1,
+            error: None,
+            rounds: 1,
+            worker: None,
+            eval_time_ms: None,
+        };
+
+        write_generation_jsonl(&dir, 1, &[(variant, entry)], &FitnessWeights::default()).unwrap();
+
+        let content = std::fs::read_to_string(dir.join("g01.jsonl")).unwrap();
+        assert!(content.contains("\"provenance\":\"library\""));
 
         std::fs::remove_dir_all(&dir).ok();
     }
