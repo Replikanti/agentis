@@ -3689,23 +3689,10 @@ fn cmd_update(args: &[String]) -> Result<(), AgentisError> {
     let current_exe = std::env::current_exe()
         .map_err(|e| AgentisError::General(format!("cannot locate current executable: {e}")))?;
 
-    // Write to temp file — try next to the binary first (same filesystem = atomic rename),
-    // fall back to system temp dir if the directory is not writable.
-    let tmp_beside = current_exe.with_extension("update-tmp");
-    let tmp_path = match std::fs::write(&tmp_beside, &binary) {
-        Ok(_) => tmp_beside,
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            let tmp_fallback = std::env::temp_dir().join("agentis-update-tmp");
-            std::fs::write(&tmp_fallback, &binary)
-                .map_err(|e2| AgentisError::General(format!("failed to write temp file: {e2}")))?;
-            tmp_fallback
-        }
-        Err(e) => {
-            return Err(AgentisError::General(format!(
-                "failed to write temp file: {e}"
-            )));
-        }
-    };
+    // Write downloaded binary to temp dir (always writable)
+    let tmp_path = std::env::temp_dir().join("agentis-update-tmp");
+    std::fs::write(&tmp_path, &binary)
+        .map_err(|e| AgentisError::General(format!("failed to write temp file: {e}")))?;
 
     // Set executable permissions
     #[cfg(unix)]
@@ -3715,19 +3702,41 @@ fn cmd_update(args: &[String]) -> Result<(), AgentisError> {
             .map_err(|e| AgentisError::General(format!("failed to set permissions: {e}")))?;
     }
 
-    // Try atomic rename first; if it fails (cross-device or permission), try copy.
-    let replace_result: Result<(), std::io::Error> = std::fs::rename(&tmp_path, &current_exe)
-        .or_else(|_| {
-            std::fs::copy(&tmp_path, &current_exe).map(|_| ())?;
-            let _ = std::fs::remove_file(&tmp_path);
-            Ok(())
-        });
+    // Try direct install first (rename or copy)
+    let needs_sudo = match std::fs::rename(&tmp_path, &current_exe) {
+        Ok(_) => false,
+        Err(_) => match std::fs::copy(&tmp_path, &current_exe) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&tmp_path);
+                false
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => true,
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(AgentisError::General(format!(
+                    "failed to replace binary: {e}"
+                )));
+            }
+        },
+    };
 
-    if let Err(e) = replace_result {
+    if needs_sudo {
+        println!("Permission required \u{2014} re-running install with sudo...");
+        let status = std::process::Command::new("sudo")
+            .arg("cp")
+            .arg(&tmp_path)
+            .arg(&current_exe)
+            .status()
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&tmp_path);
+                AgentisError::General(format!("failed to run sudo: {e}"))
+            })?;
         let _ = std::fs::remove_file(&tmp_path);
-        return Err(AgentisError::General(format!(
-            "failed to replace binary: {e}\nHint: try `sudo agentis update`"
-        )));
+        if !status.success() {
+            return Err(AgentisError::General(
+                "sudo cp failed \u{2014} update aborted".into(),
+            ));
+        }
     }
 
     println!("Updated v{current} -> v{latest}.");
