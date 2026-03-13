@@ -875,7 +875,12 @@ fn cmd_colony(args: &[String]) -> Result<(), AgentisError> {
                     }
                 }
             }
-            print!("{}", checkpoint::format_trace(&hash, &ckpt));
+            let parent_gen = ckpt
+                .parent
+                .as_ref()
+                .and_then(|ph| store.load(ph).ok())
+                .map(|pc| pc.generation);
+            print!("{}", checkpoint::format_trace(&hash, &ckpt, parent_gen));
             Ok(())
         }
         "best" => {
