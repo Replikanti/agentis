@@ -13,6 +13,28 @@ use crate::snapshot::{MemorySnapshot, SnapshotManager};
 use crate::storage::ObjectStore;
 use crate::trace::Tracer;
 
+// --- Introspection Context ---
+
+/// Evolution context injected into the evaluator for `introspect.*` access.
+/// Static fields are set once before execution. Dynamic fields (cb_remaining,
+/// cb_spent) are read live from the evaluator's budget state.
+#[derive(Debug, Clone)]
+pub struct IntrospectContext {
+    pub generation: i64,
+    pub lineage_id: String,
+    pub arena_size: i64,
+}
+
+impl Default for IntrospectContext {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            lineage_id: "genesis".to_string(),
+            arena_size: 0,
+        }
+    }
+}
+
 // --- Runtime Values ---
 
 /// Handle to a spawned agent thread. Wraps JoinHandle so it can be stored
@@ -383,6 +405,8 @@ pub struct Evaluator<'a> {
     /// When Some, test mode is enabled: explore/validate outcomes are
     /// collected instead of aborting on failure.
     test_outcomes: Option<Vec<TestOutcome>>,
+    /// Introspection context — evolution metadata accessible via `introspect.*`.
+    introspect: IntrospectContext,
     // Fitness counters (always tracked, regardless of test mode)
     prompt_count: usize,
     validates_passed: usize,
@@ -415,6 +439,7 @@ impl<'a> Evaluator<'a> {
             active_agents: Arc::new(AtomicU32::new(0)),
             spawn_counter: 0,
             test_outcomes: None,
+            introspect: IntrospectContext::default(),
             prompt_count: 0,
             validates_passed: 0,
             validates_total: 0,
@@ -480,6 +505,38 @@ impl<'a> Evaluator<'a> {
             self.snapshot_mgr = Some(mgr.with_registry(agentis_root));
         }
         self
+    }
+
+    #[allow(dead_code)] // used by evolve in M45
+    pub fn with_introspect(mut self, ctx: IntrospectContext) -> Self {
+        self.introspect = ctx;
+        self
+    }
+
+    /// Inject the `introspect` struct into the environment.
+    /// Static fields are set from IntrospectContext. Dynamic fields
+    /// (cb_remaining, cb_spent) are handled in eval_field_access.
+    fn inject_introspect(&mut self) {
+        let mut fields = HashMap::new();
+        fields.insert(
+            "generation".to_string(),
+            Value::Int(self.introspect.generation),
+        );
+        fields.insert(
+            "lineage_id".to_string(),
+            Value::String(self.introspect.lineage_id.clone()),
+        );
+        fields.insert(
+            "arena_size".to_string(),
+            Value::Int(self.introspect.arena_size),
+        );
+        // cb_remaining and cb_spent are placeholders — read dynamically
+        fields.insert("cb_remaining".to_string(), Value::Int(0));
+        fields.insert("cb_spent".to_string(), Value::Int(0));
+        self.env.define(
+            "introspect".to_string(),
+            Value::Struct("Introspect".to_string(), fields),
+        );
     }
 
     pub fn grant(&mut self, kind: CapKind) {
@@ -613,6 +670,9 @@ impl<'a> Evaluator<'a> {
     }
 
     pub fn eval_program(&mut self, program: &Program) -> Result<Value, EvalError> {
+        // Inject introspect object (static fields only — cb is dynamic)
+        self.inject_introspect();
+
         // First pass: resolve imports, register functions, agents, types
         for decl in &program.declarations {
             match decl {
@@ -833,6 +893,7 @@ impl<'a> Evaluator<'a> {
             Statement::Expression(e) => self.eval_expr(&e.expr),
             Statement::Cb(cb) => {
                 self.budget = cb.budget;
+                self.initial_budget = cb.budget;
                 Ok(Value::Void)
             }
         }
@@ -1112,6 +1173,16 @@ impl<'a> Evaluator<'a> {
                 }
                 let val = self.eval_expr(&expr.args[0])?;
                 return Ok(Value::String(val.type_name().to_string()));
+            }
+            "to_string" => {
+                if expr.args.len() != 1 {
+                    return Err(EvalError::ArityMismatch {
+                        expected: 1,
+                        got: expr.args.len(),
+                    });
+                }
+                let val = self.eval_expr(&expr.args[0])?;
+                return Ok(Value::String(format!("{val}")));
             }
             "file_read" => {
                 self.require_cap(CapKind::FileRead)?;
@@ -1411,6 +1482,16 @@ impl<'a> Evaluator<'a> {
         let object = self.eval_expr(&expr.object)?;
         match &object {
             Value::Struct(type_name, fields) => {
+                // Dynamic introspect fields — read live from evaluator state
+                if type_name == "Introspect" {
+                    match expr.field.as_str() {
+                        "cb_remaining" => return Ok(Value::Int(self.budget as i64)),
+                        "cb_spent" => {
+                            return Ok(Value::Int((self.initial_budget - self.budget) as i64));
+                        }
+                        _ => {}
+                    }
+                }
                 fields
                     .get(&expr.field)
                     .cloned()
@@ -3792,5 +3873,124 @@ mod tests {
         let score = report.score();
         assert!(score > 0.0);
         assert!(score <= 1.0);
+    }
+
+    // --- Introspection tests ---
+
+    #[test]
+    fn introspect_defaults_outside_evolution() {
+        let out = eval_output(
+            r#"
+            let g = introspect.generation;
+            let lid = introspect.lineage_id;
+            let a = introspect.arena_size;
+            print(g, lid, a);
+        "#,
+        );
+        assert_eq!(out, &["0 genesis 0"]);
+    }
+
+    #[test]
+    fn introspect_cb_remaining_dynamic() {
+        let out = eval_output(
+            r#"
+            cb 100;
+            let r1 = introspect.cb_remaining;
+            let a = 1 + 2;
+            let b = 3 + 4;
+            let r2 = introspect.cb_remaining;
+            print(r1 > r2);
+        "#,
+        );
+        assert_eq!(out, &["true"]);
+    }
+
+    #[test]
+    fn introspect_cb_spent_increases() {
+        let out = eval_output(
+            r#"
+            cb 200;
+            let s1 = introspect.cb_spent;
+            let a = 1 + 2;
+            let b = 3 + 4;
+            let c = 5 + 6;
+            let s2 = introspect.cb_spent;
+            print(s2 > s1);
+        "#,
+        );
+        assert_eq!(out, &["true"]);
+    }
+
+    #[test]
+    fn introspect_custom_context() {
+        let src = r#"
+            let g = introspect.generation;
+            let a = introspect.arena_size;
+            print(g, a);
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let ctx = IntrospectContext {
+            generation: 7,
+            lineage_id: "abc123".to_string(),
+            arena_size: 12,
+        };
+        let mut evaluator = Evaluator::new(1000).with_introspect(ctx);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+        assert_eq!(evaluator.output(), &["7 12"]);
+    }
+
+    #[test]
+    fn introspect_lineage_id_custom() {
+        let src = r#"
+            let lid = introspect.lineage_id;
+            print(lid);
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let ctx = IntrospectContext {
+            generation: 3,
+            lineage_id: "abc123def456".to_string(),
+            arena_size: 8,
+        };
+        let mut evaluator = Evaluator::new(1000).with_introspect(ctx);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+        assert_eq!(evaluator.output(), &["abc123def456"]);
+    }
+
+    #[test]
+    fn introspect_shadow_by_let() {
+        // Shadowing introspect with let is allowed (no reassignment in language)
+        let out = eval_output(
+            r#"
+            let introspect = 42;
+            print(introspect);
+        "#,
+        );
+        assert_eq!(out, &["42"]);
+    }
+
+    #[test]
+    fn to_string_builtin() {
+        let out = eval_output(
+            r#"
+            let a = to_string(42);
+            let b = to_string(3.14);
+            let c = to_string(true);
+            print(a, b, c);
+        "#,
+        );
+        assert_eq!(out, &["42 3.14 true"]);
+    }
+
+    #[test]
+    fn to_string_concat_with_introspect() {
+        let out = eval_output(
+            r#"
+            let msg = "gen=" + to_string(introspect.generation);
+            print(msg);
+        "#,
+        );
+        assert_eq!(out, &["gen=0"]);
     }
 }

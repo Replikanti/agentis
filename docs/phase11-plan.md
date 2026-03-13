@@ -24,7 +24,7 @@ Together, these let agents make informed decisions instead of blind ones.
 
 ## Milestones
 
-- [ ] M44: Introspection Runtime Object
+- [x] M44: Introspection Runtime Object
 - [ ] M45: Lineage History (Failures + Successes)
 - [ ] M46: Memo Store
 - [ ] M47: Memo Garbage Collection & Size Limits
