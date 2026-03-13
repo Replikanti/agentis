@@ -23,6 +23,10 @@ pub struct IntrospectContext {
     pub generation: i64,
     pub lineage_id: String,
     pub arena_size: i64,
+    /// Failed ancestor records (cap: 10, newest first). M45.
+    pub ancestor_failures: Vec<crate::evolve::AncestorRecord>,
+    /// Successful ancestor records (cap: 3, newest first). M45.
+    pub ancestor_successes: Vec<crate::evolve::AncestorRecord>,
 }
 
 impl Default for IntrospectContext {
@@ -31,6 +35,8 @@ impl Default for IntrospectContext {
             generation: 0,
             lineage_id: "genesis".to_string(),
             arena_size: 0,
+            ancestor_failures: Vec::new(),
+            ancestor_successes: Vec::new(),
         }
     }
 }
@@ -513,6 +519,20 @@ impl<'a> Evaluator<'a> {
         self
     }
 
+    /// Convert an AncestorRecord into a Value::Struct for injection.
+    fn ancestor_record_to_value(rec: &crate::evolve::AncestorRecord) -> Value {
+        let mut fields = HashMap::new();
+        fields.insert("generation".to_string(), Value::Int(rec.generation as i64));
+        fields.insert("outcome".to_string(), Value::String(rec.outcome.clone()));
+        fields.insert("fitness_score".to_string(), Value::Float(rec.fitness_score));
+        fields.insert(
+            "code_hash".to_string(),
+            Value::String(rec.code_hash.clone()),
+        );
+        fields.insert("elapsed_ms".to_string(), Value::Int(rec.elapsed_ms as i64));
+        Value::Struct("AncestorRecord".to_string(), fields)
+    }
+
     /// Inject the `introspect` struct into the environment.
     /// Static fields are set from IntrospectContext. Dynamic fields
     /// (cb_remaining, cb_spent) are handled in eval_field_access.
@@ -533,6 +553,57 @@ impl<'a> Evaluator<'a> {
         // cb_remaining and cb_spent are placeholders — read dynamically
         fields.insert("cb_remaining".to_string(), Value::Int(0));
         fields.insert("cb_spent".to_string(), Value::Int(0));
+
+        // Ancestor lists (M45)
+        let failures: Vec<Value> = self
+            .introspect
+            .ancestor_failures
+            .iter()
+            .map(Self::ancestor_record_to_value)
+            .collect();
+        fields.insert("ancestor_failures".to_string(), Value::List(failures));
+
+        let successes: Vec<Value> = self
+            .introspect
+            .ancestor_successes
+            .iter()
+            .map(Self::ancestor_record_to_value)
+            .collect();
+        fields.insert("ancestor_successes".to_string(), Value::List(successes));
+
+        // Lineage summary (M45) — derived from ancestors
+        let total =
+            self.introspect.ancestor_failures.len() + self.introspect.ancestor_successes.len();
+        let success_count = self.introspect.ancestor_successes.len();
+        let failure_count = self.introspect.ancestor_failures.len();
+        let avg_fitness = if total > 0 {
+            let sum: f64 = self
+                .introspect
+                .ancestor_failures
+                .iter()
+                .chain(self.introspect.ancestor_successes.iter())
+                .map(|r| r.fitness_score)
+                .sum();
+            sum / total as f64
+        } else {
+            0.0
+        };
+        let mut summary_fields = HashMap::new();
+        summary_fields.insert("total_ancestors".to_string(), Value::Int(total as i64));
+        summary_fields.insert(
+            "success_count".to_string(),
+            Value::Int(success_count as i64),
+        );
+        summary_fields.insert(
+            "failure_count".to_string(),
+            Value::Int(failure_count as i64),
+        );
+        summary_fields.insert("avg_fitness".to_string(), Value::Float(avg_fitness));
+        fields.insert(
+            "lineage_summary".to_string(),
+            Value::Struct("LineageSummary".to_string(), summary_fields),
+        );
+
         self.env.define(
             "introspect".to_string(),
             Value::Struct("Introspect".to_string(), fields),
@@ -3933,6 +4004,7 @@ mod tests {
             generation: 7,
             lineage_id: "abc123".to_string(),
             arena_size: 12,
+            ..Default::default()
         };
         let mut evaluator = Evaluator::new(1000).with_introspect(ctx);
         evaluator.grant_all();
@@ -3951,6 +4023,7 @@ mod tests {
             generation: 3,
             lineage_id: "abc123def456".to_string(),
             arena_size: 8,
+            ..Default::default()
         };
         let mut evaluator = Evaluator::new(1000).with_introspect(ctx);
         evaluator.grant_all();
@@ -3992,5 +4065,165 @@ mod tests {
         "#,
         );
         assert_eq!(out, &["gen=0"]);
+    }
+
+    // --- M45: Lineage History tests ---
+
+    #[test]
+    fn introspect_ancestor_failures_empty_outside_evolution() {
+        let out = eval_output(
+            r#"
+            let fails = introspect.ancestor_failures;
+            let succs = introspect.ancestor_successes;
+            print(len(fails), len(succs));
+        "#,
+        );
+        assert_eq!(out, &["0 0"]);
+    }
+
+    #[test]
+    fn introspect_lineage_summary_zeroed_outside_evolution() {
+        let out = eval_output(
+            r#"
+            let s = introspect.lineage_summary;
+            print(s.total_ancestors, s.success_count, s.failure_count, s.avg_fitness);
+        "#,
+        );
+        assert_eq!(out, &["0 0 0 0"]);
+    }
+
+    #[test]
+    fn introspect_ancestor_failures_populated() {
+        let src = r#"
+            let fails = introspect.ancestor_failures;
+            let count = len(fails);
+            let first = get(fails, 0);
+            print(count, first.generation, first.outcome, first.fitness_score);
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let ctx = IntrospectContext {
+            generation: 4,
+            lineage_id: "test".to_string(),
+            arena_size: 8,
+            ancestor_failures: vec![
+                crate::evolve::AncestorRecord {
+                    generation: 3,
+                    outcome: "validation_failed".to_string(),
+                    fitness_score: 0.3,
+                    code_hash: "abc123".to_string(),
+                    elapsed_ms: 500,
+                },
+                crate::evolve::AncestorRecord {
+                    generation: 2,
+                    outcome: "cb_exhausted".to_string(),
+                    fitness_score: 0.1,
+                    code_hash: "def456".to_string(),
+                    elapsed_ms: 1200,
+                },
+            ],
+            ancestor_successes: vec![],
+        };
+        let mut evaluator = Evaluator::new(10000).with_introspect(ctx);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+        assert_eq!(evaluator.output(), &["2 3 validation_failed 0.3"]);
+    }
+
+    #[test]
+    fn introspect_ancestor_successes_populated() {
+        let src = r#"
+            let succs = introspect.ancestor_successes;
+            let first = get(succs, 0);
+            print(len(succs), first.outcome, first.fitness_score);
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let ctx = IntrospectContext {
+            generation: 5,
+            lineage_id: "test".to_string(),
+            arena_size: 4,
+            ancestor_failures: vec![],
+            ancestor_successes: vec![crate::evolve::AncestorRecord {
+                generation: 4,
+                outcome: "survived".to_string(),
+                fitness_score: 0.92,
+                code_hash: "winner".to_string(),
+                elapsed_ms: 800,
+            }],
+        };
+        let mut evaluator = Evaluator::new(10000).with_introspect(ctx);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+        assert_eq!(evaluator.output(), &["1 survived 0.92"]);
+    }
+
+    #[test]
+    fn introspect_lineage_summary_computed() {
+        let src = r#"
+            let s = introspect.lineage_summary;
+            print(s.total_ancestors, s.success_count, s.failure_count, s.avg_fitness);
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let ctx = IntrospectContext {
+            generation: 5,
+            lineage_id: "test".to_string(),
+            arena_size: 8,
+            ancestor_failures: vec![
+                crate::evolve::AncestorRecord {
+                    generation: 1,
+                    outcome: "validation_failed".to_string(),
+                    fitness_score: 0.2,
+                    code_hash: "h1".to_string(),
+                    elapsed_ms: 100,
+                },
+                crate::evolve::AncestorRecord {
+                    generation: 2,
+                    outcome: "cb_exhausted".to_string(),
+                    fitness_score: 0.4,
+                    code_hash: "h2".to_string(),
+                    elapsed_ms: 200,
+                },
+            ],
+            ancestor_successes: vec![crate::evolve::AncestorRecord {
+                generation: 3,
+                outcome: "survived".to_string(),
+                fitness_score: 0.9,
+                code_hash: "h3".to_string(),
+                elapsed_ms: 300,
+            }],
+        };
+        let mut evaluator = Evaluator::new(10000).with_introspect(ctx);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+        let out = evaluator.output();
+        assert_eq!(out.len(), 1);
+        // total=3, success=1, failure=2, avg=(0.2+0.4+0.9)/3=0.5
+        assert!(out[0].starts_with("3 1 2 0.5"));
+    }
+
+    #[test]
+    fn introspect_ancestor_record_field_access() {
+        // Verify all AncestorRecord fields are accessible
+        let src = r#"
+            let f = get(introspect.ancestor_failures, 0);
+            print(f.generation, f.outcome, f.fitness_score, f.code_hash, f.elapsed_ms);
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let ctx = IntrospectContext {
+            generation: 2,
+            lineage_id: "test".to_string(),
+            arena_size: 4,
+            ancestor_failures: vec![crate::evolve::AncestorRecord {
+                generation: 1,
+                outcome: "timeout".to_string(),
+                fitness_score: 0.0,
+                code_hash: "deadbeef".to_string(),
+                elapsed_ms: 30000,
+            }],
+            ancestor_successes: vec![],
+        };
+        let mut evaluator = Evaluator::new(10000).with_introspect(ctx);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+        assert_eq!(evaluator.output(), &["1 timeout 0 deadbeef 30000"]);
     }
 }
