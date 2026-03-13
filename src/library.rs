@@ -15,6 +15,10 @@ use std::path::{Path, PathBuf};
 const MAGIC: &[u8; 4] = b"AGlb";
 const VERSION: u8 = 1;
 
+// Bundle format (portable export/import)
+const BUNDLE_MAGIC: &[u8; 4] = b"ALIb";
+const BUNDLE_VERSION: u8 = 1;
+
 // --- Error type ---
 
 #[derive(Debug, Clone, PartialEq)]
@@ -524,6 +528,113 @@ impl LibraryStore {
         }
 
         Ok(matches)
+    }
+
+    /// Export selected entries as a portable bundle.
+    /// Returns the number of entries written.
+    pub fn export_bundle(&self, hashes: &[String], out_path: &Path) -> Result<usize, LibraryError> {
+        if hashes.is_empty() {
+            return Err(LibraryError::InvalidFormat(
+                "no entries to export".to_string(),
+            ));
+        }
+
+        let mut buf = Vec::new();
+
+        // Header
+        buf.extend_from_slice(BUNDLE_MAGIC);
+        buf.push(BUNDLE_VERSION);
+        write_u32(&mut buf, hashes.len() as u32);
+
+        // Entries: length-prefixed serialized blobs
+        for hash in hashes {
+            let entry = self.load(hash)?;
+            let blob = entry.to_bytes();
+            write_u32(&mut buf, blob.len() as u32);
+            buf.extend_from_slice(&blob);
+        }
+
+        fs::write(out_path, buf)?;
+        Ok(hashes.len())
+    }
+
+    /// Import entries from a portable bundle.
+    /// Returns (imported_count, skipped_duplicates).
+    pub fn import_bundle(
+        &self,
+        bundle_path: &Path,
+        skip_duplicates: bool,
+    ) -> Result<(usize, usize), LibraryError> {
+        let data = fs::read(bundle_path)?;
+
+        // Validate header
+        if data.len() < 9 {
+            return Err(LibraryError::InvalidFormat("bundle too short".to_string()));
+        }
+        if &data[0..4] != BUNDLE_MAGIC {
+            return Err(LibraryError::InvalidFormat(
+                "bad bundle magic bytes".to_string(),
+            ));
+        }
+        if data[4] != BUNDLE_VERSION {
+            return Err(LibraryError::InvalidFormat(format!(
+                "unsupported bundle version: {}",
+                data[4]
+            )));
+        }
+
+        let mut pos = 5;
+        let entry_count = read_u32(&data, &mut pos)? as usize;
+
+        let mut imported = 0;
+        let mut skipped = 0;
+
+        for i in 0..entry_count {
+            // Read length-prefixed entry blob
+            let blob_len = match read_u32(&data, &mut pos) {
+                Ok(n) => n as usize,
+                Err(_) => {
+                    eprintln!(
+                        "Warning: bundle truncated at entry {} of {} (imported {})",
+                        i, entry_count, imported
+                    );
+                    break;
+                }
+            };
+
+            if pos + blob_len > data.len() {
+                eprintln!(
+                    "Warning: bundle truncated at entry {} of {} (imported {})",
+                    i, entry_count, imported
+                );
+                break;
+            }
+
+            let blob = &data[pos..pos + blob_len];
+            pos += blob_len;
+
+            let entry = match LibraryEntry::from_bytes(blob) {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!(
+                        "Warning: corrupt entry {} in bundle: {} (imported {})",
+                        i, e, imported
+                    );
+                    break;
+                }
+            };
+
+            // Check for duplicate by source_hash
+            if skip_duplicates && self.has_source(&entry.source_hash).unwrap_or(false) {
+                skipped += 1;
+                continue;
+            }
+
+            self.store(&entry)?;
+            imported += 1;
+        }
+
+        Ok((imported, skipped))
     }
 }
 
@@ -1187,5 +1298,121 @@ mod tests {
         entry.evolution_run = None;
         let out = format_show("hash123", &entry);
         assert!(out.contains("Evolution run:  (none)"));
+    }
+
+    // --- Export / Import ---
+
+    #[test]
+    fn export_import_roundtrip() {
+        let (store, dir) = temp_store();
+        let e1 = make_entry_with_source("let x = 1;", 0.9);
+        let e2 = make_entry_with_source("let y = 2;", 0.8);
+        let h1 = store.store(&e1).unwrap();
+        let h2 = store.store(&e2).unwrap();
+
+        let bundle_path = dir.path().join("test.alib");
+        let count = store.export_bundle(&[h1, h2], &bundle_path).unwrap();
+        assert_eq!(count, 2);
+        assert!(bundle_path.exists());
+
+        // Import into a fresh store
+        let (store2, _dir2) = temp_store();
+        let (imported, skipped) = store2.import_bundle(&bundle_path, false).unwrap();
+        assert_eq!(imported, 2);
+        assert_eq!(skipped, 0);
+
+        let entries = store2.list().unwrap();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn export_empty_errors() {
+        let (store, _dir) = temp_store();
+        let bundle_path = std::path::PathBuf::from("/tmp/empty.alib");
+        let result = store.export_bundle(&[], &bundle_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn import_skip_duplicates() {
+        let (store, dir) = temp_store();
+        let e1 = make_entry_with_source("let x = 1;", 0.9);
+        let h1 = store.store(&e1).unwrap();
+
+        let bundle_path = dir.path().join("dup.alib");
+        store.export_bundle(&[h1], &bundle_path).unwrap();
+
+        // Import into same store with skip_duplicates
+        let (imported, skipped) = store.import_bundle(&bundle_path, true).unwrap();
+        assert_eq!(imported, 0);
+        assert_eq!(skipped, 1);
+    }
+
+    #[test]
+    fn import_without_skip_adds_anyway() {
+        let (store, dir) = temp_store();
+        let e1 = make_entry_with_source("let x = 1;", 0.9);
+        let h1 = store.store(&e1).unwrap();
+
+        let bundle_path = dir.path().join("nodup.alib");
+        store.export_bundle(&[h1], &bundle_path).unwrap();
+
+        // Import without skip_duplicates — same entry stored (deduped by content hash)
+        let (imported, skipped) = store.import_bundle(&bundle_path, false).unwrap();
+        assert_eq!(imported, 1);
+        assert_eq!(skipped, 0);
+    }
+
+    #[test]
+    fn import_corrupt_bundle_magic() {
+        let (store, _dir) = temp_store();
+        let bad = b"BADx\x01\x00\x00\x00\x01";
+        let path = std::env::temp_dir().join("bad_magic.alib");
+        std::fs::write(&path, bad).unwrap();
+        let result = store.import_bundle(&path, false);
+        assert!(matches!(result, Err(LibraryError::InvalidFormat(_))));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn import_corrupt_bundle_truncated() {
+        let (store, dir) = temp_store();
+        let e1 = make_entry_with_source("let z = 3;", 0.7);
+        let e2 = make_entry_with_source("let w = 4;", 0.6);
+        let h1 = store.store(&e1).unwrap();
+        let h2 = store.store(&e2).unwrap();
+
+        let bundle_path = dir.path().join("full.alib");
+        store.export_bundle(&[h1, h2], &bundle_path).unwrap();
+
+        // Truncate the bundle mid-second-entry
+        let data = std::fs::read(&bundle_path).unwrap();
+        let truncated = &data[..data.len() - 20];
+        let trunc_path = dir.path().join("trunc.alib");
+        std::fs::write(&trunc_path, truncated).unwrap();
+
+        let (store2, _dir2) = temp_store();
+        let (imported, _skipped) = store2.import_bundle(&trunc_path, false).unwrap();
+        // First entry should import, second truncated
+        assert_eq!(imported, 1);
+    }
+
+    #[test]
+    fn bundle_header_format() {
+        let (store, dir) = temp_store();
+        let e1 = make_entry_with_source("let a = 1;", 0.5);
+        let h1 = store.store(&e1).unwrap();
+
+        let bundle_path = dir.path().join("header.alib");
+        store.export_bundle(&[h1], &bundle_path).unwrap();
+
+        let data = std::fs::read(&bundle_path).unwrap();
+        // Check magic
+        assert_eq!(&data[0..4], b"ALIb");
+        // Check version
+        assert_eq!(data[4], 1);
+        // Check entry count
+        let count = u32::from_le_bytes(data[5..9].try_into().unwrap());
+        assert_eq!(count, 1);
     }
 }
