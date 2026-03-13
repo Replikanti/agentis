@@ -235,86 +235,12 @@ An agent that:
 - No string interpolation (no `"{variable}"` — use `+` concatenation).
 - No `else if` shorthand (use `else { if ... { } }` or early-return pattern).
 
-```
-type Category {
-    label: string,
-    confidence: float
-}
+See `examples/self-improving-classifier.ag` for the working implementation.
 
-// Strategy selection via early-return pattern (no if-else expression)
-fn select_strategy(
-    cb_left: int,
-    fail_count: int,
-    total: int,
-    avg_fitness: float,
-    hints: string
-) -> string {
-    // Low budget: zero-shot, no frills
-    if cb_left < 80 {
-        return "Classify this text into a category. Be brief.";
-    }
-
-    // Catastrophic trajectory: >70% ancestors failed — start fresh
-    if total > 0 {
-        if fail_count * 10 > total * 7 {
-            return "Ignore all previous approaches. Classify this text using the simplest possible method.";
-        }
-    }
-
-    // Strong lineage: try ambitious approach
-    if avg_fitness > 0.8 {
-        return "Classify with detailed reasoning and sub-categories.";
-    }
-
-    // Default with hints from memo
-    if len(hints) > 0 {
-        return "Classify this text. Strategy hints: " + hints;
-    }
-
-    return "Classify this text into a category.";
-}
-
-agent classifier(text: string) -> Category {
-    cb 200;
-
-    // Read introspection data
-    let cb_left = introspect.cb_remaining;
-    let summary = introspect.lineage_summary;
-    let fail_count = summary.failure_count;
-    let total = summary.total_ancestors;
-    let avg_fitness = summary.avg_fitness;
-
-    // Recall memo from previous generations
-    let hints = recall_latest("classifier-strategy");
-
-    // Select strategy based on introspection
-    let instruction = select_strategy(cb_left, fail_count, total, avg_fitness, hints);
-
-    let result = prompt(instruction, text) -> Category;
-
-    validate result {
-        result.confidence > 0.6
-    };
-
-    // Record what worked for future generations
-    let gen = introspect.generation;
-    memo_write("classifier-strategy",
-        "gen=" + to_string(gen) + " conf=" + to_string(result.confidence)
-    );
-
-    return result;
-}
-
-explore "positive-review" {
-    let r = classifier("This product is amazing, best purchase ever!");
-    validate r { r.label == "positive" };
-}
-
-explore "negative-review" {
-    let r = classifier("Terrible quality, broke after one day.");
-    validate r { r.label == "negative" };
-}
-```
+**Note:** The original plan showed `prompt(instruction, text)` with a variable,
+but the parser requires a string literal for the prompt instruction argument.
+The actual example uses early-return with separate `prompt(...)` calls per
+strategy branch, each with a string literal instruction.
 
 **What this demonstrates:**
 - **Introspection:** Agent reads its own CB, generation, and lineage summary.

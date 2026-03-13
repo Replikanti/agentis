@@ -2158,8 +2158,7 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     let no_lib_add = args.iter().any(|a| a == "--no-lib-add");
     let lib_add_interval: Option<usize> =
         parse_flag_value(args, "--lib-add-interval").and_then(|s| s.parse().ok());
-    let _memo_max_size: Option<u64> =
-        parse_flag_value(args, "--memo-max-size").and_then(|s| parse_size_bytes(&s));
+    let memo_max_size_flag: Option<String> = parse_flag_value(args, "--memo-max-size");
 
     // Read seed source
     let seed_source = std::fs::read_to_string(source_file)?;
@@ -2173,7 +2172,11 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
 
     // Load LLM backend
     let root = agentis_root();
-    let cfg = config::Config::load(&root);
+    let mut cfg = config::Config::load(&root);
+    // CLI --memo-max-size overrides config
+    if let Some(ref size_str) = memo_max_size_flag {
+        cfg.set("memo.max_size", size_str);
+    }
 
     // Parse fitness weights: CLI flag > config > default
     let weights_str = weights_str.or_else(|| cfg.get("fitness.weights").map(|s| s.to_string()));

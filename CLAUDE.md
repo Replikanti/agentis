@@ -59,7 +59,7 @@ Storage: AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (765)
+cargo test                     # Run all tests (766)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
