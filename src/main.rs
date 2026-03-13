@@ -14,6 +14,8 @@ mod fitness;
 mod io;
 mod json;
 mod lexer;
+#[allow(dead_code)] // exists() and rebuild_index() used in tests, CLI in M43
+mod library;
 mod llm;
 mod mutation;
 mod network;
@@ -168,6 +170,7 @@ fn main() {
         }
         "worker" => cmd_worker(&args[2..]),
         "colony" => cmd_colony(&args[2..]),
+        "lib" => cmd_lib(&args[2..]),
         "lineage" => {
             if args.len() < 3 {
                 eprintln!("Usage: agentis lineage <source_file>");
@@ -224,6 +227,9 @@ fn print_usage() {
         "  evolve <file> [flags] Evolutionary loop (-g N -n N --out dir --threads N --workers W)"
     );
     eprintln!("  lineage <file>       Trace variant ancestry back to seed");
+    eprintln!(
+        "  lib <subcommand>     Population library (add, list, show, search, remove, tags, tag)"
+    );
     eprintln!("  audit [flags]        Show prompt audit log");
     eprintln!("  version              Show version");
 }
@@ -979,6 +985,257 @@ fn cmd_colony(args: &[String]) -> Result<(), AgentisError> {
         other => {
             eprintln!("Unknown colony subcommand: {other}");
             eprintln!("  Available: status, ping, history, trace, best, tags, tag, gc");
+            process::exit(1);
+        }
+    }
+}
+
+fn cmd_lib(args: &[String]) -> Result<(), AgentisError> {
+    if args.is_empty() {
+        eprintln!("Usage: agentis lib <subcommand>");
+        eprintln!(
+            "  add <file.ag> [--tag T] [--description D] [--no-desc]  Add variant to library"
+        );
+        eprintln!("  list [--tag T]                                          List library entries");
+        eprintln!("  show <hash-or-tag>                                      Show entry details");
+        eprintln!(
+            "  search <query>                                          Search by description/tag"
+        );
+        eprintln!("  remove <hash-or-tag>                                    Remove entry");
+        eprintln!("  tags                                                    List all tags");
+        eprintln!("  tag <hash> <name>                                       Tag an entry");
+        process::exit(1);
+    }
+
+    let root = agentis_root();
+
+    match args[0].as_str() {
+        "add" => {
+            if args.len() < 2 || args[1].starts_with('-') {
+                eprintln!(
+                    "Usage: agentis lib add <file.ag> [--tag T] [--description D] [--no-desc]"
+                );
+                process::exit(1);
+            }
+            let source_file = &args[1];
+            let source = std::fs::read_to_string(source_file)?;
+            let source_hash = evolve::hash_source(&source);
+
+            let lib = library::LibraryStore::new(&root);
+
+            // Check for duplicate source
+            if lib.has_source(&source_hash).unwrap_or(false) {
+                eprintln!("Source already in library (hash: {}...)", &source_hash[..8]);
+                return Ok(());
+            }
+
+            let tag_name = parse_flag_value(args, "--tag");
+            let no_desc = args.iter().any(|a| a == "--no-desc");
+            let desc_flag = parse_flag_value(args, "--description");
+            let desc_file = parse_flag_value(args, "--desc-from-file");
+
+            // Resolve description
+            let description = if no_desc {
+                String::new()
+            } else if let Some(d) = desc_flag {
+                d
+            } else if let Some(path) = desc_file {
+                std::fs::read_to_string(&path)
+                    .map_err(|e| AgentisError::General(format!("reading description file: {e}")))?
+                    .trim()
+                    .to_string()
+            } else {
+                // Try LLM-generated description via complete()
+                let cfg = config::Config::load(&root);
+                match llm::create_backend(&cfg) {
+                    Ok(backend) => {
+                        let result = backend.complete(
+                            "Summarize what this Agentis program does in 1-2 sentences.",
+                            &source,
+                            &ast::TypeAnnotation::Named("string".to_string()),
+                            None,
+                        );
+                        match result {
+                            Ok(evaluator::Value::String(s)) => s.trim().to_string(),
+                            Ok(_) => "(no description)".to_string(),
+                            Err(_) => "(no description)".to_string(),
+                        }
+                    }
+                    Err(_) => "(no description)".to_string(),
+                }
+            };
+
+            // Evaluate source for fitness metrics
+            let cfg = config::Config::load(&root);
+            let weights = fitness::FitnessWeights::default();
+
+            // Write source to temp file and evaluate via arena
+            let tmp_dir =
+                std::path::PathBuf::from(format!("/tmp/agentis-lib-add-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&tmp_dir);
+            let tmp_file = tmp_dir.join("_lib_add.ag");
+            std::fs::write(&tmp_file, &source)?;
+            let grant_pii = cfg.get("pii_transmit").is_some_and(|v| v == "allow");
+            let report = run_arena_variant_standalone(
+                &tmp_file.to_string_lossy(),
+                &root,
+                grant_pii,
+                &weights,
+            );
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+
+            // Parse tags from entry tags (inline in source)
+            let mut entry_tags: Vec<String> = Vec::new();
+            if let Some(ref t) = tag_name {
+                entry_tags.push(t.clone());
+            }
+
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+
+            let lib_entry = library::LibraryEntry {
+                source: source.clone(),
+                source_hash: source_hash.clone(),
+                seed_hash: source_hash.clone(),
+                generation: 0,
+                evolution_run: None,
+                fitness_score: report.score,
+                cb_efficiency: report.cb_eff,
+                validate_rate: report.val_rate,
+                explore_rate: report.exp_rate,
+                prompt_count: report.prompt_count as u32,
+                description,
+                tags: entry_tags,
+                timestamp: ts,
+            };
+
+            let hash = lib
+                .store(&lib_entry)
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+
+            if let Some(ref t) = tag_name {
+                lib.set_tag(t, &hash)
+                    .map_err(|e| AgentisError::General(format!("{e}")))?;
+            }
+
+            eprintln!(
+                "Added to library: {}... (score: {:.3})",
+                &hash[..12],
+                report.score
+            );
+            Ok(())
+        }
+        "list" => {
+            let lib = library::LibraryStore::new(&root);
+            let tag_filter = parse_flag_value(args, "--tag");
+            let hashes = lib
+                .list()
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+
+            let mut entries: Vec<(String, library::LibraryEntry)> = Vec::new();
+            for hash in hashes {
+                if let Ok(entry) = lib.load(&hash) {
+                    if let Some(ref tag) = tag_filter
+                        && !entry.tags.iter().any(|t| t == tag)
+                    {
+                        continue;
+                    }
+                    entries.push((hash, entry));
+                }
+            }
+            // Sort by score descending
+            entries.sort_by(|a, b| {
+                b.1.fitness_score
+                    .partial_cmp(&a.1.fitness_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            print!("{}", library::format_list(&entries));
+            Ok(())
+        }
+        "show" => {
+            if args.len() < 2 || args[1].starts_with('-') {
+                eprintln!("Usage: agentis lib show <hash-or-tag>");
+                process::exit(1);
+            }
+            let lib = library::LibraryStore::new(&root);
+            let hash = lib
+                .resolve(&args[1])
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+            let entry = lib
+                .load(&hash)
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+            print!("{}", library::format_show(&hash, &entry));
+            Ok(())
+        }
+        "search" => {
+            if args.len() < 2 || args[1].starts_with('-') {
+                eprintln!("Usage: agentis lib search <query>");
+                process::exit(1);
+            }
+            let lib = library::LibraryStore::new(&root);
+            let results = lib
+                .search(&args[1])
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+            if results.is_empty() {
+                println!("No matching entries found.");
+            } else {
+                print!("{}", library::format_list(&results));
+            }
+            Ok(())
+        }
+        "remove" => {
+            if args.len() < 2 || args[1].starts_with('-') {
+                eprintln!("Usage: agentis lib remove <hash-or-tag>");
+                process::exit(1);
+            }
+            let lib = library::LibraryStore::new(&root);
+            let hash = lib
+                .resolve(&args[1])
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+            let removed = lib
+                .remove(&hash)
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+            if removed {
+                eprintln!("Removed: {}...", &hash[..12]);
+            } else {
+                eprintln!("Entry not found.");
+            }
+            Ok(())
+        }
+        "tags" => {
+            let lib = library::LibraryStore::new(&root);
+            let tags = lib
+                .list_tags()
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+            if tags.is_empty() {
+                println!("No tags.");
+            } else {
+                for (name, hash) in &tags {
+                    println!("{name}  →  {}...", &hash[..12.min(hash.len())]);
+                }
+            }
+            Ok(())
+        }
+        "tag" => {
+            if args.len() < 3 {
+                eprintln!("Usage: agentis lib tag <hash> <name>");
+                process::exit(1);
+            }
+            let lib = library::LibraryStore::new(&root);
+            let hash = lib
+                .resolve(&args[1])
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+            lib.set_tag(&args[2], &hash)
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+            eprintln!("Tagged {}... as '{}'", &hash[..12], args[2]);
+            Ok(())
+        }
+        other => {
+            eprintln!("Unknown lib subcommand: {other}");
+            eprintln!("  Available: add, list, show, search, remove, tags, tag");
             process::exit(1);
         }
     }
