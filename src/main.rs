@@ -207,9 +207,10 @@ fn main() {
             cmd_log(branch)
         }
         "version" => {
-            println!("agentis v0.1.0");
+            println!("agentis v{}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
+        "update" => cmd_update(&args[2..]),
         other => {
             eprintln!("Unknown command: {other}");
             print_usage();
@@ -255,6 +256,7 @@ fn print_usage() {
         "  lib <subcommand>     Population library (add, list, show, search, remove, tags, tag)"
     );
     eprintln!("  audit [flags]        Show prompt audit log");
+    eprintln!("  update [--check]     Self-update to the latest release");
     eprintln!("  version              Show version");
 }
 
@@ -3576,6 +3578,205 @@ impl AuditEntry {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string(),
+        }
+    }
+}
+
+// --- Self-Update ---
+
+fn cmd_update(args: &[String]) -> Result<(), AgentisError> {
+    let check_only = args.iter().any(|a| a == "--check");
+
+    let current = env!("CARGO_PKG_VERSION");
+    println!("Current version: v{current}");
+
+    // Query GitHub releases API
+    print!("Checking for updates...");
+    let mut response = ureq::get("https://api.github.com/repos/Replikanti/agentis/releases/latest")
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "agentis-self-update")
+        .call()
+        .map_err(|e| AgentisError::General(format!("failed to check for updates: {e}")))?;
+
+    let body = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| AgentisError::General(format!("failed to read response: {e}")))?;
+
+    let release = json::parse(&body)
+        .map_err(|e| AgentisError::General(format!("failed to parse release info: {e}")))?;
+
+    let tag = release
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AgentisError::General("missing tag_name in release".into()))?;
+
+    let latest = tag.strip_prefix('v').unwrap_or(tag);
+
+    match compare_versions(current, latest) {
+        std::cmp::Ordering::Equal => {
+            println!(" already up to date (v{current}).");
+            return Ok(());
+        }
+        std::cmp::Ordering::Greater => {
+            println!(" local version is newer than release (v{current} > v{latest}).");
+            return Ok(());
+        }
+        std::cmp::Ordering::Less => {
+            println!(" v{latest} available.");
+        }
+    }
+
+    if check_only {
+        println!("Run `agentis update` to install.");
+        return Ok(());
+    }
+
+    // Find the right asset for this platform
+    let asset_name = platform_asset_name()
+        .ok_or_else(|| AgentisError::General("unsupported platform for self-update".into()))?;
+
+    let assets = release
+        .get("assets")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| AgentisError::General("no assets in release".into()))?;
+
+    let download_url = assets
+        .iter()
+        .find_map(|asset| {
+            let name = asset.get("name")?.as_str()?;
+            if name == asset_name {
+                asset
+                    .get("browser_download_url")?
+                    .as_str()
+                    .map(|s| s.to_string())
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| {
+            AgentisError::General(format!(
+                "no binary for this platform ({asset_name}) in release v{latest}"
+            ))
+        })?;
+
+    // Download the binary
+    println!("Downloading {asset_name}...");
+    let mut dl_response = ureq::get(&download_url)
+        .header("User-Agent", "agentis-self-update")
+        .call()
+        .map_err(|e| AgentisError::General(format!("download failed: {e}")))?;
+
+    let binary = dl_response
+        .body_mut()
+        .with_config()
+        .limit(50 * 1024 * 1024) // 50 MB limit
+        .read_to_vec()
+        .map_err(|e| AgentisError::General(format!("failed to read binary: {e}")))?;
+
+    if binary.is_empty() {
+        return Err(AgentisError::General("downloaded empty file".into()));
+    }
+
+    println!("Downloaded {} bytes. Replacing binary...", binary.len());
+
+    // Replace the current executable
+    let current_exe = std::env::current_exe()
+        .map_err(|e| AgentisError::General(format!("cannot locate current executable: {e}")))?;
+
+    // Write to temp file next to the current exe, then rename (atomic)
+    let tmp_path = current_exe.with_extension("update-tmp");
+    std::fs::write(&tmp_path, &binary)
+        .map_err(|e| AgentisError::General(format!("failed to write temp file: {e}")))?;
+
+    // Set executable permissions
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| AgentisError::General(format!("failed to set permissions: {e}")))?;
+    }
+
+    // Rename over the current binary
+    std::fs::rename(&tmp_path, &current_exe).map_err(|e| {
+        // Clean up temp file on failure
+        let _ = std::fs::remove_file(&tmp_path);
+        AgentisError::General(format!("failed to replace binary (may need sudo): {e}"))
+    })?;
+
+    println!("Updated v{current} -> v{latest}.");
+    Ok(())
+}
+
+/// Detect platform and return the GitHub release asset name.
+fn platform_asset_name() -> Option<&'static str> {
+    if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") {
+        Some("agentis-linux-x86_64")
+    } else if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") {
+        Some("agentis-linux-aarch64")
+    } else if cfg!(target_os = "macos") && cfg!(target_arch = "x86_64") {
+        Some("agentis-macos-x86_64")
+    } else if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
+        Some("agentis-macos-aarch64")
+    } else {
+        None
+    }
+}
+
+/// Compare two semver strings (major.minor.patch).
+fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let parse = |s: &str| -> (u32, u32, u32) {
+        let mut parts = s.split('.');
+        let major = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        let minor = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        let patch = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        (major, minor, patch)
+    };
+    parse(a).cmp(&parse(b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_compare_equal() {
+        assert_eq!(
+            compare_versions("0.6.2", "0.6.2"),
+            std::cmp::Ordering::Equal
+        );
+    }
+
+    #[test]
+    fn version_compare_less_patch() {
+        assert_eq!(compare_versions("0.6.1", "0.6.2"), std::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn version_compare_less_minor() {
+        assert_eq!(compare_versions("0.5.9", "0.6.0"), std::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn version_compare_less_major() {
+        assert_eq!(compare_versions("0.9.9", "1.0.0"), std::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn version_compare_greater() {
+        assert_eq!(
+            compare_versions("1.0.0", "0.9.9"),
+            std::cmp::Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn platform_asset_returns_some() {
+        // Should return Some on any supported build target
+        let name = platform_asset_name();
+        if cfg!(target_os = "linux") || cfg!(target_os = "macos") {
+            assert!(name.is_some());
+            assert!(name.unwrap().starts_with("agentis-"));
         }
     }
 }
