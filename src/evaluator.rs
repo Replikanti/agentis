@@ -1814,12 +1814,12 @@ impl<'a> Evaluator<'a> {
     }
 
     fn eval_field_access(&mut self, expr: &FieldAccessExpr) -> Result<Value, EvalError> {
-        self.spend(1)?;
         let object = self.eval_expr(&expr.object)?;
         match &object {
             Value::Struct(type_name, fields) => {
-                // Dynamic introspect fields — read live from evaluator state
+                // Introspection is free (0 CB) — reading own state, not prompting
                 if type_name == "Introspect" {
+                    // Dynamic fields — read live from evaluator budget state
                     match expr.field.as_str() {
                         "cb_remaining" => return Ok(Value::Int(self.budget as i64)),
                         "cb_spent" => {
@@ -1827,7 +1827,17 @@ impl<'a> Evaluator<'a> {
                         }
                         _ => {}
                     }
+                    // Static introspect fields (generation, lineage_id, etc.)
+                    return fields
+                        .get(&expr.field)
+                        .cloned()
+                        .ok_or_else(|| EvalError::UndefinedField {
+                            type_name: type_name.clone(),
+                            field: expr.field.clone(),
+                        });
                 }
+                // Non-introspect field access costs 1 CB
+                self.spend(1)?;
                 fields
                     .get(&expr.field)
                     .cloned()
@@ -4255,6 +4265,23 @@ mod tests {
         "#,
         );
         assert_eq!(out, &["true"]);
+    }
+
+    #[test]
+    fn introspect_field_access_costs_zero_cb() {
+        // Field access on Introspect is free (0 CB).
+        // Each `let r = introspect.cb_remaining` costs: let(1) + identifier(1) = 2 CB.
+        // If field access also cost 1 CB, diff between reads would be 3.
+        let src = r#"
+            cb 100;
+            let r1 = introspect.cb_remaining;
+            let r2 = introspect.cb_remaining;
+            print(r1 - r2);
+        "#;
+        let out = eval_output(src);
+        // 2 = let binding(1) + identifier lookup(1); field access is free
+        // if field access cost 1 CB too, diff would be 3
+        assert_eq!(out, &["2"]);
     }
 
     #[test]

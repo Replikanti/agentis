@@ -39,6 +39,11 @@ impl Config {
         self.values.get(key).map(|s| s.as_str())
     }
 
+    /// Set a config value (used for CLI overrides).
+    pub fn set(&mut self, key: &str, value: &str) {
+        self.values.insert(key.to_string(), value.to_string());
+    }
+
     /// Get a config value with a default fallback.
     pub fn get_or(&self, key: &str, default: &str) -> String {
         self.values
