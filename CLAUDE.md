@@ -16,7 +16,7 @@ Agentis is an AI-native programming language fused with a Version Control System
 
 ```
 src/
-  main.rs           # CLI (init, commit, run, branch, switch, compile, sync, serve, worker, log, go, mutate, arena, evolve, lineage)
+  main.rs           # CLI (init, commit, run, branch, switch, compile, sync, serve, worker, log, go, mutate, arena, evolve, lineage, lib)
   arena.rs          # Arena runner (rank variants by fitness, table/JSON output)
   evolve.rs         # Evolution loop (generational mutation→arena→select, lineage tracking)
   fitness.rs        # Fitness scoring (FitnessReport, FitnessWeights, JSONL registry)
@@ -35,6 +35,7 @@ src/
   capabilities.rs   # Capability-Based Security (OCap) — unforgeable handles + PiiTransmit
   snapshot.rs       # Orthogonal Persistence — memory snapshots at transaction boundaries
   checkpoint.rs     # Evolution Checkpoints (CheckpointStore, GenerationCheckpoint, binary serde)
+  library.rs        # Persistent Population Library (LibraryStore, LibraryEntry, search, tags)
   colony.rs         # Distributed Colony (ThreadPool, worker node, protocol encode/decode)
   network.rs        # Raw TCP P2P sync (binary HAVE/WANT/DATA/DONE + colony EVAL/RESULT/PING/PONG/AUTH)
   refs.rs           # Branch/reference management (genesis-first)
@@ -58,7 +59,7 @@ Storage: AST → binary serialization → SHA-256 hash → `.agentis/objects/`
 
 ```bash
 cargo build                    # Build
-cargo test                     # Run all tests (642)
+cargo test                     # Run all tests (684)
 cargo test <test_name>         # Run a single test
 cargo clippy                   # Lint
 
@@ -115,6 +116,16 @@ cargo run -- evolve file.ag --resume ab3f -g 10 -n 8  # Resume from checkpoint
 cargo run -- evolve file.ag -g 10 -n 8 --tag "exp-a"  # Tag final checkpoint
 cargo run -- evolve file.ag -g 100 --checkpoint-interval 5  # Checkpoint every 5 gens
 cargo run -- lineage evolved/variant.ag     # Trace ancestry to seed
+cargo run -- lib add file.ag               # Add variant to library (auto-evaluate)
+cargo run -- lib add file.ag --tag "v1" --description "Email classifier"
+cargo run -- lib add file.ag --no-desc     # Skip LLM description generation
+cargo run -- lib list                      # List all library entries
+cargo run -- lib list --tag "email"        # Filter by tag
+cargo run -- lib show <hash-or-tag>        # Show entry details
+cargo run -- lib search "email"            # Search by description/tag (fuzzy)
+cargo run -- lib remove <hash-or-tag>      # Remove entry
+cargo run -- lib tags                      # List all tags
+cargo run -- lib tag <hash> <name>         # Tag an entry
 ```
 
 ## Phase 2 Features
@@ -171,3 +182,7 @@ cargo run -- lineage evolved/variant.ag     # Trace ancestry to seed
 - **Auto-Checkpoint + Resume (M36):** `agentis evolve` auto-checkpoints after each generation (configurable via `--checkpoint-interval N`, 0 disables). `--resume <hash-or-tag>` restores evolution state (parents, best_ever_*, stall_count, cumulative_cb) and continues from checkpoint.generation + 1. `--tag <name>` tags the final checkpoint. Always checkpoints on last generation (including early stops). Generation summary shows `ckpt=<hash_prefix>`.
 - **Colony History CLI (M37):** `agentis colony history [--limit N]` walks checkpoint chain from HEAD with tabular output. `agentis colony trace <hash-or-tag>` shows detailed checkpoint info (scores, stall count, parents, previous). `agentis colony best [--min-score N]` finds highest-scoring checkpoint. Tags resolved and displayed in all views.
 - **Garbage Collection (M38):** `agentis colony gc` removes orphaned checkpoint objects (unreachable from HEAD and untagged). `--older-than D` (e.g. `7d`, `24h`) removes old checkpoints from the live chain. `--except-tagged` preserves tagged checkpoints regardless of age. `--force` removes tagged orphans. `--dry-run` previews deletions. HEAD is never deleted.
+
+## Phase 10 Features (Collaborative Evolution & Budget Intelligence — in progress)
+
+- **Persistent Population Library (M39):** Content-addressed library in `.agentis/library/`. `LibraryEntry` with source, provenance, fitness metrics, description, tags. Binary serialization (magic `AGlb`, version 1). `LibraryStore` with store/load, index, tags, search (substring + fuzzy Levenshtein ≤ 2), resolve, remove. CLI: `agentis lib add/list/show/search/remove/tags/tag`. LLM-generated descriptions (or `--description`/`--desc-from-file`/`--no-desc`). Auto-fitness evaluation on add.
