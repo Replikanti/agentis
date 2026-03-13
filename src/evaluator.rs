@@ -27,6 +27,8 @@ pub struct IntrospectContext {
     pub ancestor_failures: Vec<crate::evolve::AncestorRecord>,
     /// Successful ancestor records (cap: 3, newest first). M45.
     pub ancestor_successes: Vec<crate::evolve::AncestorRecord>,
+    /// Portable identity hash (Phase 12, M49). Empty string if not set.
+    pub identity_hash: String,
 }
 
 impl Default for IntrospectContext {
@@ -37,6 +39,7 @@ impl Default for IntrospectContext {
             arena_size: 0,
             ancestor_failures: Vec::new(),
             ancestor_successes: Vec::new(),
+            identity_hash: String::new(),
         }
     }
 }
@@ -628,6 +631,12 @@ impl<'a> Evaluator<'a> {
         // cb_remaining and cb_spent are placeholders — read dynamically
         fields.insert("cb_remaining".to_string(), Value::Int(0));
         fields.insert("cb_spent".to_string(), Value::Int(0));
+
+        // Identity hash (Phase 12, M49) — free access
+        fields.insert(
+            "identity_hash".to_string(),
+            Value::String(self.introspect.identity_hash.clone()),
+        );
 
         // Ancestor lists (M45)
         let failures: Vec<Value> = self
@@ -4413,6 +4422,7 @@ mod tests {
                 },
             ],
             ancestor_successes: vec![],
+            identity_hash: String::new(),
         };
         let mut evaluator = Evaluator::new(10000).with_introspect(ctx);
         evaluator.grant_all();
@@ -4440,6 +4450,7 @@ mod tests {
                 code_hash: "winner".to_string(),
                 elapsed_ms: 800,
             }],
+            identity_hash: String::new(),
         };
         let mut evaluator = Evaluator::new(10000).with_introspect(ctx);
         evaluator.grant_all();
@@ -4481,6 +4492,7 @@ mod tests {
                 code_hash: "h3".to_string(),
                 elapsed_ms: 300,
             }],
+            identity_hash: String::new(),
         };
         let mut evaluator = Evaluator::new(10000).with_introspect(ctx);
         evaluator.grant_all();
@@ -4511,11 +4523,70 @@ mod tests {
                 elapsed_ms: 30000,
             }],
             ancestor_successes: vec![],
+            identity_hash: String::new(),
         };
         let mut evaluator = Evaluator::new(10000).with_introspect(ctx);
         evaluator.grant_all();
         evaluator.eval_program(&program).unwrap();
         assert_eq!(evaluator.output(), &["1 timeout 0 deadbeef 30000"]);
+    }
+
+    // --- M49: Identity Hash in Introspect ---
+
+    #[test]
+    fn introspect_identity_hash_accessible() {
+        let src = r#"
+            let id = introspect.identity_hash;
+            print(id);
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let ctx = IntrospectContext {
+            identity_hash: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2".to_string(),
+            ..Default::default()
+        };
+        let mut evaluator = Evaluator::new(1000).with_introspect(ctx);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+        assert_eq!(
+            evaluator.output(),
+            &["a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"]
+        );
+    }
+
+    #[test]
+    fn introspect_identity_hash_default_empty() {
+        let src = r#"
+            let id = introspect.identity_hash;
+            print(id == "");
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let mut evaluator = Evaluator::new(1000);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+        assert_eq!(evaluator.output(), &["true"]);
+    }
+
+    #[test]
+    fn introspect_identity_hash_costs_zero_cb() {
+        let src = r#"
+            cb 100;
+            let r1 = introspect.cb_remaining;
+            let id = introspect.identity_hash;
+            let r2 = introspect.cb_remaining;
+            print(r1 - r2);
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let ctx = IntrospectContext {
+            identity_hash: "test_hash_value_64chars_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            ..Default::default()
+        };
+        let mut evaluator = Evaluator::new(1000).with_introspect(ctx);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+        // Between r1 and r2: `let id = introspect.identity_hash` (let=1 + lookup=1 = 2)
+        // + `let r2 = introspect.cb_remaining` (let=1 + lookup=1 = 2) = 4 total.
+        // Field access on Introspect is 0 CB.
+        assert_eq!(evaluator.output(), &["4"]);
     }
 
     // --- M46: Memo Store tests ---

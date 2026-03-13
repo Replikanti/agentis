@@ -1,6 +1,7 @@
 mod arena;
 mod ast;
 mod audit;
+mod bundle;
 mod capabilities;
 #[allow(dead_code)] // M37/M38 will use remaining methods
 mod checkpoint;
@@ -11,6 +12,7 @@ mod error;
 mod evaluator;
 mod evolve;
 mod fitness;
+mod identity;
 mod io;
 mod json;
 mod lexer;
@@ -181,13 +183,16 @@ fn main() {
                     "  --no-lib-add            Disable auto-add best to library at end of run"
                 );
                 eprintln!("  --lib-add-interval N    Also add to library every N generations");
+                eprintln!("  --backup-to <dir>       Auto-export .agb bundle on each new best");
+                eprintln!("  --resume-from <f.agb>   Import bundle and resume evolution from it");
                 eprintln!();
                 eprintln!("Event hooks (in .agentis/config):");
                 eprintln!("  hooks.on_stagnation = reduce_budget 0.3");
                 eprintln!("  hooks.on_new_best = checkpoint tag=improved");
                 eprintln!("  hooks.on_crash = log variant crashed");
+                eprintln!("  hooks.on_new_best = backup /backups/agent");
                 eprintln!("  Actions: checkpoint, tag=<n>, lib_add, log <msg>,");
-                eprintln!("           reduce_budget <f>, inject_library <n>, skip");
+                eprintln!("           reduce_budget <f>, inject_library <n>, backup <dir>, skip");
                 process::exit(1);
             }
             cmd_evolve(&args[2], &args[3..])
@@ -196,6 +201,9 @@ fn main() {
         "colony" => cmd_colony(&args[2..]),
         "memo" => cmd_memo(&args[2..]),
         "lib" => cmd_lib(&args[2..]),
+        "identity" => cmd_identity(&args[2..]),
+        "export" => cmd_export(&args[2..]),
+        "import" => cmd_import(&args[2..]),
         "lineage" => {
             if args.len() < 3 {
                 eprintln!("Usage: agentis lineage <source_file>");
@@ -262,6 +270,9 @@ fn print_usage() {
         "  lib <subcommand>     Population library (add, list, show, search, remove, tags, tag)"
     );
     eprintln!("  audit [flags]        Show prompt audit log");
+    eprintln!("  identity <sub>       Identity hash (hash, show, verify, diff)");
+    eprintln!("  export --out <f.agb> Export agent bundle (.agb)");
+    eprintln!("  import <f.agb>       Import agent bundle");
     eprintln!("  update [--check]     Self-update to the latest release");
     eprintln!("  version              Show version");
 }
@@ -2159,6 +2170,33 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
     let lib_add_interval: Option<usize> =
         parse_flag_value(args, "--lib-add-interval").and_then(|s| s.parse().ok());
     let memo_max_size_flag: Option<String> = parse_flag_value(args, "--memo-max-size");
+    let backup_to = parse_flag_value(args, "--backup-to");
+    let resume_from_bundle = parse_flag_value(args, "--resume-from");
+
+    // Error if both --resume and --resume-from specified
+    if resume_ref.is_some() && resume_from_bundle.is_some() {
+        return Err(AgentisError::General(
+            "Cannot specify both --resume and --resume-from".to_string(),
+        ));
+    }
+
+    // If --resume-from, import the bundle first, then use its checkpoint hash
+    let resume_ref = if let Some(ref bundle_path) = resume_from_bundle {
+        let root = agentis_root();
+        let contents = bundle::read_bundle(bundle_path)?;
+        let result = bundle::import_to_store(&contents, &root, bundle::MemoConflict::Append)?;
+        let hash = result.checkpoint_hash.ok_or_else(|| {
+            AgentisError::General("Bundle has no checkpoint to resume from".to_string())
+        })?;
+        eprintln!(
+            "Imported bundle: {} (checkpoint: {}...)",
+            bundle_path,
+            &hash[..12]
+        );
+        Some(hash)
+    } else {
+        resume_ref
+    };
 
     // Read seed source
     let seed_source = std::fs::read_to_string(source_file)?;
@@ -2812,12 +2850,66 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
                                 );
                             }
                         }
+                        evolve::HookAction::Backup(dir) => {
+                            let id_hash = identity::identity_from_seed(&seed_hash);
+                            match bundle::write_evolve_backup(
+                                dir,
+                                g as u32,
+                                &seed_hash,
+                                &best_variant.source,
+                                None,
+                                &root,
+                                &id_hash,
+                                &[],
+                            ) {
+                                Ok(p) => {
+                                    let size = std::fs::metadata(&p)
+                                        .map(|m| m.len())
+                                        .unwrap_or(0);
+                                    eprintln!(
+                                        "  backup → {} ({} KB)",
+                                        p.display(),
+                                        size / 1024
+                                    );
+                                }
+                                Err(e) => eprintln!("  [hook] backup failed: {}", e),
+                            }
+                        }
                         evolve::HookAction::Log(msg) => {
                             eprintln!("  [hook] new_best: {}", msg);
                         }
                         _ => {}
                     }
                 }
+            }
+        }
+
+        // --backup-to flag: write backup on new best
+        if is_new_best
+            && let Some(ref backup_dir) = backup_to
+        {
+            let id_hash = identity::identity_from_seed(&seed_hash);
+            match bundle::write_evolve_backup(
+                backup_dir,
+                g as u32,
+                &seed_hash,
+                &best_variant.source,
+                None,
+                &root,
+                &id_hash,
+                &[],
+            ) {
+                Ok(p) => {
+                    let size = std::fs::metadata(&p)
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                    eprintln!(
+                        "  backup → {} ({} KB)",
+                        p.display(),
+                        size / 1024
+                    );
+                }
+                Err(e) => eprintln!("  Warning: backup failed: {}", e),
             }
         }
 
@@ -3187,6 +3279,304 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
             }
         }
     }
+
+    Ok(())
+}
+
+fn cmd_identity(args: &[String]) -> Result<(), AgentisError> {
+    if args.is_empty() {
+        eprintln!("Usage: agentis identity <subcommand>");
+        eprintln!("  hash [file.ag]       Compute identity hash (from HEAD checkpoint or seed file)");
+        eprintln!("  show                 Show identity card");
+        eprintln!("  verify <file.agb>    Verify bundle integrity + identity");
+        eprintln!("  diff <a.agb> <b.agb> Compare two bundles");
+        return Ok(());
+    }
+
+    match args[0].as_str() {
+        "hash" => {
+            if let Some(file) = args.get(1) {
+                // Seed-only identity from file
+                let source = std::fs::read_to_string(file)?;
+                let seed_hash = evolve::hash_source(&source);
+                let id = identity::identity_from_seed(&seed_hash);
+                println!("{}", id);
+            } else {
+                // From HEAD checkpoint
+                let root = agentis_root();
+                let ckpt_store = checkpoint::CheckpointStore::new(&root);
+                let head = ckpt_store
+                    .head()
+                    .map_err(|e| AgentisError::General(format!("{e}")))?
+                    .ok_or_else(|| {
+                        AgentisError::General(
+                            "No HEAD checkpoint. Run 'agentis evolve' first or provide a file."
+                                .to_string(),
+                        )
+                    })?;
+                let id = identity::identity_from_checkpoint(&head, &ckpt_store)
+                    .map_err(AgentisError::General)?;
+                println!("{}", id);
+            }
+        }
+        "show" => {
+            let root = agentis_root();
+            let ckpt_store = checkpoint::CheckpointStore::new(&root);
+            let head = ckpt_store
+                .head()
+                .map_err(|e| AgentisError::General(format!("{e}")))?
+                .ok_or_else(|| {
+                    AgentisError::General("No HEAD checkpoint found.".to_string())
+                })?;
+            let ckpt = ckpt_store
+                .load(&head)
+                .map_err(|e| AgentisError::General(format!("{e}")))?;
+            let id = identity::identity_from_checkpoint(&head, &ckpt_store)
+                .map_err(AgentisError::General)?;
+
+            // Collect tags pointing to HEAD
+            let tags = ckpt_store.list_tags().unwrap_or_default();
+            let head_tags: Vec<&str> = tags
+                .iter()
+                .filter(|(_, h)| h == &head)
+                .map(|(n, _)| n.as_str())
+                .collect();
+
+            eprintln!("Identity Card");
+            eprintln!("  Hash:       {}", id);
+            eprintln!("  Seed:       {}...", &ckpt.seed_hash[..12.min(ckpt.seed_hash.len())]);
+            eprintln!("  Generation: {}", ckpt.generation);
+            eprintln!("  Best score: {:.3}", ckpt.best_ever_score);
+            if !head_tags.is_empty() {
+                eprintln!("  Tags:       {}", head_tags.join(", "));
+            }
+            // Drift hint: if stall_count is high, warn
+            if ckpt.stall_count >= 5 {
+                eprintln!(
+                    "  Drift risk: HIGH (stalled {} generations)",
+                    ckpt.stall_count
+                );
+            } else if ckpt.stall_count >= 2 {
+                eprintln!(
+                    "  Drift risk: moderate (stalled {} generations)",
+                    ckpt.stall_count
+                );
+            } else {
+                eprintln!("  Drift risk: low");
+            }
+        }
+        "verify" => {
+            let path = args.get(1).ok_or_else(|| {
+                AgentisError::General("Usage: agentis identity verify <file.agb>".to_string())
+            })?;
+            let report = bundle::verify_bundle(path)?;
+            if report.root_hash_ok {
+                eprintln!("PASS  root hash: {}", &report.computed_root[..16]);
+            } else {
+                eprintln!(
+                    "FAIL  root hash: expected {}, got {}",
+                    &report.stored_root[..16],
+                    &report.computed_root[..16]
+                );
+            }
+            if report.identity_ok {
+                eprintln!("PASS  identity: {}", &report.identity_hash[..16]);
+            } else {
+                eprintln!(
+                    "FAIL  identity: stored {}, recomputed {}",
+                    &report.stored_identity[..16.min(report.stored_identity.len())],
+                    &report.identity_hash[..16.min(report.identity_hash.len())]
+                );
+            }
+            if !report.root_hash_ok || !report.identity_ok {
+                std::process::exit(1);
+            }
+        }
+        "diff" => {
+            if args.len() < 3 {
+                return Err(AgentisError::General(
+                    "Usage: agentis identity diff <a.agb> <b.agb>".to_string(),
+                ));
+            }
+            let a = bundle::read_bundle(&args[1])?;
+            let b = bundle::read_bundle(&args[2])?;
+
+            let same_seed = a.identity.seed_hash == b.identity.seed_hash;
+            eprintln!("Bundle A: {}", &args[1]);
+            eprintln!("  Identity: {}...", &a.identity.identity_hash[..16]);
+            eprintln!("  Seed:     {}...", &a.identity.seed_hash[..12.min(a.identity.seed_hash.len())]);
+            eprintln!("  Gen:      {}", a.identity.generation);
+            eprintln!();
+            eprintln!("Bundle B: {}", &args[2]);
+            eprintln!("  Identity: {}...", &b.identity.identity_hash[..16]);
+            eprintln!("  Seed:     {}...", &b.identity.seed_hash[..12.min(b.identity.seed_hash.len())]);
+            eprintln!("  Gen:      {}", b.identity.generation);
+            eprintln!();
+
+            if same_seed {
+                let gen_delta = (b.identity.generation as i64) - (a.identity.generation as i64);
+                eprintln!("Same seed: yes");
+                eprintln!("Generation delta: {gen_delta:+}");
+            } else {
+                eprintln!("Same seed: no");
+            }
+        }
+        other => {
+            return Err(AgentisError::General(format!(
+                "Unknown identity subcommand: {other}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn cmd_export(args: &[String]) -> Result<(), AgentisError> {
+    let out_path = parse_flag_value(args, "--out").ok_or_else(|| {
+        AgentisError::General("Usage: agentis export --out <file.agb> [--include-memos] [--tag T] [--lineage-depth N]".to_string())
+    })?;
+    let include_memos = args.iter().any(|a| a == "--include-memos");
+    let tag_name = parse_flag_value(args, "--tag");
+    let lineage_depth: Option<usize> =
+        parse_flag_value(args, "--lineage-depth").and_then(|s| s.parse().ok());
+
+    let root = agentis_root();
+    let ckpt_store = checkpoint::CheckpointStore::new(&root);
+
+    // Load HEAD checkpoint
+    let head_hash = ckpt_store
+        .head()
+        .map_err(|e| AgentisError::General(format!("{e}")))?
+        .ok_or_else(|| {
+            AgentisError::General(
+                "No HEAD checkpoint. Run 'agentis evolve' first.".to_string(),
+            )
+        })?;
+    let ckpt = ckpt_store
+        .load(&head_hash)
+        .map_err(|e| AgentisError::General(format!("{e}")))?;
+
+    // Compute identity
+    let id_hash = identity::identity_from_checkpoint(&head_hash, &ckpt_store)
+        .map_err(AgentisError::General)?;
+
+    // Collect tags for this checkpoint
+    let all_tags = ckpt_store.list_tags().unwrap_or_default();
+    let ckpt_tags: Vec<String> = all_tags
+        .iter()
+        .filter(|(_, h)| h == &head_hash)
+        .map(|(n, _)| n.clone())
+        .collect();
+
+    // Build identity section
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let bundle_identity = bundle::BundleIdentity {
+        seed_hash: ckpt.seed_hash.clone(),
+        generation: ckpt.generation,
+        identity_hash: id_hash.clone(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        tags: ckpt_tags,
+        timestamp: ts,
+    };
+
+    // Seed source from best_ever_source
+    let seed_source = ckpt.best_ever_source.clone();
+
+    // Checkpoint data
+    let ckpt_data = Some(ckpt.to_bytes());
+
+    // Memos
+    let memos = if include_memos {
+        let memo_dir = root.join("memo");
+        bundle::collect_memos(&memo_dir)?
+    } else {
+        Vec::new()
+    };
+
+    // Lineage JSONL files
+    let fitness_dir = root.join("fitness");
+    let lineage = bundle::collect_lineage(&fitness_dir, lineage_depth)?;
+
+    // Write bundle
+    bundle::write_bundle(
+        &out_path,
+        &bundle_identity,
+        &seed_source,
+        ckpt_data.as_deref(),
+        &memos,
+        &lineage,
+    )?;
+
+    // Apply tag if requested
+    if let Some(ref tag) = tag_name {
+        let _ = ckpt_store.set_tag(tag, &head_hash);
+    }
+
+    let file_size = std::fs::metadata(&out_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    eprintln!("Exported: {}", out_path);
+    eprintln!("  Identity:   {}...", &id_hash[..16]);
+    eprintln!("  Generation: {}", ckpt.generation);
+    eprintln!("  Size:       {} bytes", file_size);
+
+    Ok(())
+}
+
+fn cmd_import(args: &[String]) -> Result<(), AgentisError> {
+    if args.is_empty() || args[0].starts_with('-') {
+        return Err(AgentisError::General(
+            "Usage: agentis import <file.agb> [--as <name>] [--memo-conflict skip|append|replace]"
+                .to_string(),
+        ));
+    }
+
+    let bundle_path = &args[0];
+    let tag_as = parse_flag_value(args, "--as");
+    let memo_conflict = parse_flag_value(args, "--memo-conflict")
+        .unwrap_or_else(|| "append".to_string());
+
+    let conflict_mode = match memo_conflict.as_str() {
+        "skip" => bundle::MemoConflict::Skip,
+        "append" => bundle::MemoConflict::Append,
+        "replace" => bundle::MemoConflict::Replace,
+        other => {
+            return Err(AgentisError::General(format!(
+                "Unknown memo-conflict mode: {other}. Use skip, append, or replace."
+            )));
+        }
+    };
+
+    let root = agentis_root();
+
+    // Read and validate bundle
+    let contents = bundle::read_bundle(bundle_path)?;
+
+    // Import to store
+    let result = bundle::import_to_store(&contents, &root, conflict_mode)?;
+
+    // Tag checkpoint if --as specified
+    if let Some(ref tag) = tag_as
+        && let Some(ref ckpt_hash) = result.checkpoint_hash
+    {
+        let ckpt_store = checkpoint::CheckpointStore::new(&root);
+        ckpt_store
+            .set_tag(tag, ckpt_hash)
+            .map_err(|e| AgentisError::General(format!("tag: {e}")))?;
+    }
+
+    eprintln!("Imported: {}", bundle_path);
+    eprintln!(
+        "  Identity: {}...",
+        &contents.identity.identity_hash[..16.min(contents.identity.identity_hash.len())]
+    );
+    if let Some(ref h) = result.checkpoint_hash {
+        eprintln!("  Checkpoint: {}...", &h[..12]);
+    }
+    eprintln!("  Memos restored: {}", result.memo_keys_restored);
+    eprintln!("  Lineage files:  {}", result.lineage_files_restored);
 
     Ok(())
 }

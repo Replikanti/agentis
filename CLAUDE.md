@@ -16,9 +16,11 @@ Agentis is an AI-native programming language fused with a Version Control System
 
 ```
 src/
-  main.rs           # CLI (init, commit, run, branch, switch, compile, sync, serve, worker, log, go, mutate, arena, evolve, lineage, lib)
+  main.rs           # CLI (init, commit, run, branch, switch, compile, sync, serve, worker, log, go, mutate, arena, evolve, lineage, lib, identity, export, import)
   arena.rs          # Arena runner (rank variants by fitness, table/JSON output)
-  evolve.rs         # Evolution loop (generational mutation→arena→select, lineage tracking, SimpleRng, warm-start, adaptive budget, event hooks)
+  evolve.rs         # Evolution loop (generational mutation→arena→select, lineage tracking, SimpleRng, warm-start, adaptive budget, event hooks, backup hook)
+  identity.rs       # Identity hash computation (SHA-256 with AGID salt, checkpoint chain walking)
+  bundle.rs         # Portable agent bundle format (.agb): write/read/import/verify, backup helper
   fitness.rs        # Fitness scoring (FitnessReport, FitnessWeights, JSONL registry)
   mutation.rs       # Mutation engine (extract agents, mock/LLM mutations, source reconstruction)
   lexer.rs          # Tokenizer
@@ -140,6 +142,19 @@ cargo run -- lib export --out best.alib --top 5           # Export top 5
 cargo run -- lib export --out tagged.alib --tag email-v3  # Export by tag
 cargo run -- lib import bundle.alib                       # Import bundle
 cargo run -- lib import bundle.alib --skip-duplicates     # Skip existing
+cargo run -- identity hash                                 # Identity from HEAD checkpoint
+cargo run -- identity hash file.ag                        # Seed-only identity
+cargo run -- identity show                                # Identity card (hash, seed, gen, drift)
+cargo run -- identity verify agent.agb                    # Verify bundle integrity
+cargo run -- identity diff a.agb b.agb                    # Compare two bundles
+cargo run -- export --out agent.agb                       # Export agent bundle
+cargo run -- export --out agent.agb --include-memos       # Include memo store
+cargo run -- export --out agent.agb --lineage-depth 10    # Limit lineage files
+cargo run -- import agent.agb                             # Import agent bundle
+cargo run -- import agent.agb --as stable                 # Import + tag checkpoint
+cargo run -- import agent.agb --memo-conflict replace     # Overwrite local memos
+cargo run -- evolve file.ag -g 10 -n 8 --backup-to /backups  # Auto-backup on new best
+cargo run -- evolve file.ag -g 10 -n 8 --resume-from agent.agb  # Resume from bundle
 cargo run -- version                                      # Show current version
 cargo run -- update --check                               # Check for new release
 cargo run -- update                                       # Self-update to latest release
@@ -205,5 +220,13 @@ cargo run -- update                                       # Self-update to lates
 - **Persistent Population Library (M39):** Content-addressed library in `.agentis/library/`. `LibraryEntry` with source, provenance, fitness metrics, description, tags. Binary serialization (magic `AGlb`, version 1). `LibraryStore` with store/load, index, tags, search (substring + fuzzy Levenshtein ≤ 2), resolve, remove. CLI: `agentis lib add/list/show/search/remove/tags/tag`. LLM-generated descriptions (or `--description`/`--desc-from-file`/`--no-desc`). Auto-fitness evaluation on add. Auto-add best variant to library at end of `evolve` run if score ≥ `lib.min_auto_score` (default 0.8). Opt-out via `--no-lib-add`. Periodic auto-add via `--lib-add-interval N`.
 - **Smart Seeding & Warm-start (M40):** `--seed-from-lib <query>` loads library entries as warm-start seeds for evolution. `--seed-top-k N` limits to top N. `--warm-start-prob P` controls per-variant injection probability (default 0.3). `--warm-start-decay P` linearly decays probability. `SimpleRng` xorshift64 PRNG (no rand crate). Provenance tracking: "seed-file"/"population"/"library" per variant in JSONL lineage. Generation summary shows provenance breakdown when library entries are active.
 - **Per-lineage Budget Caps (M41):** `--adaptive-budget` enables dynamic per-lineage budget allocation. `LineageBudget` tracks fraction, CB, recent scores, stall count. `AdaptiveBudgetManager` with register/update/allocate_slots. Growing lineages (Δscore > 0.01 over window) get +50% allocation; stalled lineages reduced to 1/3; dead lineages (stall > 2×window) terminated. Slot allocation via floor + remainder distribution. `--max-lineage-fraction F` (default 0.5), `--lineage-stall-window N` (default 5). Generation summary shows budget allocation when multiple lineages active.
-- **Event Hooks (M42):** Config-driven reactions to evolution events. 4 event types: `on_stagnation`, `on_new_best`, `on_validation_fail`, `on_crash`. 7 action types: `checkpoint`, `tag=<name>`, `lib_add`, `log <msg>`, `reduce_budget <frac>`, `inject_library <count>`, `skip`. Config syntax: `hooks.on_stagnation = reduce_budget 0.3`. Invalid hook syntax reported at startup before evolution begins. Only predefined action vocabulary — no arbitrary shell commands.
+- **Event Hooks (M42):** Config-driven reactions to evolution events. 4 event types: `on_stagnation`, `on_new_best`, `on_validation_fail`, `on_crash`. 8 action types: `checkpoint`, `tag=<name>`, `lib_add`, `log <msg>`, `reduce_budget <frac>`, `inject_library <count>`, `backup <dir>`, `skip`. Config syntax: `hooks.on_stagnation = reduce_budget 0.3`. Invalid hook syntax reported at startup before evolution begins. Only predefined action vocabulary — no arbitrary shell commands.
 - **Portable Library Export/Import (M43):** `agentis lib export --out bundle.alib` exports library entries as portable `.alib` bundles. Selection by `--tag T`, `--top N`, or `--all`. Bundle format: magic `ALIb`, version 1, u32 entry_count, length-prefixed serialized entries. `agentis lib import bundle.alib` imports entries with optional `--skip-duplicates` (checks source_hash). Graceful handling of truncated/corrupt bundles (imports as many entries as possible before stopping).
+
+## Phase 12 Features (Portable Agent Identity — complete)
+
+- **Identity Hash (M49):** Deterministic identity fingerprint from (seed_hash, generation, lineage chain). `SHA-256(b"AGID" || seed_hash || generation_u32_le || chain_hashes)`. `identity_from_checkpoint` walks parent chain. `identity_from_seed` for gen 0. `introspect.identity_hash` accessible in .ag code (0 CB). CLI: `agentis identity hash [file.ag]`.
+- **Bundle Format (M50):** `.agb` binary bundle format (magic `AGBu`, version 1). Tagged sections: IDENTITY(0x01), SEED(0x02), CHECKPOINT(0x03), MEMO(0x04), LINEAGE(0x05), ROOT_HASH(0xFF). Unknown sections skipped (forward compat). SHA-256 root hash integrity check. CLI: `agentis export --out agent.agb [--include-memos] [--tag T] [--lineage-depth N]`.
+- **Bundle Import (M51):** `agentis import agent.agb [--as name] [--memo-conflict skip|append|replace]`. Restores checkpoint (sets HEAD), memos (append/skip/replace), lineage JSONL. `agentis evolve --resume-from agent.agb` imports bundle then continues evolution.
+- **Auto-Backup Hook (M52):** `HookAction::Backup(String)` — `hooks.on_new_best = backup /path`. `--backup-to <dir>` flag writes `g{gen}-best.agb` + `latest.agb` on each new best.
+- **Identity CLI Polish (M53):** `agentis identity show` — formatted identity card (hash, seed, generation, tags, drift risk). `agentis identity verify <file.agb>` — root hash + identity validation (PASS/FAIL). `agentis identity diff <a.agb> <b.agb>` — compare seed, generation delta.
