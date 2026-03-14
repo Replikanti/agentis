@@ -4541,7 +4541,8 @@ mod tests {
         "#;
         let program = Parser::parse_source(src).unwrap();
         let ctx = IntrospectContext {
-            identity_hash: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2".to_string(),
+            identity_hash: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+                .to_string(),
             ..Default::default()
         };
         let mut evaluator = Evaluator::new(1000).with_introspect(ctx);
@@ -4577,7 +4578,8 @@ mod tests {
         "#;
         let program = Parser::parse_source(src).unwrap();
         let ctx = IntrospectContext {
-            identity_hash: "test_hash_value_64chars_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            identity_hash: "test_hash_value_64chars_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
             ..Default::default()
         };
         let mut evaluator = Evaluator::new(1000).with_introspect(ctx);

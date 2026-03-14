@@ -105,7 +105,9 @@ fn write_string(buf: &mut Vec<u8>, s: &str) {
 
 fn read_u32(data: &[u8], pos: &mut usize) -> Result<u32, AgentisError> {
     if *pos + 4 > data.len() {
-        return Err(AgentisError::General("bundle: unexpected end reading u32".into()));
+        return Err(AgentisError::General(
+            "bundle: unexpected end reading u32".into(),
+        ));
     }
     let val = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap());
     *pos += 4;
@@ -114,7 +116,9 @@ fn read_u32(data: &[u8], pos: &mut usize) -> Result<u32, AgentisError> {
 
 fn read_u64(data: &[u8], pos: &mut usize) -> Result<u64, AgentisError> {
     if *pos + 8 > data.len() {
-        return Err(AgentisError::General("bundle: unexpected end reading u64".into()));
+        return Err(AgentisError::General(
+            "bundle: unexpected end reading u64".into(),
+        ));
     }
     let val = u64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
     *pos += 8;
@@ -123,7 +127,9 @@ fn read_u64(data: &[u8], pos: &mut usize) -> Result<u64, AgentisError> {
 
 fn read_u8(data: &[u8], pos: &mut usize) -> Result<u8, AgentisError> {
     if *pos >= data.len() {
-        return Err(AgentisError::General("bundle: unexpected end reading u8".into()));
+        return Err(AgentisError::General(
+            "bundle: unexpected end reading u8".into(),
+        ));
     }
     let val = data[*pos];
     *pos += 1;
@@ -133,7 +139,9 @@ fn read_u8(data: &[u8], pos: &mut usize) -> Result<u8, AgentisError> {
 fn read_string(data: &[u8], pos: &mut usize) -> Result<String, AgentisError> {
     let len = read_u32(data, pos)? as usize;
     if *pos + len > data.len() {
-        return Err(AgentisError::General("bundle: unexpected end reading string".into()));
+        return Err(AgentisError::General(
+            "bundle: unexpected end reading string".into(),
+        ));
     }
     let s = String::from_utf8(data[*pos..*pos + len].to_vec())
         .map_err(|_| AgentisError::General("bundle: invalid UTF-8".into()))?;
@@ -143,7 +151,9 @@ fn read_string(data: &[u8], pos: &mut usize) -> Result<String, AgentisError> {
 
 fn read_bytes(data: &[u8], pos: &mut usize, len: usize) -> Result<Vec<u8>, AgentisError> {
     if *pos + len > data.len() {
-        return Err(AgentisError::General("bundle: unexpected end reading bytes".into()));
+        return Err(AgentisError::General(
+            "bundle: unexpected end reading bytes".into(),
+        ));
     }
     let bytes = data[*pos..*pos + len].to_vec();
     *pos += len;
@@ -344,10 +354,10 @@ fn parse_bundle(data: &[u8]) -> Result<BundleContents, AgentisError> {
                     identity = Some(deserialize_identity(&section_data)?);
                 }
                 SECTION_SEED => {
-                    seed_source = Some(
-                        String::from_utf8(section_data)
-                            .map_err(|_| AgentisError::General("bundle: invalid seed UTF-8".into()))?,
-                    );
+                    seed_source =
+                        Some(String::from_utf8(section_data).map_err(|_| {
+                            AgentisError::General("bundle: invalid seed UTF-8".into())
+                        })?);
                 }
                 SECTION_CHECKPOINT => {
                     checkpoint_data = Some(section_data);
@@ -377,8 +387,10 @@ fn parse_bundle(data: &[u8]) -> Result<BundleContents, AgentisError> {
         }
     }
 
-    let id = identity.ok_or_else(|| AgentisError::General("bundle: missing IDENTITY section".into()))?;
-    let seed = seed_source.ok_or_else(|| AgentisError::General("bundle: missing SEED section".into()))?;
+    let id =
+        identity.ok_or_else(|| AgentisError::General("bundle: missing IDENTITY section".into()))?;
+    let seed =
+        seed_source.ok_or_else(|| AgentisError::General("bundle: missing SEED section".into()))?;
 
     Ok(BundleContents {
         identity: id,
@@ -425,7 +437,8 @@ pub fn verify_bundle(path: &str) -> Result<VerifyReport, AgentisError> {
     let computed_root = sha256_hex(&data[..root_hash_start]);
     let root_hash_ok = computed_root == stored_root;
 
-    let id = identity.ok_or_else(|| AgentisError::General("bundle: missing IDENTITY section".into()))?;
+    let id =
+        identity.ok_or_else(|| AgentisError::General("bundle: missing IDENTITY section".into()))?;
 
     // Identity verification: verify the stored identity_hash is a valid SHA-256 hex string.
     // Full recomputation requires the checkpoint chain which the bundle may not contain.
@@ -449,11 +462,7 @@ pub fn collect_memos(memo_dir: &Path) -> Result<Vec<MemoEntry>, AgentisError> {
     }
     let mut entries: Vec<_> = std::fs::read_dir(memo_dir)?
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|ext| ext == "jsonl")
-        })
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
         .collect();
     entries.sort_by_key(|e| e.file_name());
 
@@ -482,11 +491,7 @@ pub fn collect_lineage(
     }
     let mut files: Vec<_> = std::fs::read_dir(fitness_dir)?
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|ext| ext == "jsonl")
-        })
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
         .collect();
     files.sort_by_key(|e| e.file_name());
 
@@ -661,18 +666,14 @@ mod tests {
         let id = make_test_identity();
         let seed = "let x = 42;\nprint(x);";
         let ckpt = b"AGCK fake checkpoint data";
-        let memos = vec![
-            MemoEntry {
-                key: "strategy".to_string(),
-                content: "{\"msg\":\"be careful\"}\n".to_string(),
-            },
-        ];
-        let lineage = vec![
-            LineageEntry {
-                filename: "g01.jsonl".to_string(),
-                content: "{\"gen\":1}\n".to_string(),
-            },
-        ];
+        let memos = vec![MemoEntry {
+            key: "strategy".to_string(),
+            content: "{\"msg\":\"be careful\"}\n".to_string(),
+        }];
+        let lineage = vec![LineageEntry {
+            filename: "g01.jsonl".to_string(),
+            content: "{\"gen\":1}\n".to_string(),
+        }];
 
         write_bundle(&path_str, &id, seed, Some(ckpt), &memos, &lineage).unwrap();
         let contents = read_bundle(&path_str).unwrap();
@@ -878,12 +879,10 @@ mod tests {
             seed_source: "code".to_string(),
             checkpoint_data: None,
             memos: vec![],
-            lineage_data: vec![
-                LineageEntry {
-                    filename: "g01.jsonl".to_string(),
-                    content: "{\"gen\":1}\n".to_string(),
-                },
-            ],
+            lineage_data: vec![LineageEntry {
+                filename: "g01.jsonl".to_string(),
+                content: "{\"gen\":1}\n".to_string(),
+            }],
         };
 
         let result = import_to_store(&contents, agentis_root, MemoConflict::Append).unwrap();

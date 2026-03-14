@@ -2863,14 +2863,8 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
                                 &[],
                             ) {
                                 Ok(p) => {
-                                    let size = std::fs::metadata(&p)
-                                        .map(|m| m.len())
-                                        .unwrap_or(0);
-                                    eprintln!(
-                                        "  backup → {} ({} KB)",
-                                        p.display(),
-                                        size / 1024
-                                    );
+                                    let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+                                    eprintln!("  backup → {} ({} KB)", p.display(), size / 1024);
                                 }
                                 Err(e) => eprintln!("  [hook] backup failed: {}", e),
                             }
@@ -2885,9 +2879,7 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         }
 
         // --backup-to flag: write backup on new best
-        if is_new_best
-            && let Some(ref backup_dir) = backup_to
-        {
+        if is_new_best && let Some(ref backup_dir) = backup_to {
             let id_hash = identity::identity_from_seed(&seed_hash);
             match bundle::write_evolve_backup(
                 backup_dir,
@@ -2900,14 +2892,8 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
                 &[],
             ) {
                 Ok(p) => {
-                    let size = std::fs::metadata(&p)
-                        .map(|m| m.len())
-                        .unwrap_or(0);
-                    eprintln!(
-                        "  backup → {} ({} KB)",
-                        p.display(),
-                        size / 1024
-                    );
+                    let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+                    eprintln!("  backup → {} ({} KB)", p.display(), size / 1024);
                 }
                 Err(e) => eprintln!("  Warning: backup failed: {}", e),
             }
@@ -3286,7 +3272,9 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
 fn cmd_identity(args: &[String]) -> Result<(), AgentisError> {
     if args.is_empty() {
         eprintln!("Usage: agentis identity <subcommand>");
-        eprintln!("  hash [file.ag]       Compute identity hash (from HEAD checkpoint or seed file)");
+        eprintln!(
+            "  hash [file.ag]       Compute identity hash (from HEAD checkpoint or seed file)"
+        );
         eprintln!("  show                 Show identity card");
         eprintln!("  verify <file.agb>    Verify bundle integrity + identity");
         eprintln!("  diff <a.agb> <b.agb> Compare two bundles");
@@ -3325,9 +3313,7 @@ fn cmd_identity(args: &[String]) -> Result<(), AgentisError> {
             let head = ckpt_store
                 .head()
                 .map_err(|e| AgentisError::General(format!("{e}")))?
-                .ok_or_else(|| {
-                    AgentisError::General("No HEAD checkpoint found.".to_string())
-                })?;
+                .ok_or_else(|| AgentisError::General("No HEAD checkpoint found.".to_string()))?;
             let ckpt = ckpt_store
                 .load(&head)
                 .map_err(|e| AgentisError::General(format!("{e}")))?;
@@ -3344,7 +3330,10 @@ fn cmd_identity(args: &[String]) -> Result<(), AgentisError> {
 
             eprintln!("Identity Card");
             eprintln!("  Hash:       {}", id);
-            eprintln!("  Seed:       {}...", &ckpt.seed_hash[..12.min(ckpt.seed_hash.len())]);
+            eprintln!(
+                "  Seed:       {}...",
+                &ckpt.seed_hash[..12.min(ckpt.seed_hash.len())]
+            );
             eprintln!("  Generation: {}", ckpt.generation);
             eprintln!("  Best score: {:.3}", ckpt.best_ever_score);
             if !head_tags.is_empty() {
@@ -3404,12 +3393,18 @@ fn cmd_identity(args: &[String]) -> Result<(), AgentisError> {
             let same_seed = a.identity.seed_hash == b.identity.seed_hash;
             eprintln!("Bundle A: {}", &args[1]);
             eprintln!("  Identity: {}...", &a.identity.identity_hash[..16]);
-            eprintln!("  Seed:     {}...", &a.identity.seed_hash[..12.min(a.identity.seed_hash.len())]);
+            eprintln!(
+                "  Seed:     {}...",
+                &a.identity.seed_hash[..12.min(a.identity.seed_hash.len())]
+            );
             eprintln!("  Gen:      {}", a.identity.generation);
             eprintln!();
             eprintln!("Bundle B: {}", &args[2]);
             eprintln!("  Identity: {}...", &b.identity.identity_hash[..16]);
-            eprintln!("  Seed:     {}...", &b.identity.seed_hash[..12.min(b.identity.seed_hash.len())]);
+            eprintln!(
+                "  Seed:     {}...",
+                &b.identity.seed_hash[..12.min(b.identity.seed_hash.len())]
+            );
             eprintln!("  Gen:      {}", b.identity.generation);
             eprintln!();
 
@@ -3447,9 +3442,7 @@ fn cmd_export(args: &[String]) -> Result<(), AgentisError> {
         .head()
         .map_err(|e| AgentisError::General(format!("{e}")))?
         .ok_or_else(|| {
-            AgentisError::General(
-                "No HEAD checkpoint. Run 'agentis evolve' first.".to_string(),
-            )
+            AgentisError::General("No HEAD checkpoint. Run 'agentis evolve' first.".to_string())
         })?;
     let ckpt = ckpt_store
         .load(&head_hash)
@@ -3514,9 +3507,7 @@ fn cmd_export(args: &[String]) -> Result<(), AgentisError> {
         let _ = ckpt_store.set_tag(tag, &head_hash);
     }
 
-    let file_size = std::fs::metadata(&out_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let file_size = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
     eprintln!("Exported: {}", out_path);
     eprintln!("  Identity:   {}...", &id_hash[..16]);
     eprintln!("  Generation: {}", ckpt.generation);
@@ -3535,8 +3526,8 @@ fn cmd_import(args: &[String]) -> Result<(), AgentisError> {
 
     let bundle_path = &args[0];
     let tag_as = parse_flag_value(args, "--as");
-    let memo_conflict = parse_flag_value(args, "--memo-conflict")
-        .unwrap_or_else(|| "append".to_string());
+    let memo_conflict =
+        parse_flag_value(args, "--memo-conflict").unwrap_or_else(|| "append".to_string());
 
     let conflict_mode = match memo_conflict.as_str() {
         "skip" => bundle::MemoConflict::Skip,
