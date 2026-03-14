@@ -4570,8 +4570,7 @@ mod tests {
         std::fs::copy("/usr/bin/sleep", &binary_path).unwrap();
 
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755))
-            .unwrap();
+        std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let mut child = std::process::Command::new(&binary_path)
             .arg("60")
@@ -4581,8 +4580,7 @@ mod tests {
         // Write replacement in same directory, then rename over running binary
         let tmp_path = dir.path().join(".agentis-update-tmp");
         std::fs::write(&tmp_path, b"#!/bin/sh\necho updated\n").unwrap();
-        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755))
-            .unwrap();
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let result = std::fs::rename(&tmp_path, &binary_path);
         assert!(result.is_ok(), "same-dir rename should succeed: {result:?}");
@@ -4604,8 +4602,7 @@ mod tests {
         std::fs::copy("/usr/bin/sleep", &binary_path).unwrap();
 
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755))
-            .unwrap();
+        std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let mut child = std::process::Command::new(&binary_path)
             .arg("60")
@@ -4636,8 +4633,7 @@ mod tests {
         std::fs::copy("/usr/bin/sleep", &binary_path).unwrap();
 
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755))
-            .unwrap();
+        std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let mut child = std::process::Command::new(&binary_path)
             .arg("60")
@@ -4646,8 +4642,7 @@ mod tests {
 
         let tmp_path = dir.path().join(".update-tmp");
         std::fs::write(&tmp_path, b"#!/bin/sh\necho replaced\n").unwrap();
-        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755))
-            .unwrap();
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         // Remove (unlinks inode) then copy — both should succeed
         assert!(std::fs::remove_file(&binary_path).is_ok());
