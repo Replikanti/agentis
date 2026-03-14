@@ -69,16 +69,74 @@ Configure in `.agentis/config` (created by `agentis init`):
 ## CLI
 
 ```bash
-agentis init                  # Create .agentis/ with genesis branch
-agentis go <file.ag>          # Commit + run in one step
-agentis go <file.ag> --trace  # Same, with verbose trace output
-agentis doctor                # Pre-flight environment check
-agentis commit <file.ag>      # Parse and store AST
-agentis run <branch>          # Execute code from a branch
-agentis branch                # List branches
-agentis branch <name>         # Create new branch
-agentis switch <name>         # Switch branch
-agentis log                   # Show commit history
+# Basics
+agentis init                          # Create .agentis/ with genesis branch
+agentis init --secure                 # Locked-down config (PII denied, audit on)
+agentis go file.ag                    # Commit + run in one step
+agentis go file.ag --fitness          # Run + print fitness report
+agentis commit file.ag                # Parse and store AST
+agentis run <branch>                  # Execute code from a branch
+agentis branch [name]                 # List or create branches
+agentis switch <name>                 # Switch branch
+agentis log                           # Show commit history
+agentis doctor                        # Pre-flight environment check
+
+# Development
+agentis test <files|dir>              # Run validate/explore tests
+agentis repl                          # Interactive evaluator
+agentis repl --resume <hash>          # Resume from snapshot (30% CB penalty)
+agentis compile <branch>              # Compile branch to WASM binary
+agentis snapshot list|show <hash>     # Inspect persisted snapshots
+
+# Evolution
+agentis mutate file.ag --count 5      # Generate mutated variants
+agentis arena dir/ --rounds 3         # Rank variants by fitness
+agentis evolve file.ag -g 20 -n 8    # Evolve: 20 generations, pop 8
+agentis evolve file.ag --resume <hash> -g 10 -n 8  # Resume from checkpoint
+agentis evolve file.ag --resume-from agent.agb      # Resume from bundle
+agentis evolve file.ag --backup-to /backups         # Auto-backup on new best
+agentis evolve file.ag --adaptive-budget             # Dynamic per-lineage budgets
+agentis evolve file.ag --seed-from-lib "email"       # Warm-start from library
+agentis lineage evolved/variant.ag    # Trace ancestry to seed
+
+# Library
+agentis lib add file.ag --tag "v1"    # Add variant to library
+agentis lib list [--tag T]            # List entries (optionally filtered)
+agentis lib search "email"            # Fuzzy search by description/tag
+agentis lib show <hash-or-tag>        # Show entry details
+agentis lib export --out b.alib --all # Export library bundle
+agentis lib import bundle.alib        # Import library bundle
+
+# Identity & Portability
+agentis identity hash                 # Identity from HEAD checkpoint
+agentis identity hash file.ag         # Seed-only identity
+agentis identity show                 # Identity card (hash, gen, drift hint)
+agentis identity verify agent.agb     # Verify bundle integrity (PASS/FAIL)
+agentis identity diff a.agb b.agb     # Compare two bundles
+agentis export --out agent.agb        # Export portable .agb bundle
+agentis export --out a.agb --include-memos --tag stable
+agentis import agent.agb              # Import bundle (checkpoint + memos + lineage)
+agentis import agent.agb --memo-conflict replace    # Overwrite local memos
+
+# Colony (distributed)
+agentis worker [addr:port]            # Start colony worker node
+agentis arena dir/ --workers h1:9462,h2:9462        # Distributed arena
+agentis colony status --workers W     # Worker health table
+agentis colony history [--limit N]    # Checkpoint chain
+agentis colony best [--min-score 0.9] # Find best checkpoint
+agentis colony gc [--older-than 7d]   # Garbage-collect checkpoints
+agentis sync <host:port>              # Sync objects with remote peer
+agentis serve [addr:port]             # Listen for incoming sync
+
+# Memory & Audit
+agentis memo list                     # Show memo keys and entry counts
+agentis memo stats                    # Memo store size and key count
+agentis memo clear [key]              # Manual cleanup
+agentis audit [--pii-only] [--last N] # View prompt audit log
+
+# Maintenance
+agentis version                       # Show current version
+agentis update                        # Self-update to latest release
 ```
 
 ## Why Agentis?
