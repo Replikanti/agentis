@@ -26,6 +26,7 @@ pub struct PromptAuditEntry<'a> {
     pub pii_transmit_granted: bool,
     pub backend_name: &'a str,
     pub model: &'a str,
+    pub cb_cost: u64,
 }
 
 /// JSONL audit logger. Thread-safe via Mutex around file handle.
@@ -98,6 +99,7 @@ impl AuditLog {
             ),
             ("backend", JsonValue::String(entry.backend_name.to_string())),
             ("model", JsonValue::String(entry.model.to_string())),
+            ("cb_cost", JsonValue::Int(entry.cb_cost as i64)),
         ]);
 
         let line = format!("{obj}\n");
@@ -105,9 +107,39 @@ impl AuditLog {
             let _ = f.write_all(line.as_bytes());
         }
     }
+
+    /// Log a confidence() call as a JSONL line.
+    pub fn log_confidence(
+        &self,
+        instruction: &str,
+        sample_count: usize,
+        agreement: f64,
+        confidence: f64,
+    ) {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let instruction_hash = sha256_short(instruction);
+        let obj = json::object(vec![
+            ("ts", JsonValue::Int(ts)),
+            ("type", JsonValue::String("confidence".to_string())),
+            (
+                "instruction_hash",
+                JsonValue::String(instruction_hash),
+            ),
+            ("sample_count", JsonValue::Int(sample_count as i64)),
+            ("agreement", JsonValue::Float(agreement)),
+            ("confidence", JsonValue::Float(confidence)),
+        ]);
+        let line = format!("{obj}\n");
+        if let Ok(mut f) = self.file.lock() {
+            let _ = f.write_all(line.as_bytes());
+        }
+    }
 }
 
-fn sha256_short(data: &str) -> String {
+pub(crate) fn sha256_short(data: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data.as_bytes());
     let result = hasher.finalize();
@@ -154,6 +186,7 @@ mod tests {
             pii_transmit_granted: false,
             backend_name: "mock",
             model: "",
+            cb_cost: 50,
         };
         log.log_prompt(&entry);
         drop(log);
@@ -197,6 +230,7 @@ mod tests {
             pii_transmit_granted: true,
             backend_name: "cli",
             model: "claude",
+            cb_cost: 50,
         };
         log.log_prompt(&entry);
         drop(log);
@@ -228,6 +262,7 @@ mod tests {
             pii_transmit_granted: false,
             backend_name: "mock",
             model: "",
+            cb_cost: 50,
         };
         log.log_prompt(&entry);
         drop(log);
@@ -253,6 +288,7 @@ mod tests {
                 pii_transmit_granted: false,
                 backend_name: "mock",
                 model: "",
+                cb_cost: 50,
             };
             log.log_prompt(&entry);
         }

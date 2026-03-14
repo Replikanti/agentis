@@ -1,0 +1,35 @@
+// Budget-Aware Classifier — Phase 13 Demo
+//
+// Demonstrates estimate_cb and confidence builtins for
+// cost-aware, reliability-aware agent decisions.
+//
+// Run:    agentis go examples/budget-aware-classifier.ag --fitness
+// Evolve: agentis evolve examples/budget-aware-classifier.ag -g 5 -n 4
+
+agent classifier(text: string) -> string {
+    cb 500;
+
+    // Estimate cost of the deep analysis strategy
+    let cost = estimate_cb("analyze deeply", text);
+
+    // Sample agreement on a quick classification
+    let conf = confidence("extract facts", text, 3);
+
+    // Strategy 1: Budget too tight for deep analysis — use cheap path
+    if cost > introspect.cb_remaining * 4 / 10 {
+        return prompt("classify briefly", text) -> string;
+    };
+
+    // Strategy 2: Low agreement — use more explicit prompt
+    if conf.agreement < 65 / 100 {
+        return prompt("classify with examples", text) -> string;
+    };
+
+    // Strategy 3: Budget available + high confidence — go deep
+    return prompt("analyze deeply", text) -> string;
+}
+
+// Test with a short input
+let result = classifier("This product is amazing, best purchase ever!");
+print(result);
+print("avg CB per prompt: " + to_string(introspect.avg_cb_per_prompt));

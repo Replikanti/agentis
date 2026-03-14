@@ -357,6 +357,8 @@ agentis evolve solver --backends claude,ollama,gemini
 ## Review Notes & Prioritization Guidance
 
 **Implemented in Phase 11 (v0.7.0):** Ideas #1 (Introspection) and #2 (Composite Memory).
+**Implemented in Phase 12 (v0.8.0):** Portable Agent Identity (#9 partially — content-addressed bundles with identity hashes, export/import).
+**Implemented in Phase 13 (v0.9.0):** Ideas #8 (Budget Prediction) and #12 (Confidence Primitive).
 
 **Recommended next priorities (post Phase 11):**
 1. Idea #8 — Budget Prediction (dramatically improves stability)
