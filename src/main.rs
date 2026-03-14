@@ -4556,6 +4556,110 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    // -- Self-update "Text file busy" (ETXTBSY) integration tests ----------
+    // These spawn a real running binary, then exercise the three replacement
+    // strategies to prove the fix works on Linux.
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn update_same_dir_rename_replaces_running_binary() {
+        // Primary path: rename() within the same filesystem succeeds even
+        // while the target binary is being executed.
+        let dir = tempfile::tempdir().unwrap();
+        let binary_path = dir.path().join("test-binary");
+        std::fs::copy("/usr/bin/sleep", &binary_path).unwrap();
+
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+
+        let mut child = std::process::Command::new(&binary_path)
+            .arg("60")
+            .spawn()
+            .unwrap();
+
+        // Write replacement in same directory, then rename over running binary
+        let tmp_path = dir.path().join(".agentis-update-tmp");
+        std::fs::write(&tmp_path, b"#!/bin/sh\necho updated\n").unwrap();
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+
+        let result = std::fs::rename(&tmp_path, &binary_path);
+        assert!(result.is_ok(), "same-dir rename should succeed: {result:?}");
+
+        let content = std::fs::read(&binary_path).unwrap();
+        assert!(content.starts_with(b"#!/bin/sh"));
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn update_direct_write_to_running_binary_gives_etxtbsy() {
+        // Proves that writing directly to a running ELF binary produces
+        // ETXTBSY (os error 26) — the exact error we hit before the fix.
+        let dir = tempfile::tempdir().unwrap();
+        let binary_path = dir.path().join("test-binary");
+        std::fs::copy("/usr/bin/sleep", &binary_path).unwrap();
+
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+
+        let mut child = std::process::Command::new(&binary_path)
+            .arg("60")
+            .spawn()
+            .unwrap();
+
+        // Direct write (what copy() does internally) must fail with ETXTBSY
+        let result = std::fs::write(&binary_path, &[0u8; 64]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.raw_os_error(),
+            Some(26),
+            "expected ETXTBSY (26), got: {err}"
+        );
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn update_remove_then_copy_replaces_running_binary() {
+        // Fallback path: unlink the running binary (kernel keeps the inode
+        // alive for the process), then copy new file to the freed path.
+        let dir = tempfile::tempdir().unwrap();
+        let binary_path = dir.path().join("test-binary");
+        std::fs::copy("/usr/bin/sleep", &binary_path).unwrap();
+
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+
+        let mut child = std::process::Command::new(&binary_path)
+            .arg("60")
+            .spawn()
+            .unwrap();
+
+        let tmp_path = dir.path().join(".update-tmp");
+        std::fs::write(&tmp_path, b"#!/bin/sh\necho replaced\n").unwrap();
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+
+        // Remove (unlinks inode) then copy — both should succeed
+        assert!(std::fs::remove_file(&binary_path).is_ok());
+        assert!(std::fs::copy(&tmp_path, &binary_path).is_ok());
+
+        let content = std::fs::read(&binary_path).unwrap();
+        assert!(content.starts_with(b"#!/bin/sh"));
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
     #[test]
     fn bundled_examples_parse() {
         for (name, content) in BUNDLED_EXAMPLES {
