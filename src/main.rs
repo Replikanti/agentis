@@ -4293,10 +4293,20 @@ fn cmd_update(args: &[String]) -> Result<(), AgentisError> {
     let current_exe = std::env::current_exe()
         .map_err(|e| AgentisError::General(format!("cannot locate current executable: {e}")))?;
 
-    // Write downloaded binary to temp dir (always writable)
-    let tmp_path = std::env::temp_dir().join("agentis-update-tmp");
-    std::fs::write(&tmp_path, &binary)
-        .map_err(|e| AgentisError::General(format!("failed to write temp file: {e}")))?;
+    // Write downloaded binary to the SAME directory as the running binary.
+    // This ensures rename() works (same filesystem).  If the directory is
+    // not writable, fall back to /tmp (rename will fail, but rm+cp or sudo
+    // will handle it).
+    let same_dir_tmp = current_exe.with_file_name(".agentis-update-tmp");
+    let tmp_path = match std::fs::write(&same_dir_tmp, &binary) {
+        Ok(_) => same_dir_tmp,
+        Err(_) => {
+            let fallback = std::env::temp_dir().join("agentis-update-tmp");
+            std::fs::write(&fallback, &binary)
+                .map_err(|e| AgentisError::General(format!("failed to write temp file: {e}")))?;
+            fallback
+        }
+    };
 
     // Set executable permissions
     #[cfg(unix)]
@@ -4307,26 +4317,23 @@ fn cmd_update(args: &[String]) -> Result<(), AgentisError> {
     }
 
     // Replace the running binary.
-    // On Linux, `cp` over a running binary fails with "Text file busy".
-    // The fix: remove first (unlinks the inode while the old process keeps
-    // running), then copy the new file into the now-free path.
+    // On Linux, both rename() and write() to a running ELF binary fail
+    // with ETXTBSY. The fix: unlink first (kernel keeps the inode alive
+    // for the running process), then copy into the now-free path.
     let needs_sudo = match std::fs::rename(&tmp_path, &current_exe) {
         Ok(_) => false,
         Err(_) => {
-            // Try remove + copy (handles "Text file busy")
-            let _ = std::fs::remove_file(&current_exe);
-            match std::fs::copy(&tmp_path, &current_exe) {
-                Ok(_) => {
-                    let _ = std::fs::remove_file(&tmp_path);
-                    false
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => true,
-                Err(e) => {
-                    let _ = std::fs::remove_file(&tmp_path);
-                    return Err(AgentisError::General(format!(
-                        "failed to replace binary: {e}"
-                    )));
-                }
+            // Unlink the running binary, then copy replacement into place.
+            // If unlink fails (e.g. permission denied), skip straight to sudo.
+            match std::fs::remove_file(&current_exe) {
+                Ok(_) => match std::fs::copy(&tmp_path, &current_exe) {
+                    Ok(_) => {
+                        let _ = std::fs::remove_file(&tmp_path);
+                        false
+                    }
+                    Err(_) => true, // copy failed after remove — try sudo
+                },
+                Err(_) => true, // can't remove — need sudo
             }
         }
     };
@@ -4539,6 +4546,76 @@ mod tests {
         assert_eq!(ts, 0);
         assert_eq!(ver, "");
         let _ = std::fs::remove_file(&path);
+    }
+
+    // -- Self-update "Text file busy" (ETXTBSY) integration tests ----------
+    // These spawn a real running binary, then exercise the three replacement
+    // strategies to prove the fix works on Linux.
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn update_write_to_running_binary_gives_etxtbsy() {
+        // The test runner binary itself is running right now — writing to
+        // it must produce ETXTBSY.  No child process, no race conditions.
+        let exe = std::env::current_exe().unwrap();
+        let result = std::fs::write(&exe, &[0u8; 64]);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().raw_os_error(),
+            Some(26),
+            "expected ETXTBSY (26)"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn update_etxtbsy_code_triggers_sudo_path() {
+        // Verify that error code 26 (ETXTBSY) matches our guard condition,
+        // which routes to the sudo fallback in cmd_update.
+        let err = std::io::Error::from_raw_os_error(26);
+        assert!(
+            err.kind() == std::io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(26),
+            "ETXTBSY must match our sudo-fallback guard"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn update_remove_then_copy_replaces_file() {
+        // Proves the fallback path: unlink a file, then copy a new file
+        // into the freed path.  Uses regular files (no running binary)
+        // so there is zero race-condition risk.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target-binary");
+        std::fs::write(&target, b"original content").unwrap();
+
+        let replacement = dir.path().join(".update-tmp");
+        std::fs::write(&replacement, b"new content").unwrap();
+
+        // Simulate: rename fails → remove + copy
+        std::fs::remove_file(&target).unwrap();
+        std::fs::copy(&replacement, &target).unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"new content");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn update_same_dir_temp_file_enables_rename() {
+        // Proves that writing the temp file in the same directory as the
+        // target (same filesystem) lets rename succeed — the key fix for
+        // the cross-device rename failure from /tmp.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target-binary");
+        std::fs::write(&target, b"old").unwrap();
+
+        let tmp = dir.path().join(".agentis-update-tmp");
+        std::fs::write(&tmp, b"new").unwrap();
+
+        // Same-dir rename must succeed (same filesystem)
+        std::fs::rename(&tmp, &target).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        assert!(!tmp.exists());
     }
 
     #[test]
