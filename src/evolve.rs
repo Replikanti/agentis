@@ -538,6 +538,8 @@ pub enum HookAction {
     LibAdd,
     Log(String),
     Skip,
+    /// Auto-export backup bundle to a directory (Phase 12, M52).
+    Backup(String),
 }
 
 /// A parsed hook: event → list of actions.
@@ -625,6 +627,14 @@ fn parse_hook_actions(value: &str) -> Result<Vec<HookAction>, String> {
                 }
                 actions.push(HookAction::Log(msg));
                 break; // log consumes rest of line
+            }
+            "backup" => {
+                i += 1;
+                let path = tokens
+                    .get(i)
+                    .ok_or("backup requires a directory path argument")?;
+                actions.push(HookAction::Backup(path.to_string()));
+                i += 1;
             }
             t if t.starts_with("tag=") => {
                 let name = t.strip_prefix("tag=").unwrap();
@@ -1558,6 +1568,25 @@ mod tests {
     #[test]
     fn parse_hooks_missing_argument() {
         let cfg = crate::config::Config::parse("hooks.on_stagnation = reduce_budget");
+        let result = parse_hooks(&cfg);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_hooks_backup() {
+        let cfg = crate::config::Config::parse("hooks.on_new_best = backup /backups/agent");
+        let hooks = parse_hooks(&cfg).unwrap();
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0].event, HookEvent::NewBest);
+        assert_eq!(
+            hooks[0].actions,
+            vec![HookAction::Backup("/backups/agent".to_string())]
+        );
+    }
+
+    #[test]
+    fn parse_hooks_backup_missing_path() {
+        let cfg = crate::config::Config::parse("hooks.on_new_best = backup");
         let result = parse_hooks(&cfg);
         assert!(result.is_err());
     }
