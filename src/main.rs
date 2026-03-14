@@ -23,6 +23,7 @@ mod mutation;
 mod network;
 mod parser;
 mod pii;
+mod prediction;
 mod refs;
 mod snapshot;
 mod storage;
@@ -201,6 +202,7 @@ fn main() {
         "colony" => cmd_colony(&args[2..]),
         "memo" => cmd_memo(&args[2..]),
         "lib" => cmd_lib(&args[2..]),
+        "stats" => cmd_stats(&args[2..]),
         "identity" => cmd_identity(&args[2..]),
         "export" => cmd_export(&args[2..]),
         "import" => cmd_import(&args[2..]),
@@ -269,6 +271,7 @@ fn print_usage() {
     eprintln!(
         "  lib <subcommand>     Population library (add, list, show, search, remove, tags, tag)"
     );
+    eprintln!("  stats [--json] [--per-identity]  Show prompt cost statistics");
     eprintln!("  audit [flags]        Show prompt audit log");
     eprintln!("  identity <sub>       Identity hash (hash, show, verify, diff)");
     eprintln!("  export --out <f.agb> Export agent bundle (.agb)");
@@ -510,6 +513,9 @@ fn cmd_go(
         .get("memo.max_size")
         .and_then(parse_size_bytes)
         .unwrap_or(10 * 1024 * 1024);
+    let prompt_history = prediction::PromptCostHistory::load(&agentis_root());
+    let confidence_max = cfg.get_u64("confidence.max_samples", 10) as usize;
+    let confidence_fuzzy = cfg.get("confidence.metric").is_some_and(|v| v == "fuzzy");
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
         .with_vcs(&store, &refs)
         .with_persistence(&store)
@@ -519,7 +525,10 @@ fn cmd_go(
         .with_max_agents(max_agents)
         .with_tracer(&tracer)
         .with_memo_dir(&memo_dir)
-        .with_memo_max_size(memo_max);
+        .with_memo_max_size(memo_max)
+        .with_prompt_history(prompt_history)
+        .with_confidence_max_samples(confidence_max)
+        .with_confidence_metric_fuzzy(confidence_fuzzy);
     if let Some(ref audit) = audit_log {
         evaluator = evaluator.with_audit(audit);
     }
@@ -529,7 +538,14 @@ fn cmd_go(
     if grant_pii || cfg.get("pii_transmit").is_some_and(|v| v == "allow") {
         evaluator.grant(capabilities::CapKind::PiiTransmit);
     }
-    match evaluator.eval_program(&program) {
+    let result = evaluator.eval_program(&program);
+
+    // Save prompt cost history
+    if let Err(e) = evaluator.prompt_cost_history().save(&agentis_root()) {
+        eprintln!("warning: could not save prompt stats: {e}");
+    }
+
+    match result {
         Ok(_) => {
             for line in evaluator.output() {
                 println!("{line}");
@@ -3266,6 +3282,12 @@ fn cmd_evolve(source_file: &str, args: &[String]) -> Result<(), AgentisError> {
         }
     }
 
+    // Save prompt cost history (accumulated from run_arena_variant evaluators)
+    let history = prediction::PromptCostHistory::load(&root);
+    if let Err(e) = history.save(&root) {
+        eprintln!("warning: could not save prompt stats: {e}");
+    }
+
     Ok(())
 }
 
@@ -3492,14 +3514,19 @@ fn cmd_export(args: &[String]) -> Result<(), AgentisError> {
     let fitness_dir = root.join("fitness");
     let lineage = bundle::collect_lineage(&fitness_dir, lineage_depth)?;
 
+    // Load prompt stats for bundle portability (Phase 13)
+    let stats_path = root.join("prompt_stats.jsonl");
+    let prompt_stats_bytes = std::fs::read(&stats_path).ok();
+
     // Write bundle
-    bundle::write_bundle(
+    bundle::write_bundle_with_stats(
         &out_path,
         &bundle_identity,
         &seed_source,
         ckpt_data.as_deref(),
         &memos,
         &lineage,
+        prompt_stats_bytes.as_deref(),
     )?;
 
     // Apply tag if requested
@@ -3833,6 +3860,9 @@ fn run_arena_variant(
         .get("memo.max_size")
         .and_then(parse_size_bytes)
         .unwrap_or(10 * 1024 * 1024);
+    let prompt_history = prediction::PromptCostHistory::load(root);
+    let confidence_max = cfg.get_u64("confidence.max_samples", 10) as usize;
+    let confidence_fuzzy = cfg.get("confidence.metric").is_some_and(|v| v == "fuzzy");
     let mut evaluator = Evaluator::new(DEFAULT_BUDGET)
         .with_vcs(store, refs)
         .with_persistence(store)
@@ -3842,7 +3872,10 @@ fn run_arena_variant(
         .with_max_agents(max_agents)
         .with_tracer(tracer)
         .with_memo_dir(&memo_dir)
-        .with_memo_max_size(memo_max);
+        .with_memo_max_size(memo_max)
+        .with_prompt_history(prompt_history)
+        .with_confidence_max_samples(confidence_max)
+        .with_confidence_metric_fuzzy(confidence_fuzzy);
     if let Some(audit) = audit_log {
         evaluator = evaluator.with_audit(audit);
     }
@@ -3991,6 +4024,21 @@ fn run_arena_variant_standalone(
             entry
         }
     }
+}
+
+fn cmd_stats(args: &[String]) -> Result<(), AgentisError> {
+    let root = agentis_root();
+    let history = prediction::PromptCostHistory::load(&root);
+    let as_json = args.iter().any(|a| a == "--json");
+    let per_identity = args.iter().any(|a| a == "--per-identity");
+    if as_json {
+        println!("{}", prediction::format_stats_json(&history));
+    } else if per_identity {
+        print!("{}", prediction::format_stats_per_instruction(&history));
+    } else {
+        print!("{}", prediction::format_stats(&history));
+    }
+    Ok(())
 }
 
 fn cmd_audit(args: &[String]) -> Result<(), AgentisError> {

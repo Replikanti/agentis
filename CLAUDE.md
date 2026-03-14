@@ -16,7 +16,7 @@ Agentis is an AI-native programming language fused with a Version Control System
 
 ```
 src/
-  main.rs           # CLI (init, commit, run, branch, switch, compile, sync, serve, worker, log, go, mutate, arena, evolve, lineage, lib, identity, export, import)
+  main.rs           # CLI (init, commit, run, branch, switch, compile, sync, serve, worker, log, go, mutate, arena, evolve, lineage, lib, identity, export, import, stats)
   arena.rs          # Arena runner (rank variants by fitness, table/JSON output)
   evolve.rs         # Evolution loop (generational mutation→arena→select, lineage tracking, SimpleRng, warm-start, adaptive budget, event hooks, backup hook)
   identity.rs       # Identity hash computation (SHA-256 with AGID salt, checkpoint chain walking)
@@ -44,6 +44,7 @@ src/
   pii.rs            # Internal PII scanner (guard, not builtin — never exposed to .ag code)
   audit.rs          # JSONL audit log for prompt() calls (.agentis/audit/prompts.jsonl)
   trace.rs          # Runtime tracing (quiet/normal/verbose)
+  prediction.rs     # Prompt cost history, budget prediction (estimate_cb), confidence scoring
   error.rs          # Unified AgentisError type
 ```
 
@@ -155,6 +156,9 @@ cargo run -- import agent.agb --as stable                 # Import + tag checkpo
 cargo run -- import agent.agb --memo-conflict replace     # Overwrite local memos
 cargo run -- evolve file.ag -g 10 -n 8 --backup-to /backups  # Auto-backup on new best
 cargo run -- evolve file.ag -g 10 -n 8 --resume-from agent.agb  # Resume from bundle
+cargo run -- stats                                        # Show prompt cost statistics
+cargo run -- stats --json                                 # Prompt stats as JSON
+cargo run -- stats --per-identity                         # Stats grouped by instruction hash
 cargo run -- version                                      # Show current version
 cargo run -- update --check                               # Check for new release
 cargo run -- update                                       # Self-update to latest release
@@ -230,3 +234,17 @@ cargo run -- update                                       # Self-update to lates
 - **Bundle Import (M51):** `agentis import agent.agb [--as name] [--memo-conflict skip|append|replace]`. Restores checkpoint (sets HEAD), memos (append/skip/replace), lineage JSONL. `agentis evolve --resume-from agent.agb` imports bundle then continues evolution.
 - **Auto-Backup Hook (M52):** `HookAction::Backup(String)` — `hooks.on_new_best = backup /path`. `--backup-to <dir>` flag writes `g{gen}-best.agb` + `latest.agb` on each new best.
 - **Identity CLI Polish (M53):** `agentis identity show` — formatted identity card (hash, seed, generation, tags, drift risk). `agentis identity verify <file.agb>` — root hash + identity validation (PASS/FAIL). `agentis identity diff <a.agb> <b.agb>` — compare seed, generation delta.
+
+## Phase 13 Features (Budget Prediction & Confidence Primitive — complete)
+
+- **Prompt Cost Instrumentation (M54):** Per-prompt cost tracking in `PromptCostHistory`. JSONL persistence at `.agentis/prompt_stats.jsonl`. Records instruction hash, input length, CB cost, backend. Weighted-decay averaging (recent 0.8, older 0.2). `cb_cost` field added to audit log entries.
+- **`estimate_cb` Builtin (M55):** `estimate_cb(instruction, input)` returns estimated CB cost (int). Algorithm: exact instruction match → historical avg × 50; similar input size → avg × 50; fallback heuristic `(1 + len/2000 + complexity) × 50 × 1.1`. Costs 6 CB (5 call + 1). New introspect fields: `introspect.avg_cb_per_prompt` (float), `introspect.estimated_cb_last_prompt` (int), both 0 CB.
+- **`confidence` Builtin (M56):** `confidence(instruction, input, samples)` calls LLM N times, measures agreement, returns `ConfidenceResult` struct with fields: `value`, `confidence`, `samples`, `agreement`, `spread`, `all_responses`, `backend_used`. Requires Prompt capability. PII guard runs once. Each sample costs 50 CB. Capped at `confidence.max_samples` config (default 10).
+- **Rich Confidence & Calibration (M57):** Fuzzy agreement via normalized Levenshtein distance. Spread score (0.0 = all same, 1.0 = all unique). `confidence.metric` config: `exact` (default) or `fuzzy`. Confidence audit logging.
+- **CLI Integration & Bundle Portability (M58):** `agentis stats [--json] [--per-identity]` displays prompt cost summary. Prompt stats saved after `agentis go` and `agentis evolve` runs. `agentis export` includes prompt stats in `.agb` bundles (section 0x06 PROMPT_STATS). Import merges with deduplication by (instruction_hash, input_len_bucket, backend).
+
+**Config keys:**
+```
+confidence.max_samples = 10       # max LLM calls per confidence() invocation
+confidence.metric = exact         # or "fuzzy" for Levenshtein-based agreement
+```

@@ -482,6 +482,10 @@ pub struct Evaluator<'a> {
     validates_total: usize,
     explores_passed: usize,
     explores_total: usize,
+    // Phase 13: Prompt cost tracking + confidence config
+    prompt_cost_history: crate::prediction::PromptCostHistory,
+    confidence_max_samples: usize,
+    confidence_metric_fuzzy: bool,
 }
 
 impl<'a> Evaluator<'a> {
@@ -517,6 +521,9 @@ impl<'a> Evaluator<'a> {
             validates_total: 0,
             explores_passed: 0,
             explores_total: 0,
+            prompt_cost_history: crate::prediction::PromptCostHistory::new(),
+            confidence_max_samples: 10,
+            confidence_metric_fuzzy: false,
         }
     }
 
@@ -597,6 +604,25 @@ impl<'a> Evaluator<'a> {
         self
     }
 
+    pub fn with_prompt_history(mut self, history: crate::prediction::PromptCostHistory) -> Self {
+        self.prompt_cost_history = history;
+        self
+    }
+
+    pub fn with_confidence_max_samples(mut self, max: usize) -> Self {
+        self.confidence_max_samples = max;
+        self
+    }
+
+    pub fn with_confidence_metric_fuzzy(mut self, fuzzy: bool) -> Self {
+        self.confidence_metric_fuzzy = fuzzy;
+        self
+    }
+
+    pub fn prompt_cost_history(&self) -> &crate::prediction::PromptCostHistory {
+        &self.prompt_cost_history
+    }
+
     /// Convert an AncestorRecord into a Value::Struct for injection.
     fn ancestor_record_to_value(rec: &crate::evolve::AncestorRecord) -> Value {
         let mut fields = HashMap::new();
@@ -631,6 +657,10 @@ impl<'a> Evaluator<'a> {
         // cb_remaining and cb_spent are placeholders — read dynamically
         fields.insert("cb_remaining".to_string(), Value::Int(0));
         fields.insert("cb_spent".to_string(), Value::Int(0));
+
+        // Phase 13: prompt cost introspection — read dynamically
+        fields.insert("avg_cb_per_prompt".to_string(), Value::Float(0.0));
+        fields.insert("estimated_cb_last_prompt".to_string(), Value::Int(0));
 
         // Identity hash (Phase 12, M49) — free access
         fields.insert(
@@ -1673,6 +1703,156 @@ impl<'a> Evaluator<'a> {
                 };
                 return self.await_agent_timeout(handle_val, ms);
             }
+            // --- Phase 13: Budget Prediction & Confidence ---
+            "estimate_cb" => {
+                self.spend(1)?; // 1 CB for estimation (+ 5 from eval_call top = 6 total)
+                if expr.args.len() != 2 {
+                    return Err(EvalError::ArityMismatch {
+                        expected: 2,
+                        got: expr.args.len(),
+                    });
+                }
+                let instr_val = self.eval_expr(&expr.args[0])?;
+                let input_val = self.eval_expr(&expr.args[1])?;
+                let instruction = match &instr_val {
+                    Value::String(s) => s.clone(),
+                    _ => {
+                        return Err(EvalError::TypeError {
+                            expected: "string".into(),
+                            got: instr_val.type_name().to_string(),
+                        });
+                    }
+                };
+                let input_str = match &input_val {
+                    Value::String(s) => s.clone(),
+                    _ => format!("{input_val}"),
+                };
+                if self.prompt_cost_history.is_empty()
+                    && let Some(t) = &self.tracer
+                {
+                    t.estimate_cb_no_history();
+                }
+                let estimated = crate::prediction::estimate_cb(
+                    &instruction,
+                    &input_str,
+                    &self.prompt_cost_history,
+                );
+                if let Some(t) = &self.tracer {
+                    t.estimate_cb_call(&instruction, estimated);
+                }
+                return Ok(Value::Int(estimated));
+            }
+            "confidence" => {
+                self.require_cap(CapKind::Prompt)?;
+                if expr.args.len() != 3 {
+                    return Err(EvalError::ArityMismatch {
+                        expected: 3,
+                        got: expr.args.len(),
+                    });
+                }
+                let instr_val = self.eval_expr(&expr.args[0])?;
+                let input_val = self.eval_expr(&expr.args[1])?;
+                let samples_val = self.eval_expr(&expr.args[2])?;
+                let instruction = match &instr_val {
+                    Value::String(s) => s.clone(),
+                    _ => {
+                        return Err(EvalError::TypeError {
+                            expected: "string".into(),
+                            got: instr_val.type_name().to_string(),
+                        });
+                    }
+                };
+                let input_str = format!("{input_val}");
+                let samples = match &samples_val {
+                    Value::Int(n) => *n as usize,
+                    _ => {
+                        return Err(EvalError::TypeError {
+                            expected: "int".into(),
+                            got: samples_val.type_name().to_string(),
+                        });
+                    }
+                };
+                let actual_samples = samples.min(self.confidence_max_samples);
+                if let Some(t) = &self.tracer {
+                    t.confidence_call(&instruction, actual_samples);
+                }
+
+                // PII guard: scan once
+                let pii_result = crate::pii::scan(&input_str);
+                let has_pii_cap = if !pii_result.is_clean() {
+                    let granted = self.require_cap(CapKind::PiiTransmit).is_ok();
+                    if let Some(t) = &self.tracer {
+                        t.pii_scan_result(&pii_result.types_str(), granted);
+                    }
+                    if !granted {
+                        self.audit_prompt(&instruction, &input_str, &pii_result, false);
+                        return Err(EvalError::CapabilityDenied(
+                            crate::capabilities::CapError::MissingCapability(CapKind::PiiTransmit),
+                        ));
+                    }
+                    true
+                } else {
+                    false
+                };
+
+                // Collect samples
+                let return_type = TypeAnnotation::Named("string".to_string());
+                let mut responses = Vec::new();
+                for _ in 0..actual_samples {
+                    self.spend(50)?;
+                    let result =
+                        self.call_backend_complete(&instruction, &input_str, &return_type, None)?;
+                    self.audit_prompt(&instruction, &input_str, &pii_result, has_pii_cap);
+                    self.prompt_count += 1;
+                    // Record in prompt cost history
+                    let instr_hash = crate::prediction::instruction_hash(&instruction);
+                    let backend_name = self.backend_name();
+                    self.prompt_cost_history
+                        .record(crate::prediction::PromptRecord {
+                            instruction_hash: instr_hash,
+                            input_len: input_str.len(),
+                            cb_cost: 50,
+                            prompt_count: 1,
+                            backend: backend_name,
+                        });
+                    responses.push(format!("{result}"));
+                }
+
+                // Compute confidence metrics
+                let agreement = if self.confidence_metric_fuzzy {
+                    crate::prediction::fuzzy_agreement(&responses)
+                } else {
+                    crate::prediction::compute_agreement(&responses)
+                };
+                let spread = crate::prediction::spread_score(&responses);
+                let majority_idx = crate::prediction::majority_index(&responses);
+                let value = if responses.is_empty() {
+                    String::new()
+                } else {
+                    responses[majority_idx].clone()
+                };
+                let backend_used = self.backend_name();
+
+                // Audit confidence call
+                if let Some(audit) = self.audit {
+                    audit.log_confidence(&instruction, actual_samples, agreement, agreement);
+                }
+
+                // Build result struct
+                let mut fields = HashMap::new();
+                fields.insert("value".to_string(), Value::String(value));
+                fields.insert("confidence".to_string(), Value::Float(agreement));
+                fields.insert("samples".to_string(), Value::Int(actual_samples as i64));
+                fields.insert("agreement".to_string(), Value::Float(agreement));
+                fields.insert("spread".to_string(), Value::Float(spread));
+                fields.insert(
+                    "all_responses".to_string(),
+                    Value::List(responses.iter().map(|r| Value::String(r.clone())).collect()),
+                );
+                fields.insert("backend_used".to_string(), Value::String(backend_used));
+
+                return Ok(Value::Struct("ConfidenceResult".to_string(), fields));
+            }
             _ => {}
         }
 
@@ -1834,6 +2014,25 @@ impl<'a> Evaluator<'a> {
                         "cb_spent" => {
                             return Ok(Value::Int((self.initial_budget - self.budget) as i64));
                         }
+                        "avg_cb_per_prompt" => {
+                            let h = &self.prompt_cost_history;
+                            let avg = if !h.is_empty() {
+                                h.records().iter().map(|r| r.cb_cost as f64).sum::<f64>()
+                                    / h.len() as f64
+                            } else {
+                                0.0
+                            };
+                            return Ok(Value::Float(avg));
+                        }
+                        "estimated_cb_last_prompt" => {
+                            let val = self
+                                .prompt_cost_history
+                                .records()
+                                .last()
+                                .map(|r| r.cb_cost as i64)
+                                .unwrap_or(0);
+                            return Ok(Value::Int(val));
+                        }
                         _ => {}
                     }
                     // Static introspect fields (generation, lineage_id, etc.)
@@ -1918,36 +2117,12 @@ impl<'a> Evaluator<'a> {
             Some(fields_ref.as_slice())
         };
 
-        let backend: &dyn LlmBackend = match self.llm_backend {
-            Some(b) => b,
-            None => &crate::llm::MockBackend,
-        };
-
-        let backend_name = backend.name().to_string();
-        let is_mock = backend_name == "mock";
-
-        // For mock: trace + run inline (no timer needed).
-        // For real backends: run with "still waiting" timer thread.
-        let result = if is_mock {
-            if let Some(t) = &self.tracer {
-                t.llm_requesting("mock", "");
-            }
-            let r = backend
-                .complete(&expr.instruction, &input_str, &expr.return_type, fields_opt)
-                .map_err(|e| EvalError::General(format!("{e}")));
-            if let Some(t) = &self.tracer {
-                t.llm_received(0.0);
-            }
-            r
-        } else {
-            self.call_llm_with_timer(
-                backend,
-                &expr.instruction,
-                &input_str,
-                &expr.return_type,
-                fields_opt,
-            )?
-        };
+        let result = self.call_backend_complete(
+            &expr.instruction,
+            &input_str,
+            &expr.return_type,
+            fields_opt,
+        );
 
         if let Some(t) = &self.tracer {
             if let Ok(ref v) = result {
@@ -1956,9 +2131,19 @@ impl<'a> Evaluator<'a> {
             t.cb_remaining(self.budget, self.initial_budget);
         }
 
-        // Fitness counter: track successful prompt calls
+        // Fitness counter + prompt cost tracking
         if result.is_ok() {
             self.prompt_count += 1;
+            let instr_hash = crate::prediction::instruction_hash(&expr.instruction);
+            let backend_name = self.backend_name();
+            self.prompt_cost_history
+                .record(crate::prediction::PromptRecord {
+                    instruction_hash: instr_hash,
+                    input_len: input_str.len(),
+                    cb_cost: 50,
+                    prompt_count: 1,
+                    backend: backend_name,
+                });
         }
 
         result
@@ -1984,8 +2169,46 @@ impl<'a> Evaluator<'a> {
                 pii_transmit_granted,
                 backend_name: backend.name(),
                 model: "",
+                cb_cost: 50,
             };
             audit.log_prompt(&entry);
+        }
+    }
+
+    fn backend_name(&self) -> String {
+        match self.llm_backend {
+            Some(b) => b.name().to_string(),
+            None => "mock".to_string(),
+        }
+    }
+
+    /// Call the LLM backend with timer support. Used by eval_prompt and confidence.
+    fn call_backend_complete(
+        &self,
+        instruction: &str,
+        input: &str,
+        return_type: &TypeAnnotation,
+        fields: Option<&[(&str, &str)]>,
+    ) -> Result<Value, EvalError> {
+        let backend: &dyn LlmBackend = match self.llm_backend {
+            Some(b) => b,
+            None => &crate::llm::MockBackend,
+        };
+        let is_mock = backend.name() == "mock";
+
+        if is_mock {
+            if let Some(t) = &self.tracer {
+                t.llm_requesting("mock", "");
+            }
+            let r = backend
+                .complete(instruction, input, return_type, fields)
+                .map_err(|e| EvalError::General(format!("{e}")));
+            if let Some(t) = &self.tracer {
+                t.llm_received(0.0);
+            }
+            r
+        } else {
+            self.call_llm_with_timer(backend, instruction, input, return_type, fields)?
         }
     }
 
@@ -4940,5 +5163,210 @@ mod tests {
 
         let total = memo_store_total_size(&memo_dir);
         assert!(total > 0, "total size should be > 0");
+    }
+
+    // --- Phase 13: Budget Prediction & Confidence ---
+
+    #[test]
+    fn estimate_cb_from_ag_code() {
+        let src = r#"
+            let est = estimate_cb("classify", "hello world");
+            print(est);
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+
+        let output = evaluator.output();
+        assert_eq!(output.len(), 1);
+        let val: i64 = output[0].parse().unwrap();
+        assert!(val >= 50, "estimate should be >= 50, got {val}");
+    }
+
+    #[test]
+    fn estimate_cb_arity_error() {
+        let src = r#"
+            estimate_cb("only one arg");
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        evaluator.grant_all();
+        let result = evaluator.eval_program(&program);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn estimate_cb_costs_6_cb() {
+        let src = r#"
+            let est = estimate_cb("classify", "test");
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+        // 1 (let) + 5 (call) + 1 (estimate) = 7
+        assert_eq!(evaluator.budget_remaining(), 10000 - 7);
+    }
+
+    #[test]
+    fn confidence_from_ag_code() {
+        let src = r#"
+            let conf = confidence("classify", "hello", 3);
+            print(conf.value);
+            print(conf.confidence);
+            print(conf.samples);
+            print(conf.agreement);
+            print(conf.spread);
+            print(conf.backend_used);
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+
+        let output = evaluator.output();
+        assert_eq!(output.len(), 6);
+        // MockBackend returns same value every time → agreement = 1.0
+        assert_eq!(output[1], "1"); // confidence
+        assert_eq!(output[2], "3"); // samples
+        assert_eq!(output[3], "1"); // agreement
+        assert_eq!(output[4], "0"); // spread (all same → 0)
+        assert_eq!(output[5], "mock"); // backend
+    }
+
+    #[test]
+    fn confidence_cb_cost() {
+        let src = r#"
+            let conf = confidence("classify", "hello", 3);
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+        // 1 (let) + 5 (call) + 3*50 (prompts) = 156
+        assert_eq!(evaluator.budget_remaining(), 10000 - 156);
+    }
+
+    #[test]
+    fn confidence_arity_error() {
+        let src = r#"
+            confidence("only", "two args");
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        evaluator.grant_all();
+        let result = evaluator.eval_program(&program);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn confidence_capped_at_max_samples() {
+        let src = r#"
+            let conf = confidence("classify", "hello", 50);
+            print(conf.samples);
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let mut evaluator = Evaluator::new(100000).with_confidence_max_samples(5);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+
+        let output = evaluator.output();
+        assert_eq!(output[0], "5"); // capped at max_samples
+    }
+
+    #[test]
+    fn evaluator_records_prompt_costs() {
+        let src = r#"
+            agent tester(x: string) -> string {
+                cb 200;
+                return prompt("analyze", x) -> string;
+            }
+            let r = tester("hello");
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+
+        let history = evaluator.prompt_cost_history();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history.records()[0].cb_cost, 50);
+        assert_eq!(history.records()[0].backend, "mock");
+    }
+
+    #[test]
+    fn introspect_avg_cb_per_prompt() {
+        let src = r#"
+            agent a(x: string) -> string {
+                cb 300;
+                let r1 = prompt("classify", x) -> string;
+                let r2 = prompt("summarize", x) -> string;
+                let avg = introspect.avg_cb_per_prompt;
+                print(avg);
+                return r2;
+            }
+            a("test");
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+
+        let output = evaluator.output();
+        assert_eq!(output.len(), 1);
+        // avg_cb_per_prompt should be 50.0 (each prompt costs 50)
+        let avg: f64 = output[0].parse().unwrap();
+        assert!((avg - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn confidence_struct_field_access() {
+        let src = r#"
+            let conf = confidence("classify", "hello", 2);
+            let responses = conf.all_responses;
+            print(len(responses));
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+
+        let output = evaluator.output();
+        assert_eq!(output[0], "2");
+    }
+
+    #[test]
+    fn both_builtins_in_budget_decision() {
+        // Integration test: agent uses estimate_cb and confidence together
+        let src = r#"
+            agent classifier(text: string) -> string {
+                cb 500;
+                let cost = estimate_cb("analyze deeply", text);
+                let conf = confidence("extract facts", text, 3);
+                if cost > introspect.cb_remaining * 4 / 10 {
+                    return prompt("classify briefly", text) -> string;
+                };
+                if conf.agreement < 65 / 100 {
+                    return prompt("classify with examples", text) -> string;
+                };
+                return prompt("analyze deeply", text) -> string;
+            }
+            let result = classifier("test input");
+            print(result);
+        "#;
+        let program = Parser::parse_source(src).unwrap();
+        let mut evaluator = Evaluator::new(10000);
+        evaluator.grant_all();
+        evaluator.eval_program(&program).unwrap();
+
+        // Agent should complete without error and produce output
+        let output = evaluator.output();
+        assert!(!output.is_empty(), "agent should produce output");
+        // Prompt history should record the prompts made
+        assert!(
+            evaluator.prompt_cost_history().len() >= 1,
+            "should record prompt costs"
+        );
     }
 }

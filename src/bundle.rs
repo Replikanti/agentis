@@ -28,6 +28,7 @@ const SECTION_SEED: u8 = 0x02;
 const SECTION_CHECKPOINT: u8 = 0x03;
 const SECTION_MEMO: u8 = 0x04;
 const SECTION_LINEAGE: u8 = 0x05;
+const SECTION_PROMPT_STATS: u8 = 0x06;
 const SECTION_ROOT_HASH: u8 = 0xFF;
 
 // --- Data types ---
@@ -62,6 +63,7 @@ pub struct BundleContents {
     pub checkpoint_data: Option<Vec<u8>>,
     pub memos: Vec<MemoEntry>,
     pub lineage_data: Vec<LineageEntry>,
+    pub prompt_stats: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone)]
@@ -258,6 +260,7 @@ fn deserialize_lineage(data: &[u8]) -> Result<Vec<LineageEntry>, AgentisError> {
 // --- Public API ---
 
 /// Write a complete .agb bundle to disk.
+#[allow(clippy::too_many_arguments)]
 pub fn write_bundle(
     path: &str,
     identity: &BundleIdentity,
@@ -265,6 +268,28 @@ pub fn write_bundle(
     checkpoint_data: Option<&[u8]>,
     memos: &[MemoEntry],
     lineage: &[LineageEntry],
+) -> Result<(), AgentisError> {
+    write_bundle_with_stats(
+        path,
+        identity,
+        seed_source,
+        checkpoint_data,
+        memos,
+        lineage,
+        None,
+    )
+}
+
+/// Write a complete .agb bundle to disk, optionally including prompt stats.
+#[allow(clippy::too_many_arguments)]
+pub fn write_bundle_with_stats(
+    path: &str,
+    identity: &BundleIdentity,
+    seed_source: &str,
+    checkpoint_data: Option<&[u8]>,
+    memos: &[MemoEntry],
+    lineage: &[LineageEntry],
+    prompt_stats: Option<&[u8]>,
 ) -> Result<(), AgentisError> {
     let mut buf = Vec::new();
 
@@ -294,6 +319,11 @@ pub fn write_bundle(
     if !lineage.is_empty() {
         let lineage_data = serialize_lineage(lineage);
         write_section(&mut buf, SECTION_LINEAGE, &lineage_data);
+    }
+
+    // Prompt stats section (optional, Phase 13)
+    if let Some(stats) = prompt_stats {
+        write_section(&mut buf, SECTION_PROMPT_STATS, stats);
     }
 
     // Root hash — SHA-256 of everything preceding
@@ -333,6 +363,7 @@ fn parse_bundle(data: &[u8]) -> Result<BundleContents, AgentisError> {
     let mut checkpoint_data: Option<Vec<u8>> = None;
     let mut memos: Vec<MemoEntry> = Vec::new();
     let mut lineage_data: Vec<LineageEntry> = Vec::new();
+    let mut prompt_stats: Option<Vec<u8>> = None;
     let mut stored_root: Option<String> = None;
     let mut root_hash_start = 0usize;
 
@@ -368,6 +399,9 @@ fn parse_bundle(data: &[u8]) -> Result<BundleContents, AgentisError> {
                 SECTION_LINEAGE => {
                     lineage_data = deserialize_lineage(&section_data)?;
                 }
+                SECTION_PROMPT_STATS => {
+                    prompt_stats = Some(section_data);
+                }
                 _ => {
                     // Unknown section — skip (forward compat)
                 }
@@ -398,6 +432,7 @@ fn parse_bundle(data: &[u8]) -> Result<BundleContents, AgentisError> {
         checkpoint_data,
         memos,
         lineage_data,
+        prompt_stats,
     })
 }
 
@@ -583,6 +618,14 @@ pub fn import_to_store(
             std::fs::write(&path, &entry.content)?;
             result.lineage_files_restored += 1;
         }
+    }
+
+    // Restore prompt stats (Phase 13) with deduplication
+    if let Some(ref stats_data) = contents.prompt_stats {
+        let imported = crate::prediction::parse_stats_bytes(stats_data);
+        let mut local = crate::prediction::PromptCostHistory::load(agentis_root);
+        crate::prediction::merge_stats(&mut local, &imported);
+        let _ = local.save(agentis_root);
     }
 
     Ok(result)
@@ -827,6 +870,7 @@ mod tests {
             checkpoint_data: Some(ckpt_bytes),
             memos: vec![],
             lineage_data: vec![],
+            prompt_stats: None,
         };
 
         let result = import_to_store(&contents, agentis_root, MemoConflict::Append).unwrap();
@@ -858,6 +902,7 @@ mod tests {
                 },
             ],
             lineage_data: vec![],
+            prompt_stats: None,
         };
 
         let result = import_to_store(&contents, agentis_root, MemoConflict::Append).unwrap();
@@ -883,6 +928,7 @@ mod tests {
                 filename: "g01.jsonl".to_string(),
                 content: "{\"gen\":1}\n".to_string(),
             }],
+            prompt_stats: None,
         };
 
         let result = import_to_store(&contents, agentis_root, MemoConflict::Append).unwrap();
@@ -909,6 +955,7 @@ mod tests {
                 content: "{\"new\":true}\n".to_string(),
             }],
             lineage_data: vec![],
+            prompt_stats: None,
         };
 
         import_to_store(&contents, agentis_root, MemoConflict::Append).unwrap();
@@ -954,6 +1001,7 @@ mod tests {
             checkpoint_data: Some(ckpt.to_bytes()),
             memos: vec![],
             lineage_data: vec![],
+            prompt_stats: None,
         };
 
         let result = import_to_store(&contents, agentis_root, MemoConflict::Append).unwrap();
@@ -1260,5 +1308,103 @@ mod tests {
         let latest_data = std::fs::read(backup_dir.join("latest.agb")).unwrap();
         let gen5_data = std::fs::read(backup_dir.join("g05-best.agb")).unwrap();
         assert_eq!(latest_data, gen5_data);
+    }
+
+    // --- Phase 13: bundle prompt stats ---
+
+    #[test]
+    fn bundle_roundtrip_includes_prompt_stats() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle_path = dir.path().join("with_stats.agb");
+        let bundle_path_str = bundle_path.to_string_lossy().to_string();
+
+        let id = BundleIdentity {
+            seed_hash: "stats_seed".into(),
+            generation: 1,
+            identity_hash: "stats_id".into(),
+            version: "0.9.0".into(),
+            tags: vec![],
+            timestamp: 0,
+        };
+
+        let stats_jsonl = concat!(
+            r#"{"instruction_hash":"abc","input_len":42,"cb_cost":50,"prompt_count":1,"backend":"mock"}"#,
+            "\n",
+        );
+        let stats_bytes = stats_jsonl.as_bytes();
+
+        write_bundle_with_stats(
+            &bundle_path_str,
+            &id,
+            "let x = 1;",
+            None,
+            &[],
+            &[],
+            Some(stats_bytes),
+        )
+        .unwrap();
+
+        // Read back and verify section present
+        let contents = read_bundle(&bundle_path_str).unwrap();
+        assert!(contents.prompt_stats.is_some());
+        let parsed = crate::prediction::parse_stats_bytes(contents.prompt_stats.as_ref().unwrap());
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed.records()[0].instruction_hash, "abc");
+        assert_eq!(parsed.records()[0].cb_cost, 50);
+    }
+
+    #[test]
+    fn bundle_import_restores_stats_with_dedup() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle_path = dir.path().join("dedup.agb");
+        let bundle_path_str = bundle_path.to_string_lossy().to_string();
+
+        let id = BundleIdentity {
+            seed_hash: "dedup_seed".into(),
+            generation: 1,
+            identity_hash: "dedup_id".into(),
+            version: "0.9.0".into(),
+            tags: vec![],
+            timestamp: 0,
+        };
+
+        let stats_jsonl = concat!(
+            r#"{"instruction_hash":"xyz","input_len":100,"cb_cost":50,"prompt_count":1,"backend":"mock"}"#,
+            "\n",
+        );
+
+        write_bundle_with_stats(
+            &bundle_path_str,
+            &id,
+            "code",
+            None,
+            &[],
+            &[],
+            Some(stats_jsonl.as_bytes()),
+        )
+        .unwrap();
+
+        // Create a local store with existing stats
+        let import_root = dir.path().join("import");
+        std::fs::create_dir_all(&import_root).unwrap();
+
+        // Pre-populate local stats with same record (should dedup)
+        let mut local = crate::prediction::PromptCostHistory::new();
+        local.record(crate::prediction::PromptRecord {
+            instruction_hash: "xyz".into(),
+            input_len: 100,
+            cb_cost: 50,
+            prompt_count: 1,
+            backend: "mock".into(),
+        });
+        local.save(&import_root).unwrap();
+
+        // Import bundle
+        let contents = read_bundle(&bundle_path_str).unwrap();
+        import_to_store(&contents, &import_root, MemoConflict::Skip).unwrap();
+
+        // Verify no duplicates
+        let loaded = crate::prediction::PromptCostHistory::load(&import_root);
+        assert_eq!(loaded.len(), 1, "dedup should prevent duplicate");
     }
 }

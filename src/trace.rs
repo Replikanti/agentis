@@ -218,6 +218,42 @@ impl Tracer {
         }
     }
 
+    // --- Phase 13: Budget prediction & confidence ---
+
+    pub fn estimate_cb_call(&self, instruction: &str, estimated: i64) {
+        if self.level == TraceLevel::Quiet {
+            return;
+        }
+        let short = if instruction.len() > 40 {
+            format!("{}...", &instruction[..37])
+        } else {
+            instruction.to_string()
+        };
+        self.output
+            .write_trace(&format!("[estimate_cb] \"{short}\" → {estimated} CB"));
+    }
+
+    pub fn confidence_call(&self, instruction: &str, samples: usize) {
+        if self.level == TraceLevel::Quiet {
+            return;
+        }
+        let short = if instruction.len() > 40 {
+            format!("{}...", &instruction[..37])
+        } else {
+            instruction.to_string()
+        };
+        self.output
+            .write_trace(&format!("[confidence] \"{short}\" × {samples} samples"));
+    }
+
+    pub fn estimate_cb_no_history(&self) {
+        if self.level != TraceLevel::Verbose {
+            return;
+        }
+        self.output
+            .write_trace("[estimate_cb] no prompt history available, using heuristic");
+    }
+
     // --- Verbose level ---
 
     pub fn llm_response(&self, response: &impl fmt::Display) {

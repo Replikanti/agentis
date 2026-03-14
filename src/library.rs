@@ -710,7 +710,7 @@ pub fn format_show(hash: &str, entry: &LibraryEntry) -> String {
 // --- Levenshtein distance ---
 
 /// Compute Levenshtein edit distance between two strings.
-fn levenshtein(a: &str, b: &str) -> usize {
+pub(crate) fn levenshtein(a: &str, b: &str) -> usize {
     let a_chars: Vec<char> = a.chars().collect();
     let b_chars: Vec<char> = b.chars().collect();
     let m = a_chars.len();
