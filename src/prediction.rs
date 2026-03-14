@@ -294,15 +294,22 @@ pub fn format_stats(history: &PromptCostHistory) -> String {
         return "No prompt cost data recorded.\n".to_string();
     }
     let total = history.len();
-    let avg_input: f64 =
-        history.records().iter().map(|r| r.input_len as f64).sum::<f64>() / total as f64;
-    let avg_cb: f64 =
-        history.records().iter().map(|r| r.cb_cost as f64).sum::<f64>() / total as f64;
+    let avg_input: f64 = history
+        .records()
+        .iter()
+        .map(|r| r.input_len as f64)
+        .sum::<f64>()
+        / total as f64;
+    let avg_cb: f64 = history
+        .records()
+        .iter()
+        .map(|r| r.cb_cost as f64)
+        .sum::<f64>()
+        / total as f64;
     let total_cb: u64 = history.records().iter().map(|r| r.cb_cost).sum();
 
     // Backend breakdown
-    let mut backends: std::collections::BTreeMap<&str, usize> =
-        std::collections::BTreeMap::new();
+    let mut backends: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     for rec in history.records() {
         *backends.entry(rec.backend.as_str()).or_insert(0) += 1;
     }
@@ -324,12 +331,22 @@ pub fn format_stats(history: &PromptCostHistory) -> String {
 pub fn format_stats_json(history: &PromptCostHistory) -> String {
     let total = history.len() as i64;
     let avg_input = if total > 0 {
-        history.records().iter().map(|r| r.input_len as f64).sum::<f64>() / total as f64
+        history
+            .records()
+            .iter()
+            .map(|r| r.input_len as f64)
+            .sum::<f64>()
+            / total as f64
     } else {
         0.0
     };
     let avg_cb = if total > 0 {
-        history.records().iter().map(|r| r.cb_cost as f64).sum::<f64>() / total as f64
+        history
+            .records()
+            .iter()
+            .map(|r| r.cb_cost as f64)
+            .sum::<f64>()
+            / total as f64
     } else {
         0.0
     };

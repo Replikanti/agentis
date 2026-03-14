@@ -124,10 +124,7 @@ impl AuditLog {
         let obj = json::object(vec![
             ("ts", JsonValue::Int(ts)),
             ("type", JsonValue::String("confidence".to_string())),
-            (
-                "instruction_hash",
-                JsonValue::String(instruction_hash),
-            ),
+            ("instruction_hash", JsonValue::String(instruction_hash)),
             ("sample_count", JsonValue::Int(sample_count as i64)),
             ("agreement", JsonValue::Float(agreement)),
             ("confidence", JsonValue::Float(confidence)),

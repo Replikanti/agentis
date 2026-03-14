@@ -47,6 +47,20 @@ agent classifier(text: string) -> Category {
     return result;
 }
 
+// Budget-aware decisions — estimate cost, gauge confidence
+agent classifier(text: string) -> string {
+    cb 500;
+    let cost = estimate_cb("analyze deeply", text);
+    let conf = confidence("extract facts", text, 3);
+    if cost > introspect.cb_remaining * 4 / 10 {
+        return prompt("classify briefly", text) -> string;
+    };
+    if conf.agreement < 65 / 100 {
+        return prompt("classify with examples", text) -> string;
+    };
+    return prompt("analyze deeply", text) -> string;
+}
+
 // Evolutionary branching — survive or die
 explore "approach-a" {
     let sol = solver(problem);
@@ -128,6 +142,11 @@ agentis colony gc [--older-than 7d]   # Garbage-collect checkpoints
 agentis sync <host:port>              # Sync objects with remote peer
 agentis serve [addr:port]             # Listen for incoming sync
 
+# Budget & Confidence
+agentis stats                         # Prompt cost statistics
+agentis stats --json                  # Stats as JSON
+agentis stats --per-identity          # Stats grouped by instruction hash
+
 # Memory & Audit
 agentis memo list                     # Show memo keys and entry counts
 agentis memo stats                    # Memo store size and key count
@@ -143,6 +162,7 @@ agentis update                        # Self-update to latest release
 
 - **AI-native.** Designed for agents. `prompt` is a language primitive, not a library call.
 - **Cognitive Budget.** Every operation costs fuel. Prevents runaway agents. Forces efficient prompt design.
+- **Budget Prediction & Confidence.** `estimate_cb` predicts cost before committing. `confidence` samples the LLM N times and measures agreement. Agents decide strategy based on what they can afford and how much to trust.
 - **Evolutionary branching.** `explore` blocks fork execution — success creates a branch, failure is silently discarded.
 - **Content-addressed code.** SHA-256 hashed AST. No merge conflicts. Import by hash.
 - **Sandboxed I/O.** File operations are jailed to `.agentis/sandbox/`. Network calls require domain whitelisting.

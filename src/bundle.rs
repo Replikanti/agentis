@@ -269,7 +269,15 @@ pub fn write_bundle(
     memos: &[MemoEntry],
     lineage: &[LineageEntry],
 ) -> Result<(), AgentisError> {
-    write_bundle_with_stats(path, identity, seed_source, checkpoint_data, memos, lineage, None)
+    write_bundle_with_stats(
+        path,
+        identity,
+        seed_source,
+        checkpoint_data,
+        memos,
+        lineage,
+        None,
+    )
 }
 
 /// Write a complete .agb bundle to disk, optionally including prompt stats.

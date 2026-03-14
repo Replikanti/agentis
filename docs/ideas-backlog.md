@@ -182,7 +182,7 @@ evolve "solver" adaptive {
 
 ---
 
-## 8. Budget Prediction
+## 8. Budget Prediction ✅ (Phase 13, v0.9.0)
 
 **What:** Before executing a prompt, estimate its CB cost based on input
 size, prompt complexity, and historical data from similar calls.
@@ -271,7 +271,7 @@ agentis evolve solver --trace-format dag
 
 ---
 
-## 12. Confidence Primitive
+## 12. Confidence Primitive ✅ (Phase 13, v0.9.0)
 
 **What:** `confidence(claim, context) -> float` as a built-in that's more
 than just prompting "how sure are you". Uses calibrated techniques:
@@ -360,12 +360,12 @@ agentis evolve solver --backends claude,ollama,gemini
 **Implemented in Phase 12 (v0.8.0):** Portable Agent Identity (#9 partially — content-addressed bundles with identity hashes, export/import).
 **Implemented in Phase 13 (v0.9.0):** Ideas #8 (Budget Prediction) and #12 (Confidence Primitive).
 
-**Recommended next priorities (post Phase 11):**
-1. Idea #8 — Budget Prediction (dramatically improves stability)
-2. Idea #12 — Confidence Primitive (strong differentiator)
-3. Idea #3 — Delegated Execution with Contracts (multi-agent decomposition)
+**Recommended next priorities (post Phase 13):**
+1. Idea #3 — Delegated Execution with Contracts (multi-agent decomposition)
+2. Idea #6 — Composable Agent Pipelines (pipe operator chaining)
+3. Idea #10 — MCP / Tool Use Integration (external tool invocation)
 
-**Defer until later (v0.8–v0.9+):**
+**Defer until later:**
 - Idea #5 — Agent-to-Agent Messaging: risk of uncontrolled side-channels.
   Implement after Contracts + typed channels are proven.
 - Idea #4 — Negation/Anti-Constraints: expensive (LLM call per avoid).

@@ -2017,10 +2017,7 @@ impl<'a> Evaluator<'a> {
                         "avg_cb_per_prompt" => {
                             let h = &self.prompt_cost_history;
                             let avg = if !h.is_empty() {
-                                h.records()
-                                    .iter()
-                                    .map(|r| r.cb_cost as f64)
-                                    .sum::<f64>()
+                                h.records().iter().map(|r| r.cb_cost as f64).sum::<f64>()
                                     / h.len() as f64
                             } else {
                                 0.0
@@ -2120,8 +2117,12 @@ impl<'a> Evaluator<'a> {
             Some(fields_ref.as_slice())
         };
 
-        let result =
-            self.call_backend_complete(&expr.instruction, &input_str, &expr.return_type, fields_opt);
+        let result = self.call_backend_complete(
+            &expr.instruction,
+            &input_str,
+            &expr.return_type,
+            fields_opt,
+        );
 
         if let Some(t) = &self.tracer {
             if let Ok(ref v) = result {
@@ -5266,8 +5267,7 @@ mod tests {
             print(conf.samples);
         "#;
         let program = Parser::parse_source(src).unwrap();
-        let mut evaluator = Evaluator::new(100000)
-            .with_confidence_max_samples(5);
+        let mut evaluator = Evaluator::new(100000).with_confidence_max_samples(5);
         evaluator.grant_all();
         evaluator.eval_program(&program).unwrap();
 
