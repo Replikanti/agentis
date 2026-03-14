@@ -4293,10 +4293,20 @@ fn cmd_update(args: &[String]) -> Result<(), AgentisError> {
     let current_exe = std::env::current_exe()
         .map_err(|e| AgentisError::General(format!("cannot locate current executable: {e}")))?;
 
-    // Write downloaded binary to temp dir (always writable)
-    let tmp_path = std::env::temp_dir().join("agentis-update-tmp");
-    std::fs::write(&tmp_path, &binary)
-        .map_err(|e| AgentisError::General(format!("failed to write temp file: {e}")))?;
+    // Write downloaded binary to the SAME directory as the running binary.
+    // This ensures rename() works (same filesystem).  If the directory is
+    // not writable, fall back to /tmp (rename will fail, but rm+cp or sudo
+    // will handle it).
+    let same_dir_tmp = current_exe.with_file_name(".agentis-update-tmp");
+    let tmp_path = match std::fs::write(&same_dir_tmp, &binary) {
+        Ok(_) => same_dir_tmp,
+        Err(_) => {
+            let fallback = std::env::temp_dir().join("agentis-update-tmp");
+            std::fs::write(&fallback, &binary)
+                .map_err(|e| AgentisError::General(format!("failed to write temp file: {e}")))?;
+            fallback
+        }
+    };
 
     // Set executable permissions
     #[cfg(unix)]
@@ -4320,7 +4330,12 @@ fn cmd_update(args: &[String]) -> Result<(), AgentisError> {
                     let _ = std::fs::remove_file(&tmp_path);
                     false
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => true,
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::PermissionDenied
+                        || e.raw_os_error() == Some(26) =>
+                {
+                    true
+                }
                 Err(e) => {
                     let _ = std::fs::remove_file(&tmp_path);
                     return Err(AgentisError::General(format!(
