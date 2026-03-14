@@ -1047,4 +1047,218 @@ mod tests {
         assert_ne!(id_a.seed_hash, id_b.seed_hash);
         assert_ne!(id_a.identity_hash, id_b.identity_hash);
     }
+
+    // --- M51: full resume round-trip ---
+
+    #[test]
+    fn full_resume_round_trip() {
+        // Export a bundle with checkpoint, import it into a fresh store,
+        // then verify the checkpoint can be loaded and HEAD is set.
+        use crate::checkpoint::{CheckpointStore, GenerationCheckpoint, ParentEntry};
+
+        let dir = tempfile::tempdir().unwrap();
+        let export_root = dir.path().join("export");
+        std::fs::create_dir_all(&export_root).unwrap();
+
+        // Create a checkpoint in the "export" store
+        let ckpt_store = CheckpointStore::new(&export_root);
+        let ckpt = GenerationCheckpoint {
+            generation: 5,
+            parent: None,
+            seed_hash: "resume_seed".to_string(),
+            parents: vec![ParentEntry {
+                source: "let x = 42;".to_string(),
+                source_hash: "src42".to_string(),
+            }],
+            best_ever_score: 0.85,
+            best_ever_source: "let x = 42;".to_string(),
+            best_ever_hash: "src42".to_string(),
+            stall_count: 1,
+            cumulative_cb: 999,
+            first_gen_avg_prompts: 2.0,
+            gen_best_score: 0.85,
+            gen_avg_score: 0.7,
+            gen_avg_prompts: 2.0,
+            variant_count: 4,
+            timestamp: 5000,
+            tag: None,
+            ancestor_failures: vec![],
+            ancestor_successes: vec![],
+        };
+        let ckpt_bytes = ckpt.to_bytes();
+
+        // Write bundle
+        let bundle_path = dir.path().join("resume.agb");
+        let bundle_path_str = bundle_path.to_string_lossy().to_string();
+        let id = BundleIdentity {
+            seed_hash: "resume_seed".to_string(),
+            generation: 5,
+            identity_hash: identity::compute_identity_hash("resume_seed", 5, &[]),
+            version: "0.8.0".to_string(),
+            tags: vec!["checkpoint-v5".to_string()],
+            timestamp: 5000,
+        };
+        let memos = vec![MemoEntry {
+            key: "strategy".to_string(),
+            content: "{\"learned\":\"be careful\"}\n".to_string(),
+        }];
+        let lineage = vec![LineageEntry {
+            filename: "g05.jsonl".to_string(),
+            content: "{\"gen\":5,\"best\":0.85}\n".to_string(),
+        }];
+        write_bundle(
+            &bundle_path_str,
+            &id,
+            "let x = 42;",
+            Some(&ckpt_bytes),
+            &memos,
+            &lineage,
+        )
+        .unwrap();
+
+        // Import into a completely fresh store
+        let import_root = dir.path().join("import");
+        std::fs::create_dir_all(&import_root).unwrap();
+        let contents = read_bundle(&bundle_path_str).unwrap();
+        let result = import_to_store(&contents, &import_root, MemoConflict::Append).unwrap();
+
+        // Verify checkpoint was restored and HEAD set
+        assert!(result.checkpoint_hash.is_some());
+        let import_ckpt_store = CheckpointStore::new(&import_root);
+        let head = import_ckpt_store.head().unwrap();
+        assert_eq!(head, result.checkpoint_hash);
+
+        // Verify checkpoint data is intact
+        let loaded = import_ckpt_store.load(&head.unwrap()).unwrap();
+        assert_eq!(loaded.generation, 5);
+        assert_eq!(loaded.seed_hash, "resume_seed");
+        assert_eq!(loaded.best_ever_score, 0.85);
+        assert_eq!(loaded.best_ever_source, "let x = 42;");
+        assert_eq!(loaded.stall_count, 1);
+        assert_eq!(loaded.cumulative_cb, 999);
+
+        // Verify memos restored
+        assert_eq!(result.memo_keys_restored, 1);
+        let memo_content =
+            std::fs::read_to_string(import_root.join("memo").join("strategy.jsonl")).unwrap();
+        assert!(memo_content.contains("be careful"));
+
+        // Verify lineage restored
+        assert_eq!(result.lineage_files_restored, 1);
+        assert!(import_root.join("fitness").join("g05.jsonl").exists());
+    }
+
+    // --- M52: backup tests ---
+
+    #[test]
+    fn backup_creates_bundle_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let agentis_root = dir.path().join("agentis");
+        std::fs::create_dir_all(&agentis_root).unwrap();
+        let backup_dir = dir.path().join("backups");
+
+        let result = write_evolve_backup(
+            &backup_dir.to_string_lossy(),
+            3,
+            "seed_abc",
+            "let x = 1;",
+            None,
+            &agentis_root,
+            "idhash64charsaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            &[],
+        )
+        .unwrap();
+
+        // gen file created
+        assert!(result.exists());
+        assert_eq!(result.file_name().unwrap(), "g03-best.agb");
+
+        // latest.agb also created
+        assert!(backup_dir.join("latest.agb").exists());
+    }
+
+    #[test]
+    fn backup_bundle_is_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let agentis_root = dir.path().join("agentis");
+        std::fs::create_dir_all(&agentis_root).unwrap();
+        let backup_dir = dir.path().join("backups");
+
+        let result = write_evolve_backup(
+            &backup_dir.to_string_lossy(),
+            7,
+            "seed_xyz",
+            "let y = 2;",
+            None,
+            &agentis_root,
+            "idhash64charsbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            &["tag-a".to_string()],
+        )
+        .unwrap();
+
+        // Read it back — must parse without error
+        let contents = read_bundle(&result.to_string_lossy()).unwrap();
+        assert_eq!(contents.identity.seed_hash, "seed_xyz");
+        assert_eq!(contents.identity.generation, 7);
+        assert_eq!(contents.identity.tags, vec!["tag-a"]);
+
+        // Verify integrity
+        let report = verify_bundle(&result.to_string_lossy()).unwrap();
+        assert!(report.root_hash_ok);
+    }
+
+    #[test]
+    fn backup_overwrites_latest_on_new_best() {
+        let dir = tempfile::tempdir().unwrap();
+        let agentis_root = dir.path().join("agentis");
+        std::fs::create_dir_all(&agentis_root).unwrap();
+        let backup_dir = dir.path().join("backups");
+        let backup_str = backup_dir.to_string_lossy().to_string();
+
+        // First backup at gen 2
+        write_evolve_backup(
+            &backup_str,
+            2,
+            "seed",
+            "let a = 1;",
+            None,
+            &agentis_root,
+            "id_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            &[],
+        )
+        .unwrap();
+
+        let latest_size_1 = std::fs::metadata(backup_dir.join("latest.agb"))
+            .unwrap()
+            .len();
+
+        // Second backup at gen 5 with different (longer) source
+        write_evolve_backup(
+            &backup_str,
+            5,
+            "seed",
+            "let a = 1;\nlet b = 2;\nlet c = 3;\nprint(a + b + c);",
+            None,
+            &agentis_root,
+            "id_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            &[],
+        )
+        .unwrap();
+
+        let latest_size_2 = std::fs::metadata(backup_dir.join("latest.agb"))
+            .unwrap()
+            .len();
+
+        // latest.agb should have been overwritten (different size due to longer source)
+        assert_ne!(latest_size_1, latest_size_2);
+
+        // Both gen files should exist
+        assert!(backup_dir.join("g02-best.agb").exists());
+        assert!(backup_dir.join("g05-best.agb").exists());
+
+        // latest.agb should match the newer one
+        let latest_data = std::fs::read(backup_dir.join("latest.agb")).unwrap();
+        let gen5_data = std::fs::read(backup_dir.join("g05-best.agb")).unwrap();
+        assert_eq!(latest_data, gen5_data);
+    }
 }

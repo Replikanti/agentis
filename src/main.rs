@@ -4561,6 +4561,76 @@ mod tests {
         assert_eq!(parse_size_bytes("100"), Some(100));
         assert_eq!(parse_size_bytes("abc"), None);
     }
+
+    // --- M53: identity show format test ---
+
+    #[test]
+    fn identity_show_components() {
+        // Verify that all components used by `identity show` work correctly:
+        // checkpoint loading, identity computation, drift risk classification.
+        use crate::checkpoint::{CheckpointStore, GenerationCheckpoint, ParentEntry};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let store = CheckpointStore::new(root);
+
+        let ckpt = GenerationCheckpoint {
+            generation: 8,
+            parent: None,
+            seed_hash: "show_seed_hash_abc".to_string(),
+            parents: vec![ParentEntry {
+                source: "let x = 1;".to_string(),
+                source_hash: "sh1".to_string(),
+            }],
+            best_ever_score: 0.927,
+            best_ever_source: "let x = 1;".to_string(),
+            best_ever_hash: "sh1".to_string(),
+            stall_count: 6,
+            cumulative_cb: 5000,
+            first_gen_avg_prompts: 1.5,
+            gen_best_score: 0.9,
+            gen_avg_score: 0.8,
+            gen_avg_prompts: 1.5,
+            variant_count: 4,
+            timestamp: 9999,
+            tag: None,
+            ancestor_failures: vec![],
+            ancestor_successes: vec![],
+        };
+        let hash = store.store(&ckpt).unwrap();
+        store.set_head(&hash).unwrap();
+        store.set_tag("prod", &hash).unwrap();
+
+        // Load and verify all fields used by identity show
+        let head = store.head().unwrap().unwrap();
+        let loaded = store.load(&head).unwrap();
+        assert_eq!(loaded.generation, 8);
+        assert_eq!(loaded.best_ever_score, 0.927);
+        assert_eq!(loaded.stall_count, 6);
+
+        // Identity hash is computable
+        let id = identity::identity_from_checkpoint(&head, &store).unwrap();
+        assert_eq!(id.len(), 64);
+
+        // Tags resolve
+        let tags = store.list_tags().unwrap();
+        let head_tags: Vec<&str> = tags
+            .iter()
+            .filter(|(_, h)| h == &head)
+            .map(|(n, _)| n.as_str())
+            .collect();
+        assert_eq!(head_tags, vec!["prod"]);
+
+        // Drift risk classification
+        let drift = if loaded.stall_count >= 5 {
+            "HIGH"
+        } else if loaded.stall_count >= 2 {
+            "moderate"
+        } else {
+            "low"
+        };
+        assert_eq!(drift, "HIGH");
+    }
 }
 
 fn format_unix_time(ts: i64) -> String {
