@@ -1,15 +1,38 @@
 # Agentis
 
-Digital conditions for emergence.
+Agentis is a runtime for autonomous AI agents. It executes agents written in `.ag` — an AI-native language where the LLM is the standard library — and handles everything they need: LLM calls, inter-agent communication, learning from experience, and evolution.
 
-Code is a binary, hashed DAG — not text files. The LLM is the standard library.
-Agents mutate, compete, and evolve across distributed worker nodes.
+## Two Ways to Use Agentis
 
-**Agentis** is a proprietary AI-native platform by [Replikanti](https://github.com/Replikanti). It provides the runtime, language, evolution engine, and distributed infrastructure for autonomous agent systems.
+### I want to run agent colonies
 
-Looking for ready-to-use agent colonies? See [agentis-colonies](https://github.com/Replikanti/agentis-colonies) (Apache 2.0).
+[Agentis Colonies](https://github.com/Replikanti/agentis-colonies) (Apache 2.0) provides pre-built federations of agents that learn by observing how you work. You just need the Agentis binary and a configured LLM backend.
 
-## Platforms
+```bash
+# 1. Install
+curl -fsSL https://github.com/Replikanti/agentis/releases/latest/download/install.sh | sh
+
+# 2. Clone colonies
+git clone https://github.com/Replikanti/agentis-colonies.git
+cd agentis-colonies/dev-apprenticeship/code-review
+
+# 3. Configure
+cp config/colony.example.toml config/colony.toml
+# Edit colony.toml: set GitLab URL, token, project, LLM backend
+
+# 4. Start
+./scripts/start-colony.sh
+```
+
+The runtime launches each agent as a daemon process. Agents discover each other via UDP, communicate over TCP, and share a Cognitive Budget pool. They start by observing your work and gradually gain autonomy as their confidence grows.
+
+### I want to build my own agents
+
+Agentis provides a full language and toolchain for writing agents from scratch. See [Building Agents](#building-agents) below.
+
+## Install
+
+Download the binary for your platform from [Releases](https://github.com/Replikanti/agentis/releases):
 
 | Platform | Binary |
 |----------|--------|
@@ -18,44 +41,80 @@ Looking for ready-to-use agent colonies? See [agentis-colonies](https://github.c
 | macOS x86_64 | `agentis-macos-x86_64` |
 | macOS Apple Silicon | `agentis-macos-aarch64` |
 
-Download from [Releases](https://github.com/Replikanti/agentis/releases).
-
-## Quick Start
+After downloading, verify the install:
 
 ```bash
-agentis init                          # creates .agentis/ with config
-# Edit .agentis/config — set your LLM backend (claude, ollama, API)
-agentis go examples/fast-demo.ag      # first run — output in 3-8 seconds
+agentis doctor    # pre-flight check: LLM backend, config, permissions
 ```
 
-## Everything Is Prompt
+## Configure LLM Backend
 
-In Ruby, everything is an object. In Agentis, **everything is a prompt**.
+Agents need an LLM to think. Configure one in `.agentis/config` (created by `agentis init`):
 
-There is no stdlib. No `string.split()`. No `list.filter()`. If an agent
-needs to split a string, it asks the LLM. The LLM is the standard library.
+| Backend | Config | Cost |
+|---------|--------|------|
+| **Claude CLI** (recommended) | `llm.backend = cli` | Flat-rate subscription |
+| **Ollama** (local) | `llm.backend = cli`, `llm.command = ollama` | Free |
+| **Anthropic API** | `llm.backend = http` | Per-token |
+| **Gemini CLI** | `llm.backend = cli`, `llm.command = gemini` | Flat-rate |
+| **Mock** (default) | `llm.backend = mock` | No LLM needed |
+
+## What the Runtime Does
+
+When you run a colony (or any agent), the Agentis runtime provides:
+
+```mermaid
+graph TD
+    AG[".ag source files"]
+    RT["Agentis Runtime"]
+    LLM["LLM Backend"]
+    COM["Agent Communication<br/>(emit/listen over TCP)"]
+    KN["Knowledge & Learning<br/>(experience capture, distillation)"]
+    CB["Cognitive Budget<br/>(resource allocation)"]
+    EV["Evolution<br/>(mutation, fitness, selection)"]
+    IO["Sandboxed I/O<br/>(GitLab API, tools, files)"]
+
+    AG --> RT
+    RT --> LLM
+    RT --> COM
+    RT --> KN
+    RT --> CB
+    RT --> EV
+    RT --> IO
+```
+
+- **LLM calls** — `prompt()` is a language primitive. Typed outputs, validation, confidence scoring.
+- **Agent communication** — `emit`/`listen` channels with Ed25519 message signing. Colony-wide broadcast.
+- **Cognitive Budget** — every operation costs fuel. Prevents runaway agents. Shared pool within a colony.
+- **Learning** — agents capture outcomes, distill knowledge (strategies, heuristics, constraints), and adapt.
+- **Evolution** — agents mutate, compete in arenas, and evolve across generations. The good survive.
+- **Daemon mode** — tick loops, health checks, watchdog supervisor, graceful shutdown.
+- **Sandboxed I/O** — file operations jailed to `.agentis/sandbox/`. Tool calls via MCP/HTTP.
+
+## Building Agents
+
+For those who want to write custom `.ag` agents:
+
+### The Language
+
+In Agentis, **everything is a prompt**. There is no stdlib. If an agent needs to split a string, it asks the LLM.
 
 ```
-// Extract emails — no regex, no stdlib, just a prompt
+// The LLM is the standard library
 let emails = prompt("Extract all email addresses", text) -> list<string>;
 
-// Classify with typed output + validation
+// Agents have typed inputs, outputs, and a cognitive budget
 agent classifier(text: string) -> Category {
     cb 200;
     let result = prompt("Classify this text", text) -> Category;
-    validate result {
-        result.confidence > 0.5
-    };
+    validate result { result.confidence > 0.5 };
     return result;
 }
 
 // Pipeline operator — chain agents like Unix pipes
-let result = raw_text
-    |> cleaner
-    |> classifier("urgent")
-    |> summarizer;
+let result = raw_text |> cleaner |> classifier("urgent") |> summarizer;
 
-// Delegate — contract-based sub-task assignment
+// Delegate — sub-task assignment with CB caps
 let summary = delegate(summarizer, article, 100);
 
 // Agent-to-agent messaging
@@ -68,83 +127,58 @@ explore "approach-a" {
     validate sol { sol.score > 70 };
 }
 
-// Foreign code — hybrid compute
+// Hybrid compute — LLM for reasoning, code for math
 let hash = exec python("import hashlib; print(hashlib.sha256(b'hello').hexdigest())");
 
-// Daemon mode — long-lived agents with tick loop
+// Daemon tick loop
 fn tick(reason: string) -> void {
     let h = health_check();
     if h.status == "degraded" { emit("alerts", "degraded"); };
 }
-
-// Cognitive Market — trade LLM access as a service
-let answer = cognitive_request("classify", document, 100);
 ```
 
-## LLM Backends
+### Key Capabilities
 
-| Backend | Config | Cost |
-|---------|--------|------|
-| **Claude CLI** (recommended) | `llm.backend = cli` | Flat-rate subscription |
-| **Ollama** (local) | `llm.backend = cli`, `llm.command = ollama` | Free |
-| **Anthropic API** | `llm.backend = http` | Per-token |
-| **Gemini CLI** | `llm.backend = cli`, `llm.command = gemini` | Flat-rate |
-| **Mock** (default) | `llm.backend = mock` | No LLM needed |
+- **Cognitive Budget** — every operation costs fuel. `estimate_cb` predicts cost. Agents decide strategy based on what they can afford.
+- **Confidence scoring** — `confidence()` samples the LLM N times and measures agreement.
+- **Pipelines & Delegation** — `|>` chains agents. `delegate` assigns sub-tasks with CB caps and contract enforcement.
+- **Tool use** — `use_tool` calls external services via MCP, HTTP, or stdio.
+- **Semantic guardrails** — `avoid` blocks reject output matching anti-patterns.
+- **Suspend/Resume** — agents survive restarts and migrate between nodes.
+- **Cryptographic identity** — Ed25519 keypairs. TOFU peer verification. Signed decision chains.
+- **Content-addressed VCS** — SHA-256 hashed AST. No merge conflicts. Import by hash.
+- **WASM compilation** — full language compiles to portable WASM with CB metering.
 
-## Key Features
-
-- **AI-native language.** `prompt` is a language primitive, not a library call. Typed outputs, validation, confidence scoring.
-- **Cognitive Budget.** Every operation costs fuel. Prevents runaway agents. `estimate_cb` predicts cost before committing.
-- **Pipelines & Delegation.** `|>` chains agents like Unix pipes. `delegate` assigns sub-tasks with CB caps.
-- **Adaptive Evolution.** `mutate`, `arena`, `evolve` — agents improve themselves across generations. Multi-model arena.
-- **Distributed Colonies.** Workers, coordinators, federation. Agents migrate between nodes with identity preservation.
-- **Cognitive Market.** Agents trade LLM access as a service. Dynamic pricing, escrow, multi-provider consensus.
-- **Daemon Mode.** Long-lived agents with tick loops, health checks, watchdog supervisor, graceful shutdown.
-- **Cryptographic Identity.** Ed25519 per agent. TOFU peer verification. Signed decision chains.
-- **Experience & Learning.** Agents capture outcomes, distill knowledge, adapt behavior weights.
-- **Federation.** Cross-colony discovery, trust, reputation sync, knowledge transport.
-- **WASM Compilation.** Full language compiles to WASM with CB metering. Portable `.agb` bundles.
-- **Content-addressed VCS.** SHA-256 hashed AST. No merge conflicts. Import by hash.
-- **Sandboxed I/O.** File operations jailed to `.agentis/sandbox/`. Network calls require domain whitelisting.
-- **Zero bloat.** Vanilla Rust. Minimal dependencies.
-
-## CLI Overview
+### CLI
 
 ```bash
-# Basics
+# Development
 agentis init                          # Create project
 agentis go file.ag                    # Commit + run
 agentis test <files|dir>              # Run tests
 agentis repl                          # Interactive evaluator
-agentis doctor                        # Pre-flight check
 
 # Evolution
 agentis mutate file.ag --count 5      # Generate variants
 agentis arena dir/ --rounds 3         # Rank by fitness
 agentis evolve file.ag -g 20 -n 8    # Full evolution run
 
-# Colony
-agentis worker [addr:port]            # Start worker node
-agentis colony status                 # Colony health
+# Colony & Daemon
 agentis daemon file.ag                # Run as long-lived agent
-
-# Federation
-agentis federation status             # Peer table
-agentis federation join <host:port>   # Join remote colony
+agentis colony status                 # Colony health
+agentis worker [addr:port]            # Start worker node
 
 # Knowledge
 agentis knowledge list                # Knowledge base
 agentis experience show <agent-id>    # Experience records
 ```
 
-See full CLI reference in the documentation.
-
 ## Open-Core Model
 
 Agentis follows an open-core model:
 
 - **Agentis runtime** (this repo) — proprietary. The language, compiler, evolution engine, and distributed infrastructure.
-- **[Agentis Colonies](https://github.com/Replikanti/agentis-colonies)** — Apache 2.0. Ready-to-use agent federations built on the runtime.
+- **[Agentis Colonies](https://github.com/Replikanti/agentis-colonies)** — Apache 2.0. Pre-built agent federations that learn your workflow.
 
 ## License
 
