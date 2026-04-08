@@ -1,5 +1,8 @@
 # Agentis
 
+[![Total Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/total?label=downloads&color=blue)](https://github.com/Replikanti/agentis/releases)
+[![Latest Release Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/latest/total?label=latest%20release)](https://github.com/Replikanti/agentis/releases/latest)
+
 Agentis is a runtime for autonomous AI agents. It executes agents written in `.ag` — an AI-native language where the LLM is the standard library — and handles everything they need: LLM calls, inter-agent communication, learning from experience, and evolution.
 
 ## Two Ways to Use Agentis
@@ -34,12 +37,12 @@ Agentis provides a full language and toolchain for writing agents from scratch. 
 
 Download the binary for your platform from [Releases](https://github.com/Replikanti/agentis/releases):
 
-| Platform | Binary |
-|----------|--------|
-| Linux x86_64 | `agentis-linux-x86_64` |
-| Linux aarch64 | `agentis-linux-aarch64` |
-| macOS x86_64 | `agentis-macos-x86_64` |
-| macOS Apple Silicon | `agentis-macos-aarch64` |
+| Platform | Binary | Downloads |
+|----------|--------|-----------|
+| Linux x86_64 | `agentis-linux-x86_64` | ![Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/latest/agentis-linux-x86_64?color=green) |
+| Linux aarch64 | `agentis-linux-aarch64` | ![Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/latest/agentis-linux-aarch64?color=green) |
+| macOS x86_64 | `agentis-macos-x86_64` | ![Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/latest/agentis-macos-x86_64?color=green) |
+| macOS Apple Silicon | `agentis-macos-aarch64` | ![Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/latest/agentis-macos-aarch64?color=green) |
 
 After downloading, verify the install:
 
