@@ -15,7 +15,7 @@ Agents written in `.ag` use LLMs to think, but that is where the similarity to p
 ## Install
 
 ```bash
-curl -fsSL https://github.com/Replikanti/agentis/releases/latest/download/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Replikanti/agentis/main/install.sh | sh
 ```
 
 Or download the binary for your platform manually from [Releases](https://github.com/Replikanti/agentis/releases).
