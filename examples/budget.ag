@@ -1,0 +1,32 @@
+// budget.ag — Cognitive Budget in action.
+// Every operation costs CB. When it hits zero: CognitiveOverload.
+// This teaches resource awareness — agents must be efficient.
+
+// Default budget is 1000. Override with `cb`:
+cb 120;
+
+// Arithmetic costs 1 CB each
+let a = 2 + 3;        // 1 CB
+let b = a * 10;       // 1 CB
+let c = b - 5;        // 1 CB
+print("Math:", a, b, c);
+
+// Function calls cost 5 CB
+fn double(x: int) -> int {
+    return x * 2;      // 1 CB (arithmetic) + cost of the call
+}
+let d = double(21);   // 5 CB (call) + 1 CB (arithmetic)
+print("Double 21:", d);
+
+// Prompt costs 50 CB — this is intentionally expensive.
+// It forces agents to batch work into few, large prompts
+// rather than many trivial ones.
+let answer = prompt("What is 6 * 7?", "") -> string;
+print("LLM says:", answer);
+
+// By now we've spent ~70 CB out of 120.
+// A second prompt would cost another 50 + overhead, leaving
+// almost nothing. Try uncommenting the line below:
+// let again = prompt("Say hello", "") -> string;
+
+print("Done — budget survived!");

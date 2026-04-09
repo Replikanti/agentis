@@ -1,0 +1,29 @@
+// pipeline.ag — Data pipeline where everything is a prompt.
+// No stdlib. No string.split(). No list.filter().
+// The LLM IS the data processor.
+// Requires: examples/data.txt in .agentis/sandbox/data.txt
+
+type Email {
+    address: string,
+    domain: string
+}
+
+type Report {
+    total: int,
+    domains: string
+}
+
+agent extract_emails(text: string) -> list<Email> {
+    cb 200;
+    return prompt("Extract all email addresses. Return JSON array of objects with address and domain fields", text) -> list<Email>;
+}
+
+agent analyze(emails: list<Email>) -> Report {
+    cb 200;
+    return prompt("Count total emails and list unique domains. Return JSON with total (int) and domains (string) fields", emails) -> Report;
+}
+
+let raw = file_read("data.txt");
+let emails = extract_emails(raw);
+let report = analyze(emails);
+print("Found", report.total, "emails across domains:", report.domains);

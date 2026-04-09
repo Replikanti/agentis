@@ -1,0 +1,22 @@
+// classify.ag — Type-safe LLM output with validation.
+// The prompt returns a typed struct. Validate ensures quality.
+
+type Category {
+    label: string,
+    confidence: float
+}
+
+agent classifier(text: string) -> Category {
+    cb 200;
+    let result = prompt("Classify this text into a category", text) -> Category;
+    validate result {
+        len(result.label) > 0,
+        result.confidence > 0.5,
+        result.confidence <= 1.0
+    };
+    return result;
+}
+
+let r = classifier("The stock market crashed today");
+print("Label:", r.label);
+print("Confidence:", r.confidence);
