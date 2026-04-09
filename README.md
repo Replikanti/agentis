@@ -12,6 +12,10 @@ Agents written in `.ag` use LLMs to think, but that is where the similarity to p
 
 146k lines of Rust. No frameworks, no Tokio, no serde. Everything from the lexer to the P2P wire protocol written from scratch.
 
+```bash
+curl -fsSL https://github.com/Replikanti/agentis/releases/latest/download/install.sh | sh
+```
+
 ## Two Ways to Use Agentis
 
 ### I want to run agent colonies
