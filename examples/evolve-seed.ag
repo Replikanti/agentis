@@ -1,0 +1,42 @@
+// evolve-seed.ag — A seed program for the evolution pipeline.
+// This agent is designed to be mutated and evolved.
+//
+// Evolution workflow:
+//   agentis mutate examples/evolve-seed.ag --dry-run     # preview mutations
+//   agentis mutate examples/evolve-seed.ag --count 5 --out variants/
+//   agentis arena variants/                              # rank by fitness
+//   agentis evolve examples/evolve-seed.ag -g 5 -n 4    # full evolution
+//   agentis evolve examples/evolve-seed.ag -g 10 -n 8 --show-lineage
+//
+// Fitness = CB efficiency + validate pass rate + explore survival rate.
+// The evolution engine mutates the agent's prompt instruction to find
+// variants that score higher.
+
+type Analysis {
+    sentiment: string,
+    confidence: float
+}
+
+agent analyzer(text: string) -> Analysis {
+    cb 200;
+    let result = prompt(
+        "Analyze the sentiment of this text. Respond with sentiment (positive/negative/neutral) and confidence (0.0-1.0).",
+        text
+    ) -> Analysis;
+    validate result {
+        len(result.sentiment) > 0,
+        result.confidence > 0.0,
+        result.confidence <= 1.0
+    };
+    return result;
+}
+
+explore "positive-case" {
+    let r = analyzer("This product exceeded all my expectations!");
+    validate r { r.sentiment == "positive" };
+}
+
+explore "negative-case" {
+    let r = analyzer("Terrible service, never coming back.");
+    validate r { r.sentiment == "negative" };
+}

@@ -1,0 +1,32 @@
+// delegate.ag — Demonstrates the delegate() keyword and |> pipeline operator.
+// No LLM needed. Pure syntax example -- works with "agentis go".
+// delegate() spawns an agent with an optional contract (cb_max, timeout, schema).
+// |> pipes the output of one agent as the first argument to the next.
+
+fn double(x: int) -> int { return x * 2; }
+fn add_ten(x: int) -> int { return x + 10; }
+fn to_label(x: int) -> string { return "result=" + to_string(x); }
+
+agent doubler(n: int) -> int {
+    return double(n);
+}
+
+agent adder(n: int) -> int {
+    return add_ten(n);
+}
+
+agent labeler(n: int) -> string {
+    return to_label(n);
+}
+
+// Basic delegate -- fire and wait
+let result = delegate(doubler, 5);
+print("delegate(doubler, 5) =", result);
+
+// Delegate with contract -- cap CB budget
+let capped = delegate(adder, 3, { cb_max: 200 });
+print("delegate(adder, 3, {cb_max:200}) =", capped);
+
+// Pipeline: output of previous agent becomes first argument of the next
+let piped = 7 |> doubler |> adder |> labeler;
+print("7 |> doubler |> adder |> labeler =", piped);
