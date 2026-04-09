@@ -1,9 +1,20 @@
 # Agentis
 
-[![Total Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/total?label=downloads&color=blue)](https://github.com/Replikanti/agentis/releases)
-[![Latest Release Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/latest/total?label=latest%20release)](https://github.com/Replikanti/agentis/releases/latest)
+[![Release](https://img.shields.io/github/v/release/Replikanti/agentis?label=release&color=brightgreen&cacheSeconds=0)](https://github.com/Replikanti/agentis/releases/latest)
+[![Total Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/total?label=downloads&color=blue&cacheSeconds=0)](https://github.com/Replikanti/agentis/releases)
+[![Latest Release Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/latest/total?label=latest%20release&cacheSeconds=0)](https://github.com/Replikanti/agentis/releases/latest)
 
-Agentis is a runtime for autonomous AI agents. It executes agents written in `.ag` — an AI-native language where the LLM is the standard library — and handles everything they need: LLM calls, inter-agent communication, learning from experience, and evolution.
+*Digital conditions for emergence.*
+
+Agentis is not an LLM wrapper. It is a runtime, a language, and an evolution engine for autonomous agents that discover each other, form colonies, learn from experience, compete for resources, evolve across generations, and distribute themselves across networks of worker nodes.
+
+Agents written in `.ag` think with LLMs, but that is where the similarity to prompt orchestrators ends. They have their own compiler, their own content-addressed version control, their own cryptographic identity, their own economy. They run as daemons, survive restarts, migrate between hosts, and die when they fail to prove their fitness.
+
+Phases 1 through 37 built digital Mars: a fully autonomous, battlefield-ready substrate for emergent intelligence. 146k lines of Rust. No frameworks, no Tokio, no serde. Everything from the lexer to the evolution engine to the wire protocol written from scratch.
+
+What comes after Phase 37 is the transport system. Observer mode. Avatars. The Qualia Bridge. And eventually, Generation 100: the full assimilation of human consciousness into the colony.
+
+> *"We didn't go to the stars. We became the stars."*
 
 ## Two Ways to Use Agentis
 
@@ -39,10 +50,10 @@ Download the binary for your platform from [Releases](https://github.com/Replika
 
 | Platform | Binary | Downloads |
 |----------|--------|-----------|
-| Linux x86_64 | `agentis-linux-x86_64` | ![Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/latest/agentis-linux-x86_64?color=green) |
-| Linux aarch64 | `agentis-linux-aarch64` | ![Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/latest/agentis-linux-aarch64?color=green) |
-| macOS x86_64 | `agentis-macos-x86_64` | ![Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/latest/agentis-macos-x86_64?color=green) |
-| macOS Apple Silicon | `agentis-macos-aarch64` | ![Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/latest/agentis-macos-aarch64?color=green) |
+| Linux x86_64 | `agentis-linux-x86_64` | ![Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/latest/agentis-linux-x86_64?color=green&cacheSeconds=0) |
+| Linux aarch64 | `agentis-linux-aarch64` | ![Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/latest/agentis-linux-aarch64?color=green&cacheSeconds=0) |
+| macOS x86_64 | `agentis-macos-x86_64` | ![Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/latest/agentis-macos-x86_64?color=green&cacheSeconds=0) |
+| macOS Apple Silicon | `agentis-macos-aarch64` | ![Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/latest/agentis-macos-aarch64?color=green&cacheSeconds=0) |
 
 After downloading, verify the install:
 
