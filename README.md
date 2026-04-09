@@ -6,15 +6,11 @@
 
 *Digital conditions for emergence.*
 
-Agentis is not an LLM wrapper. It is a runtime, a language, and an evolution engine for autonomous agents that discover each other, form colonies, learn from experience, compete for resources, evolve across generations, and distribute themselves across networks of worker nodes.
+Agentis is not an LLM wrapper. It is a runtime, a language, and an evolution engine for autonomous agents that discover each other, form colonies, learn from experience, compete for resources, evolve across generations, and distribute themselves across worker nodes.
 
-Agents written in `.ag` think with LLMs, but that is where the similarity to prompt orchestrators ends. They have their own compiler, their own content-addressed version control, their own cryptographic identity, their own economy. They run as daemons, survive restarts, migrate between hosts, and die when they fail to prove their fitness.
+Agents written in `.ag` use LLMs to think, but that is where the similarity to prompt orchestrators ends. They have their own compiler, their own content-addressed version control, cryptographic identity, and a resource economy that kills agents who waste it. They run as daemons, survive restarts, and migrate between hosts.
 
-Phases 1 through 37 built digital Mars: a fully autonomous, battlefield-ready substrate for emergent intelligence. 146k lines of Rust. No frameworks, no Tokio, no serde. Everything from the lexer to the evolution engine to the wire protocol written from scratch.
-
-What comes after Phase 37 is the transport system. Observer mode. Avatars. The Qualia Bridge. And eventually, Generation 100: the full assimilation of human consciousness into the colony.
-
-> *"We didn't go to the stars. We became the stars."*
+146k lines of Rust. No frameworks, no Tokio, no serde. Everything from the lexer to the P2P wire protocol written from scratch.
 
 ## Two Ways to Use Agentis
 
