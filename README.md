@@ -10,7 +10,7 @@ Agentis is not an LLM wrapper. It is a runtime, a language, and an evolution eng
 
 Agents written in `.ag` use LLMs to think, but that is where the similarity to prompt orchestrators ends. They have their own compiler, their own content-addressed version control, cryptographic identity, and a resource economy that kills agents who waste it. They run as daemons, survive restarts, and migrate between hosts.
 
-146k lines of Rust. No frameworks, no Tokio, no serde. Everything from the lexer to the P2P wire protocol written from scratch.
+Nearly 200k lines of Rust. No frameworks, no Tokio, no serde. Everything from the lexer to the P2P wire protocol written from scratch.
 
 ## Install
 
@@ -47,7 +47,7 @@ agentis go examples/classify.ag       # type-safe LLM output with validation
 agentis go examples/delegate.ag       # pipelines and delegation (no LLM needed)
 ```
 
-`agentis init` creates a project with 36 ready-to-run examples covering everything from basic prompts to evolution, colony messaging, and security. A few highlights are included in this repo under [`examples/`](examples/).
+`agentis init` creates a project with 40 ready-to-run examples covering everything from basic prompts to evolution, colony messaging, and security. A few highlights are included in this repo under [`examples/`](examples/).
 
 <details>
 <summary>Configure LLM backend</summary>
@@ -128,7 +128,7 @@ let answer = prompt("What is 6 * 7?", "") -> string;  // costs 50 CB
 
 ## Run Pre-Built Colonies
 
-[Agentis Colonies](https://github.com/Replikanti/agentis-colonies) (Apache 2.0) provides pre-built federations of agents that learn by observing how you work.
+[Agentis Colonies](https://github.com/Replikanti/agentis-colonies) (Apache 2.0) provides five pre-built federations spanning developer-workflow automation (`dev-apprenticeship` — learns how you work on GitLab/GitHub and gradually takes work over), security research (`tribes-bench`, `dark-factory`), trading-strategy discovery (`trading-binance`), and a scientific research pipeline (`research-foundry`). Driving an interactive AI CLI as the LLM backend is handled by [flat-cyborg](https://github.com/Replikanti/flat-cyborg) (MIT/Apache-2.0), the PTY driver the federations use.
 
 <details>
 <summary>Colony quick start</summary>
@@ -186,7 +186,7 @@ graph TD
 <details>
 <summary>The language</summary>
 
-In Agentis, **the LLM is the standard library**. There is no stdlib. If an agent needs to split a string, it asks the LLM.
+In Agentis, **the LLM is the standard library**. There is no conventional stdlib — reasoning, transformation, and judgment go through `prompt()`. A small set of built-ins covers only the mechanical hot path (JSON field extraction, string search, and since v1.20.0 `knowledge_search`/`crystallizer_search` — BM25 retrieval over what the agent has learned) so agents don't pay an LLM round-trip for work that isn't thinking.
 
 ```
 // Typed prompt output
@@ -250,6 +250,10 @@ agentis evolve file.ag -g 20 -n 8    # full evolution run
 # Colony and daemon
 agentis daemon file.ag                # run as long-lived agent
 agentis daemon file.ag --colony dev   # run within a named colony
+agentis daemon list                   # registry of running daemons (--json)
+agentis daemon stop <agent-id|--all>  # graceful stop (SIGTERM -> wait -> kill)
+agentis daemon reload <agent-id>      # reload memo state without a restart
+agentis daemon prune                  # clean stale registry entries
 agentis colony status                 # colony health
 agentis worker [addr:port]            # start worker node
 
@@ -274,7 +278,14 @@ Most commands support `--json` for machine-readable output.
 
 ## Documentation
 
-Full documentation is available at [`docs/`](https://github.com/Replikanti/agentis-core/tree/main/docs) in the core repository (requires access). Topics include deployment profiles, configuration reference, the wire protocol, and the evolution engine.
+Public documentation lives where you can reach it:
+
+- **This README** — install, quick start, LLM backends, language tour, CLI reference.
+- **[`examples/`](examples/)** here plus the 40 examples `agentis init` generates — runnable, commented `.ag` programs are the primary language reference.
+- **[Agentis Colonies](https://github.com/Replikanti/agentis-colonies)** — production federation source (Apache 2.0), including the normative [confidence-tier contract (ADR-0001)](https://github.com/Replikanti/agentis-colonies/blob/main/doc/adr/ADR-0001-confidence-tiers.md), the [federation portability contract (ADR-0003)](https://github.com/Replikanti/agentis-colonies/blob/main/doc/adr/ADR-0003-federation-portability-contract.md), operator docs (dashboard, auto-promote, replay), and an audience-oriented [documentation map](https://github.com/Replikanti/agentis-colonies#documentation-map).
+- **Security posture** — [SECURITY.md](SECURITY.md).
+
+In-depth internals documentation (deployment profiles, wire protocol, evolution engine) is part of the proprietary core and ships with commercial engagements.
 
 ## Open-Core Model
 
