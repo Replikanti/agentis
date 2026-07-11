@@ -47,7 +47,7 @@ agentis go examples/classify.ag       # type-safe LLM output with validation
 agentis go examples/delegate.ag       # pipelines and delegation (no LLM needed)
 ```
 
-`agentis init` creates a project with 40 ready-to-run examples covering everything from basic prompts to evolution, colony messaging, and security. A few highlights are included in this repo under [`examples/`](examples/).
+`agentis init` creates a project with 37 ready-to-run examples covering everything from basic prompts to evolution, colony messaging, and security. A few highlights are included in this repo under [`examples/`](examples/).
 
 <details>
 <summary>Configure LLM backend</summary>
@@ -233,7 +233,7 @@ fn tick(reason: string) -> void {
 
 ```bash
 # Getting started
-agentis init                          # create project (config + 36 examples)
+agentis init                          # create project (config + 37 examples)
 agentis doctor                        # self-diagnostics
 agentis doctor --fips                 # FIPS Known Answer Tests
 
@@ -281,7 +281,7 @@ Most commands support `--json` for machine-readable output.
 Public documentation lives where you can reach it:
 
 - **This README** — install, quick start, LLM backends, language tour, CLI reference.
-- **[`examples/`](examples/)** here plus the 40 examples `agentis init` generates — runnable, commented `.ag` programs are the primary language reference.
+- **[`examples/`](examples/)** here plus the 37 examples `agentis init` generates — runnable, commented `.ag` programs are the primary language reference.
 - **[Agentis Colonies](https://github.com/Replikanti/agentis-colonies)** — production federation source (Apache 2.0), including the normative [confidence-tier contract (ADR-0001)](https://github.com/Replikanti/agentis-colonies/blob/main/doc/adr/ADR-0001-confidence-tiers.md), the [federation portability contract (ADR-0003)](https://github.com/Replikanti/agentis-colonies/blob/main/doc/adr/ADR-0003-federation-portability-contract.md), operator docs (dashboard, auto-promote, replay), and an audience-oriented [documentation map](https://github.com/Replikanti/agentis-colonies#documentation-map).
 - **Security posture** — [SECURITY.md](SECURITY.md).
 
