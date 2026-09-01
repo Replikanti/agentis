@@ -4,9 +4,9 @@
 [![Total Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/total?label=downloads&color=blue&cacheSeconds=0)](https://github.com/Replikanti/agentis/releases)
 [![Latest Release Downloads](https://img.shields.io/github/downloads/Replikanti/agentis/latest/total?label=latest%20release&cacheSeconds=0)](https://github.com/Replikanti/agentis/releases/latest)
 
-*Digital conditions for emergence.*
+*Autonomy you can audit.*
 
-Agentis is not an LLM wrapper. It is a runtime, a language, and an evolution engine for autonomous agents that discover each other, form colonies, learn from experience, compete for resources, evolve across generations, and distribute themselves across worker nodes.
+Agentis is not an LLM wrapper. It is a runtime and a language for autonomous agents that **earn** their authority instead of being handed it: they start by observing your work, and gain the right to act — draft, then write, then merge — only as their confidence, measured against outcomes, grows. Every action runs under a hard cognitive budget and lands in a tamper-evident audit log, so autonomy stays something you can inspect. Agents discover each other, form colonies, learn from experience, and evolve across generations.
 
 Agents written in `.ag` use LLMs to think, but that is where the similarity to prompt orchestrators ends. They have their own compiler, their own content-addressed version control, cryptographic identity, and a resource economy that kills agents who waste it. They run as daemons, survive restarts, and migrate between hosts.
 
