@@ -18,6 +18,14 @@ Nearly 200k lines of Rust. No frameworks, no Tokio, no serde. Everything from th
 curl -fsSL https://raw.githubusercontent.com/Replikanti/agentis/main/install.sh | sh
 ```
 
+If you already use the Cargo toolchain, [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall) fetches the same prebuilt binary:
+
+```bash
+cargo binstall agentis
+```
+
+Note that plain `cargo install agentis` is **not** an install path. Agentis is open-core — the runtime is a prebuilt proprietary binary, so a source build only compiles a small stub that prints these instructions. Use `cargo binstall` (above) or the install script to get the real runtime.
+
 Or download the binary for your platform manually from [Releases](https://github.com/Replikanti/agentis/releases).
 
 <details>
