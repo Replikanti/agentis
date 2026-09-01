@@ -194,7 +194,7 @@ graph TD
 <details>
 <summary>The language</summary>
 
-In Agentis, **the LLM is the standard library**. There is no conventional stdlib — reasoning, transformation, and judgment go through `prompt()`. A small set of built-ins covers only the mechanical hot path (JSON field extraction, string search, and since v1.20.0 `knowledge_search`/`crystallizer_search` — BM25 retrieval over what the agent has learned) so agents don't pay an LLM round-trip for work that isn't thinking.
+In Agentis, **the LLM is the standard library**. There is no conventional stdlib — reasoning, transformation, and judgment go through `prompt()`. A small set of built-ins covers only the mechanical hot path (JSON field extraction, string search, `knowledge_search`/`crystallizer_search` for BM25 retrieval over what the agent has learned, and `confidence_value()` for an agent's own confidence) so agents don't pay an LLM round-trip for work that isn't thinking.
 
 ```
 // Typed prompt output
@@ -214,7 +214,7 @@ let result = raw_text |> cleaner |> classifier("urgent") |> summarizer;
 // Delegate -- sub-task assignment with CB caps
 let summary = delegate(summarizer, article, 100);
 
-// Agent-to-agent messaging
+// Agent-to-agent messaging (process-local by default; opt-in cross-daemon colony fan-out)
 emit("results", classification);
 let msg = listen("results", 5000);
 
@@ -226,6 +226,9 @@ explore "approach-a" {
 
 // Hybrid compute -- LLM for reasoning, code for math
 let hash = exec python("import hashlib; print(hashlib.sha256(b'hello').hexdigest())");
+
+// Shell-free exec -- argv form, no shell parsing, injection-safe by construction
+let rows = exec argv ["grep", "-F", needle, path];
 
 // Daemon tick loop
 fn tick(reason: string) -> void {
