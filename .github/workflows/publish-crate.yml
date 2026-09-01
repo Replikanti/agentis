@@ -82,13 +82,20 @@ jobs:
       - name: Skip if this version is already on crates.io
         id: exists
         run: |
-          # crates.io index API is authoritative; 200 means the version exists.
-          code=$(curl -sSL -o /dev/null -w '%{http_code}' "https://crates.io/api/v1/crates/agentis/${{ steps.v.outputs.version }}")
+          # Check the CDN download URL, not the JSON API: static.crates.io is a
+          # cache-backed CDN that reliably 200s for a published version and 403/404s
+          # otherwise, whereas the api.crates.io JSON endpoint is rate-limited and
+          # flaky from CI (an intermittent non-200 there made a re-run mistake an
+          # already-published version for a new one and fail on a duplicate publish).
+          VER="${{ steps.v.outputs.version }}"
+          code=$(curl -sSL -o /dev/null -w '%{http_code}' --retry 3 --max-time 30 \
+            "https://static.crates.io/crates/agentis/agentis-${VER}.crate")
           if [ "$code" = "200" ]; then
             echo "already=true" >> "$GITHUB_OUTPUT"
-            echo "agentis ${{ steps.v.outputs.version }} is already published — nothing to do."
+            echo "agentis ${VER} is already published — nothing to do."
           else
             echo "already=false" >> "$GITHUB_OUTPUT"
+            echo "agentis ${VER} not found on crates.io (HTTP $code) — will publish."
           fi
 
       - name: Guard — token present
@@ -112,7 +119,17 @@ jobs:
           # (main is protected and only accepts changes through a pull request),
           # so the publish must proceed with the tree dirty.
           cargo publish --dry-run --allow-dirty
-          cargo publish --allow-dirty
+          # Belt-and-suspenders: even if the already-published guard misfires,
+          # a duplicate upload must not hard-fail the run — crates.io rejects it
+          # with an "already uploaded" error, which we treat as success.
+          if out=$(cargo publish --allow-dirty 2>&1); then
+            echo "$out"
+          else
+            echo "$out"
+            echo "$out" | grep -qiE 'already (uploaded|exists)' \
+              && echo "::notice::agentis ${{ steps.v.outputs.version }} already on crates.io — treating as success." \
+              || exit 1
+          fi
 
       - name: Sync the version bump back to main (via PR)
         # main is protected ("changes must be made through a pull request"), so we
