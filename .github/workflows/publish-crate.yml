@@ -108,23 +108,38 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           # --allow-dirty: the version bump above is intentional and uncommitted
-          # at publish time (it is committed back to main in the next step only
-          # after a successful publish).
+          # at publish time. It is synced back to main via a PR in a later step
+          # (main is protected and only accepts changes through a pull request),
+          # so the publish must proceed with the tree dirty.
           cargo publish --dry-run --allow-dirty
           cargo publish --allow-dirty
 
-      - name: Commit the version bump back to main
+      - name: Sync the version bump back to main (via PR)
+        # main is protected ("changes must be made through a pull request"), so we
+        # cannot push the bump directly. Open (and best-effort auto-merge) a PR.
+        # Non-fatal: the crate is already published by this point — a failed sync
+        # must never fail the run or block the release; it just leaves a PR to merge.
         if: steps.exists.outputs.already == 'false' && steps.token.outputs.present == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if git diff --quiet -- crate/Cargo.toml crate/Cargo.lock; then
-            echo "No version change to commit."
+            echo "No version change to sync."
             exit 0
           fi
+          BR="crate-bump-${{ steps.v.outputs.version }}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BR"
           git add crate/Cargo.toml crate/Cargo.lock
           git commit -m "chore(crate): bump to ${{ steps.v.outputs.version }} [skip ci]"
-          git push origin main
+          git push origin "$BR"
+          gh pr create --base main --head "$BR" \
+            --title "chore(crate): bump to ${{ steps.v.outputs.version }}" \
+            --body "Automated version sync after publishing \`agentis ${{ steps.v.outputs.version }}\` to crates.io. Cosmetic only — the workflow derives the version from the release tag, so a stale committed version does not affect future publishes."
+          gh pr merge "$BR" --squash --delete-branch \
+            || echo "::notice::Opened version-bump PR for ${{ steps.v.outputs.version }}; merge is left to a human (branch protection)."
 
       - name: Smoke check (cargo binstall resolves the published version)
         if: steps.token.outputs.present == 'true'

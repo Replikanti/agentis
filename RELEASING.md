@@ -17,7 +17,13 @@ the platform binaries to this repo. The workflow:
    (so the crate is never published ahead of its binaries);
 3. bumps `crate/Cargo.toml` to that version;
 4. skips if that version is already on crates.io (safe to re-run);
-5. `cargo publish`es and commits the version bump back to `main`.
+5. `cargo publish --allow-dirty`es, then syncs the bump back to `main` **via a
+   pull request** (main is protected, so the workflow cannot push to it
+   directly). The sync is best-effort and non-fatal: the crate is already
+   published by then, so if the PR cannot auto-merge it is simply left for a
+   human — the release is never blocked. The committed `crate/Cargo.toml`
+   version is cosmetic anyway; each run re-derives the version from the release
+   tag.
 
 ### One-time setup (required)
 
