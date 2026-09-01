@@ -1,0 +1,40 @@
+[package]
+name = "agentis"
+version = "1.28.0"
+edition = "2021"
+description = "Installer for Agentis — the runtime, language, and evolution engine for autonomous agents. Use `cargo binstall agentis` to fetch the prebuilt binary."
+license-file = "LICENSE"
+readme = "README.md"
+repository = "https://github.com/Replikanti/agentis"
+homepage = "https://github.com/Replikanti/agentis"
+keywords = ["agents", "llm", "runtime", "evolution", "autonomous"]
+categories = ["command-line-utilities"]
+
+# A single dependency-free stub binary named `agentis`. cargo-binstall derives
+# the installed filename from this bin target, so it must exist even though the
+# real runtime is fetched as a prebuilt release asset (see [package.metadata.binstall]).
+[[bin]]
+name = "agentis"
+path = "src/main.rs"
+
+# Map `cargo binstall agentis` to the raw release binaries that the Agentis
+# release pipeline publishes to https://github.com/Replikanti/agentis/releases.
+# The asset names (`agentis-<os>-<arch>`) do NOT match binstall's default
+# `{ name }-{ target }.{ archive-format }` template, so each supported target
+# gets an explicit `pkg-url`. Assets are raw executables, hence `pkg-fmt = "bin"`.
+# `{ repo }` and `{ version }` are binstall template vars; `v{ version }`
+# reproduces the release tag (e.g. `v1.28.0`).
+[package.metadata.binstall]
+pkg-fmt = "bin"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/agentis-linux-x86_64"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/agentis-linux-aarch64"
+
+[package.metadata.binstall.overrides.x86_64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/agentis-macos-x86_64"
+
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/agentis-macos-aarch64"
