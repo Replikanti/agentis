@@ -1,0 +1,132 @@
+name: Publish crate
+
+# Publishes the thin `agentis` installer crate to crates.io so
+# `cargo binstall agentis` tracks each agentis-core release.
+#
+# The crate carries only a signpost stub + `[package.metadata.binstall]`
+# pkg-url overrides (templated on `v{ version }`) — no private core source.
+# Fired automatically when the agentis-core release pipeline publishes a
+# GitHub Release here (it creates the release via a GitHub App token, which
+# does trigger `on: release`). `workflow_dispatch` is a manual fallback.
+#
+# Requires the repository secret CARGO_REGISTRY_TOKEN (a crates.io API token
+# with publish-new + publish-update scopes). Until that secret is set the
+# workflow runs but the publish step is skipped with a notice, so it is inert.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 1.29.1), no leading v"
+        required: true
+
+permissions:
+  contents: write # to commit the version bump back to main
+
+concurrency:
+  group: publish-crate
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-binstall (for the post-publish smoke check)
+        run: cargo install cargo-binstall --locked || true
+
+      - name: Resolve target version
+        id: v
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VER="${{ github.event.inputs.version }}"
+          else
+            VER="${GITHUB_REF_NAME#v}"   # release tag v1.29.1 -> 1.29.1
+          fi
+          case "$VER" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::Unexpected version '$VER' (want X.Y.Z)"; exit 1 ;;
+          esac
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "Target crate version: $VER"
+
+      - name: Verify the matching release assets exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The binstall pkg-url points at v${version}/agentis-linux-x86_64.
+          # Do not publish a crate version whose binaries are not on Releases yet.
+          URL="https://github.com/${{ github.repository }}/releases/download/v${{ steps.v.outputs.version }}/agentis-linux-x86_64"
+          code=$(curl -sSL -o /dev/null -w '%{http_code}' "$URL")
+          if [ "$code" != "200" ]; then
+            echo "::error::Release asset for v${{ steps.v.outputs.version }} not found (HTTP $code at $URL). Refusing to publish a crate whose binstall target is missing."
+            exit 1
+          fi
+          echo "Release binaries for v${{ steps.v.outputs.version }} are live."
+
+      - name: Bump crate version
+        working-directory: crate
+        run: |
+          sed -i -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"${{ steps.v.outputs.version }}\"/" Cargo.toml
+          cargo generate-lockfile
+          grep '^version' Cargo.toml
+
+      - name: Skip if this version is already on crates.io
+        id: exists
+        run: |
+          # crates.io index API is authoritative; 200 means the version exists.
+          code=$(curl -sSL -o /dev/null -w '%{http_code}' "https://crates.io/api/v1/crates/agentis/${{ steps.v.outputs.version }}")
+          if [ "$code" = "200" ]; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "agentis ${{ steps.v.outputs.version }} is already published — nothing to do."
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Guard — token present
+        id: token
+        run: |
+          if [ -n "${{ secrets.CARGO_REGISTRY_TOKEN }}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CARGO_REGISTRY_TOKEN is not set — skipping publish. Add it in Settings → Secrets and variables → Actions to enable automated publishing."
+          fi
+
+      - name: Publish to crates.io
+        if: steps.exists.outputs.already == 'false' && steps.token.outputs.present == 'true'
+        working-directory: crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          cargo publish --dry-run
+          cargo publish
+
+      - name: Commit the version bump back to main
+        if: steps.exists.outputs.already == 'false' && steps.token.outputs.present == 'true'
+        run: |
+          if git diff --quiet -- crate/Cargo.toml crate/Cargo.lock; then
+            echo "No version change to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crate/Cargo.toml crate/Cargo.lock
+          git commit -m "chore(crate): bump to ${{ steps.v.outputs.version }} [skip ci]"
+          git push origin main
+
+      - name: Smoke check (cargo binstall resolves the published version)
+        if: steps.token.outputs.present == 'true'
+        working-directory: crate
+        run: |
+          # Non-fatal: crates.io index can lag a minute after publish.
+          cargo binstall --manifest-path Cargo.toml --targets x86_64-unknown-linux-gnu --dry-run --no-confirm agentis || \
+            echo "::notice::binstall dry-run did not resolve yet (index may still be propagating); the crate is published."
